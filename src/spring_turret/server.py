@@ -52,7 +52,7 @@ def extract_jpeg_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
 
 def load_config(path: Path) -> dict[str, Any]:
     config = json.loads(path.read_text(encoding="utf-8"))
-    required = {"listen", "camera", "servo", "static_dir"}
+    required = {"listen", "camera", "servo"}
     if set(config) != required:
         raise ValueError(f"config keys must be exactly {sorted(required)}")
 
@@ -91,8 +91,6 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ValueError("servo positions must satisfy 0 <= min < center < max <= 4095")
     if servo["baudrate"] <= 0 or servo["speed"] <= 0 or servo["acceleration"] <= 0:
         raise ValueError("servo baudrate, speed, and acceleration must be positive")
-    if not Path(config["static_dir"]).is_absolute():
-        raise ValueError("static_dir must be an absolute path")
     return config
 
 
@@ -384,11 +382,12 @@ class TurretApplication:
         config: dict[str, Any],
         camera: Any | None = None,
         servo: Any | None = None,
+        static_dir: Path | None = None,
     ):
         self.config = config
         self.camera = camera or CameraStream(config["camera"])
         self.servo = servo or ServoController(config["servo"])
-        self.static_dir = Path(config["static_dir"])
+        self.static_dir = static_dir or Path(__file__).with_name("static")
 
     def start(self) -> None:
         self.camera.start()
@@ -554,9 +553,7 @@ def serve(config_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--config", type=Path, default=Path("/etc/spring-turret-demo.json")
-    )
+    parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.INFO,

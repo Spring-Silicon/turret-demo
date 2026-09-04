@@ -165,10 +165,11 @@ def main() -> None:
             "listen": {"host": "127.0.0.1", "port": 8080},
             "camera": {},
             "servo": {},
-            "static_dir": str(static),
         }
         servo = FakeServo(module)
-        application = module.TurretApplication(config, camera=FakeCamera(), servo=servo)
+        application = module.TurretApplication(
+            config, camera=FakeCamera(), servo=servo, static_dir=static
+        )
         server = ThreadingHTTPServer(("127.0.0.1", 0), module.make_handler(application))
         server.daemon_threads = True
         thread = threading.Thread(target=server.serve_forever, daemon=True)

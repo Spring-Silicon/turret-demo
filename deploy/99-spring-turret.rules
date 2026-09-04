@@ -1,2 +1,0 @@
-SUBSYSTEM=="video4linux", ATTRS{idVendor}=="0c45", ATTRS{idProduct}=="0261", ATTRS{serial}=="UC684", ATTR{index}=="0", GROUP="video", MODE="0660", SYMLINK+="spring-turret-camera", TAG+="systemd"
-SUBSYSTEM=="tty", KERNEL=="ttyACM*", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5B61036033", GROUP="dialout", MODE="0660", SYMLINK+="spring-turret-servo", TAG+="systemd"

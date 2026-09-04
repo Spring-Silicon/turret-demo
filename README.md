@@ -25,26 +25,21 @@ There is no password or application-level access control. Run it only on an
 isolated demo LAN. The software Stop is not an emergency stop; keep a physical
 power disconnect available.
 
-## Install on Spring Edge
+## Run
 
-The host needs Ubuntu 24.04, `uv`, network access for the first dependency sync,
-and the observed USB devices.
+The OS is responsible for packages, permissions, stable device paths, and
+service management. The matching integration lives in
+[`Spring-Silicon/edge-image#19`](https://github.com/Spring-Silicon/edge-image/pull/19).
 
 ```bash
-sudo ./scripts/install.sh
+uv sync --frozen
+uv run spring-turret --config config/spring-turret-demo.json
 ```
 
-The installer creates:
-
-- `/dev/spring-turret-camera` and `/dev/spring-turret-servo` from exact udev IDs;
-- a dedicated `spring-turret` service account with only `video` and `dialout`;
-- `/opt/spring/turret-demo/venv` from the committed `uv.lock`;
-- `spring-turret-demo.service`, enabled at boot.
-
-Check the live state:
+The configured `/dev/spring-turret-camera` and `/dev/spring-turret-servo` paths
+must already exist and be accessible to the process. Check the live state:
 
 ```bash
-systemctl status spring-turret-demo.service
 curl http://127.0.0.1:8080/api/status
 ```
 
@@ -62,9 +57,6 @@ curl http://127.0.0.1:8080/api/status
 ```bash
 make validate
 ```
-
-The matching OS-image integration is tracked in
-[`Spring-Silicon/edge-image#19`](https://github.com/Spring-Silicon/edge-image/pull/19).
 
 ## Servo qualification still required
 

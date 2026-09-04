@@ -19,6 +19,5 @@
     "max_position": 2560,
     "speed": 500,
     "acceleration": 50
-  },
-  "static_dir": "/opt/spring/turret-demo/static"
+  }
 }

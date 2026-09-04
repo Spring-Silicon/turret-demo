@@ -22,21 +22,13 @@ def main() -> None:
     assert hardware["servo"]["motion_verified"] is False
 
     config = json.loads((ROOT / "config/spring-turret-demo.json").read_text())
+    assert set(config) == {"listen", "camera", "servo"}
     servo = config["servo"]
     assert servo["min_position"] < servo["center_position"] < servo["max_position"]
     assert config["camera"]["device"] == "/dev/spring-turret-camera"
     assert servo["device"] == "/dev/spring-turret-servo"
 
-    rules = (ROOT / "deploy/99-spring-turret.rules").read_text()
-    for value in ("0c45", "0261", "UC684", "1a86", "55d3", "5B61036033"):
-        assert value in rules
-    assert 'SYMLINK+="spring-turret-camera"' in rules
-    assert 'SYMLINK+="spring-turret-servo"' in rules
-
-    service = (ROOT / "deploy/spring-turret-demo.service").read_text()
-    assert "User=spring-turret" in service
-    assert "SupplementaryGroups=video dialout" in service
-    assert "NoNewPrivileges=true" in service
+    assert not (ROOT / "scripts/install.sh").exists()
 
     html = (ROOT / "src/spring_turret/static/index.html").read_text()
     server = (ROOT / "src/spring_turret/server.py").read_text()
@@ -47,6 +39,8 @@ def main() -> None:
     assert "self.armed = False" in server
     assert 'write1ByteTxRx(int(self.config["id"]), 40, 0)' in server
     assert "raise ServoDisarmed" in server
+    assert 'Path(__file__).with_name("static")' in server
+    assert 'default=Path("/etc/' not in server
 
     print("validated repository and hardware contracts")
 
