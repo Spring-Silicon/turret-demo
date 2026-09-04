@@ -21,6 +21,12 @@ import types
 from pathlib import Path
 from typing import Any
 
+# This module is also executed as a standalone script in the inference venv.
+if __package__:
+    from .prompts import COLORS, normalize_prompts
+else:
+    from prompts import COLORS, normalize_prompts
+
 _PROTOCOL_OUTPUT: Any = None
 
 
@@ -456,37 +462,38 @@ class Sam31Engine:
         self.inference_callable = replay
 
     def detect(self, jpeg: bytes, prompt: str) -> dict[str, Any]:
+        return self.detect_many(jpeg, [prompt])
+
+    def detect_many(self, jpeg: bytes, prompts: list[str]) -> dict[str, Any]:
+        prompts = normalize_prompts(prompts)
+        if not prompts:
+            raise ValueError("at least one nonempty prompt is required")
         torch = self.torch
-        pixels, tokens = self._inputs(jpeg, prompt)
+        # One image, one compiled shape, sequential independent text queries.
+        # Copy each result to CPU before graph replay overwrites its outputs.
+        pixels, tokens = self._inputs(jpeg, prompts[0])
+        detections = []
+        categories = []
         with torch.inference_mode(), torch.autocast("xpu", dtype=self.dtype):
             self._activate_sycl_graph(pixels, tokens)
             started = time.perf_counter()
-            logits, boxes, presence = self.inference_callable(pixels, tokens)
-            probability = logits.sigmoid() * presence.sigmoid().unsqueeze(1)
-            probability = probability.squeeze(-1)[0]
-            boxes = boxes[0]
-            keep = probability > self.confidence
-            probability = probability[keep]
-            boxes = boxes[keep]
-            x_center, y_center, width, height = boxes.unbind(-1)
-            xyxy = torch.stack(
-                (
-                    x_center - width / 2,
-                    y_center - height / 2,
-                    x_center + width / 2,
-                    y_center + height / 2,
-                ),
-                dim=-1,
-            ).clamp(0, 1)
-            xyxy_cpu = xyxy.float().cpu().tolist()
-            score_cpu = probability.float().cpu().tolist()
+            for index, prompt in enumerate(prompts):
+                if index:
+                    tokens = self.tokenizer([prompt], context_length=32).to(self.device)
+                boxes = self._detect_boxes(pixels, tokens)
+                color = COLORS[index]
+                categories.append(
+                    {"prompt": prompt, "color": color, "count": len(boxes)}
+                )
+                detections.extend(
+                    {**box, "prompt": prompt, "prompt_index": index, "color": color}
+                    for box in boxes
+                )
         torch.xpu.synchronize()
         latency_ms = (time.perf_counter() - started) * 1000
         result = {
-            "boxes": [
-                {"xyxy": coordinates, "score": round(float(score), 4)}
-                for coordinates, score in zip(xyxy_cpu, score_cpu, strict=True)
-            ],
+            "boxes": detections,
+            "categories": categories,
             "latency_ms": round(latency_ms),
             "torch": torch.__version__,
             "device": torch.xpu.get_device_name(self.device),
@@ -495,13 +502,30 @@ class Sam31Engine:
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
         }
-        result["jpeg"] = base64.b64encode(
-            annotate(jpeg, prompt, result["boxes"])
-        ).decode()
+        result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
         return result
 
+    def _detect_boxes(self, pixels: Any, tokens: Any) -> list[dict[str, Any]]:
+        torch = self.torch
+        logits, boxes, presence = self.inference_callable(pixels, tokens)
+        probability = (logits.sigmoid() * presence.sigmoid().unsqueeze(1)).squeeze(-1)[
+            0
+        ]
+        keep = probability > self.confidence
+        probability, boxes = probability[keep], boxes[0][keep]
+        center, size = boxes[..., :2], boxes[..., 2:]
+        xyxy = torch.cat((center - size / 2, center + size / 2), -1).clamp(0, 1)
+        return [
+            {"xyxy": coordinates, "score": round(float(score), 4)}
+            for coordinates, score in zip(
+                xyxy.float().cpu().tolist(),
+                probability.float().cpu().tolist(),
+                strict=True,
+            )
+        ]
 
-def annotate(jpeg: bytes, prompt: str, boxes: list[dict[str, Any]]) -> bytes:
+
+def annotate(jpeg: bytes, boxes: list[dict[str, Any]]) -> bytes:
     """Draw on the exact input frame, never on a newer camera frame."""
     from PIL import Image, ImageDraw, ImageFont
 
@@ -516,12 +540,13 @@ def annotate(jpeg: bytes, prompt: str, boxes: list[dict[str, Any]]) -> bytes:
             round(x2 * image.width),
             round(y2 * image.height),
         )
-        draw.rectangle(rect, outline="#55e8ce", width=3)
-        label = f"{prompt[:48]} {box['score']:.0%}"
+        color = box["color"]
+        draw.rectangle(rect, outline=color, width=3)
+        label = f"{box['prompt'][:48]} {box['score']:.0%}"
         x, y = rect[0], max(0, rect[1] - 24)
         bounds = draw.textbbox((x + 4, y + 2), label, font=font)
         draw.rectangle((x, y, bounds[2] + 4, bounds[3] + 2), fill="#0b0d0d")
-        draw.text((x + 4, y + 2), label, fill="#55e8ce", font=font)
+        draw.text((x + 4, y + 2), label, fill=color, font=font)
     output = io.BytesIO()
     image.save(output, format="JPEG", quality=85)
     return output.getvalue()
@@ -568,11 +593,9 @@ def main() -> None:
             try:
                 request = json.loads(line)
                 request_id = int(request["id"])
-                prompt = str(request["prompt"]).strip()
+                prompts = normalize_prompts(request["prompts"])
                 jpeg = base64.b64decode(request["jpeg"], validate=True)
-                if not prompt:
-                    raise ValueError("prompt must not be empty")
-                result = engine.detect(jpeg, prompt)
+                result = engine.detect_many(jpeg, prompts)
                 _emit({"type": "result", "id": request_id, **result})
             except Exception as error:
                 _emit(

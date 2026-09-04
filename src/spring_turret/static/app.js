@@ -14,30 +14,75 @@ let detectionSending = false;
 let feedSource = "";
 let displayedDetection = null;
 let polling = false;
-const promptInput = document.getElementById("detection-prompt");
+const promptRows = document.getElementById("prompt-rows");
+const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
+let draftInitialized = false;
+let draftVersion = 0;
+let promptError = "";
+
+function updatePromptControls() {
+  const rows = [...promptRows.children];
+  const enabled = Boolean(status?.detection?.enabled);
+  rows.forEach((row, index) => {
+    row.style.setProperty("--prompt-color", status?.detection?.colors?.[index] || "#55e8ce");
+    row.querySelector("input").disabled = !enabled;
+    row.querySelector("input").setAttribute("aria-label", `Object ${index + 1} to find`);
+    row.querySelector(".add-prompt").disabled = !enabled || rows.length >= (status?.detection?.max_prompts || 8);
+    row.querySelector(".remove-prompt").disabled = !enabled;
+  });
+  updatePromptsButton.disabled = !enabled || detectionSending;
+}
+
+function addPromptRow(value = "", after = null, focus = false) {
+  const row = document.getElementById("prompt-row-template").content.firstElementChild.cloneNode(true);
+  const input = row.querySelector("input");
+  input.value = value;
+  input.addEventListener("input", () => { draftVersion += 1; promptError = ""; });
+  row.querySelector(".add-prompt").addEventListener("click", () => {
+    draftVersion += 1;
+    addPromptRow("", row, true);
+  });
+  row.querySelector(".remove-prompt").addEventListener("click", () => {
+    draftVersion += 1;
+    promptError = "";
+    if (promptRows.children.length === 1) input.value = "";
+    else row.remove();
+    updatePromptControls();
+    const remaining = promptRows.querySelector("input");
+    remaining.focus();
+  });
+  if (after) after.after(row);
+  else promptRows.append(row);
+  updatePromptControls();
+  if (focus) input.focus();
+}
+
+function setPromptRows(prompts) {
+  promptRows.replaceChildren();
+  (prompts.length ? prompts : [""]).forEach((prompt) => addPromptRow(prompt));
+}
 
 function renderDetection(detection) {
   if (displayedDetection && detection &&
       (detection.revision < displayedDetection.revision ||
        (detection.revision === displayedDetection.revision && detection.state === "running" &&
         detection.frame_sequence < displayedDetection.frame_sequence))) return;
-  if (!displayedDetection && detection?.prompt && document.activeElement !== promptInput) {
-    promptInput.value = detection.prompt;
+  if (!draftInitialized && detection) {
+    setPromptRows(detection.prompts || (detection.prompt ? [detection.prompt] : []));
+    draftInitialized = true;
   }
   displayedDetection = detection;
-  promptInput.disabled = !detection?.enabled;
-  document.getElementById("detect-button").disabled = !detection?.enabled || detectionSending;
-  document.getElementById("clear-detection").disabled = !detection?.enabled || detectionSending;
+  updatePromptControls();
   const labels = { disabled: "SAM not configured", idle: "SAM 3.1", loading: "Loading SAM 3.1…",
     compiling: "Compiling SAM 3.1…", validating: "Validating detector…", capturing: "Capturing SYCL graph…",
     waiting_for_camera: "Waiting for camera…" };
   const fresh = detection?.state === "running" &&
     detection.frame_age_ms < Math.max(5000, 2 * detection.latency_ms + 1000);
-  detectionMessage.textContent = detection?.error || (fresh
-    ? `${detection.boxes.length} boxes · ${detection.latency_ms} ms · torch.compile + SYCL graphs`
+  detectionMessage.textContent = promptError || detection?.error || (fresh
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${detection.latency_ms} ms · torch.compile + SYCL graphs`
     : labels[detection?.state] || "Waiting for detection…");
-  detectionMessage.classList.toggle("error", Boolean(detection?.error));
+  detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";
   if (source !== feedSource) {
     feedSource = source;
@@ -96,6 +141,7 @@ async function request(path, options = {}) {
   const body = await response.json();
   if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
   render(body);
+  return body;
 }
 
 async function action(path, options = {}) {
@@ -153,24 +199,29 @@ async function poll() {
   }
 }
 
-async function setPrompt(prompt) {
+async function setPrompts() {
+  if (detectionSending) return;
+  const submittedVersion = draftVersion;
+  const prompts = [...promptRows.querySelectorAll("input")].map((input) => input.value.trim());
   detectionSending = true;
+  promptError = "";
+  updatePromptControls();
   try {
-    await request("/api/detection/prompt", { method: "POST", body: JSON.stringify({ prompt }) });
+    const body = await request("/api/detection/prompts", { method: "POST", body: JSON.stringify({ prompts }) });
+    if (draftVersion === submittedVersion) setPromptRows(body.detection.prompts);
   } catch (error) {
+    promptError = error.message;
     detectionMessage.textContent = error.message;
     detectionMessage.classList.add("error");
   } finally {
     detectionSending = false;
+    updatePromptControls();
   }
 }
 document.getElementById("detection-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  setPrompt(promptInput.value.trim());
+  setPrompts();
 });
-document.getElementById("clear-detection").addEventListener("click", () => {
-  promptInput.value = "";
-  setPrompt("");
-});
+setPromptRows([]);
 poll();
 setInterval(poll, 200);

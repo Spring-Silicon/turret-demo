@@ -13,6 +13,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
+from spring_turret.prompts import COLORS, MAX_PROMPTS, normalize_prompts
+
 
 def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(config, dict) or not isinstance(
@@ -99,13 +101,13 @@ class WorkerClient:
                     raise RuntimeError("SAM worker response exceeded 4 MiB")
 
     def detect(
-        self, request_id: int, jpeg: bytes, prompt: str, progress: Any
+        self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any
     ) -> dict[str, Any]:
         assert self.process and self.process.stdin
         body = {
             "id": request_id,
             "jpeg": base64.b64encode(jpeg).decode(),
-            "prompt": prompt,
+            "prompts": prompts,
         }
         self.process.stdin.write(json.dumps(body).encode() + b"\n")
         self.process.stdin.flush()
@@ -139,7 +141,7 @@ class DetectionController:
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="detection", daemon=True)
         self.worker: Any = None
-        self.prompt = ""
+        self.prompts: list[str] = []
         self.revision = 0
         self.sequence = 0
         self.state = "idle" if self.enabled else "disabled"
@@ -163,25 +165,21 @@ class DetectionController:
             self.thread.join(timeout=5)
 
     def set_prompt(self, prompt: Any) -> None:
-        if (
-            not isinstance(prompt, str)
-            or len(prompt) > 256
-            or any(ord(c) < 32 for c in prompt)
-        ):
-            raise ValueError(
-                "prompt must be text with at most 256 characters "
-                "and no control characters"
-            )
+        """Compatibility for the original single-category endpoint."""
+        self.set_prompts([prompt])
+
+    def set_prompts(self, prompts: Any) -> None:
+        prompts = normalize_prompts(prompts)
         if not self.enabled:
             raise ValueError("SAM inference is not configured on this device")
         with self.condition:
-            self.prompt = prompt.strip()
+            self.prompts = prompts
             self.revision += 1
             self.result = {}
             self.frames.clear()
             self.completed_at = 0
             self.error = None
-            self.state = "loading" if self.prompt else "idle"
+            self.state = "loading" if self.prompts else "idle"
             self.condition.notify_all()
 
     def status(self) -> dict[str, Any]:
@@ -193,7 +191,10 @@ class DetectionController:
             )
             return {
                 "enabled": self.enabled,
-                "prompt": self.prompt,
+                "prompt": self.prompts[0] if len(self.prompts) == 1 else "",
+                "prompts": list(self.prompts),
+                "max_prompts": MAX_PROMPTS,
+                "colors": COLORS,
                 "revision": self.revision,
                 "state": self.state,
                 "error": self.error,
@@ -207,7 +208,7 @@ class DetectionController:
 
     def _progress(self, revision: int, stage: str) -> None:
         with self.condition:
-            if revision == self.revision and self.prompt:
+            if revision == self.revision and self.prompts:
                 self.state = stage
 
     def _run(self) -> None:
@@ -219,12 +220,12 @@ class DetectionController:
                     self.condition.wait_for(
                         lambda: (
                             self.stop_event.is_set()
-                            or (self.prompt and self.revision != failed_revision)
+                            or (self.prompts and self.revision != failed_revision)
                         )
                     )
                     if self.stop_event.is_set():
                         break
-                    prompt, revision = self.prompt, self.revision
+                    prompts, revision = list(self.prompts), self.revision
                 sequence, jpeg = self.camera.wait_for_frame(last_camera_sequence, 1)
                 if (
                     jpeg is None
@@ -253,7 +254,7 @@ class DetectionController:
                     result = self.worker.detect(
                         self.sequence,
                         jpeg,
-                        prompt,
+                        prompts,
                         lambda stage: self._progress(revision, stage),
                     )
                     if not result.get("torch_compile") or not result.get("sycl_graph"):

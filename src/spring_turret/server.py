@@ -16,7 +16,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from spring_turret.detection import DetectionController, validate_config as validate_inference
+from spring_turret.detection import (
+    DetectionController,
+    validate_config as validate_inference,
+)
 
 
 LOGGER = logging.getLogger("spring-turret")
@@ -62,7 +65,9 @@ def load_config(path: Path) -> dict[str, Any]:
     config = json.loads(path.read_text(encoding="utf-8"))
     required = {"listen", "camera", "servo"}
     if not required <= set(config) or set(config) - required - {"inference"}:
-        raise ValueError(f"config must contain {sorted(required)} and optional inference")
+        raise ValueError(
+            f"config must contain {sorted(required)} and optional inference"
+        )
     validate_inference(config.get("inference", {}))
 
     listen = config["listen"]
@@ -97,7 +102,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if not 0 <= servo["id"] <= 252:
         raise ValueError("servo.id must be between 0 and 252")
     if not (
-        0 <= servo["min_position"]
+        0
+        <= servo["min_position"]
         < servo["center_position"]
         < servo["max_position"]
         <= 4095
@@ -220,8 +226,10 @@ class CameraStream:
     ) -> tuple[int, bytes | None]:
         with self.condition:
             self.condition.wait_for(
-                lambda: self.latest_sequence != previous_sequence
-                or self.stop_event.is_set(),
+                lambda: (
+                    self.latest_sequence != previous_sequence
+                    or self.stop_event.is_set()
+                ),
                 timeout=timeout,
             )
             return self.latest_sequence, self.latest_frame
@@ -466,7 +474,9 @@ class TurretApplication:
         self.camera = camera or CameraStream(config["camera"])
         self.servo = servo or ServoController(config["servo"])
         self.static_dir = static_dir or Path(__file__).with_name("static")
-        self.detection = detection or DetectionController(config.get("inference", {}), self.camera)
+        self.detection = detection or DetectionController(
+            config.get("inference", {}), self.camera
+        )
 
     def start(self) -> None:
         self.camera.start()
@@ -485,6 +495,7 @@ class TurretApplication:
             "servo": self.servo.status(),
             "detection": self.detection.status(),
         }
+
 
 def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]:
     class TurretHandler(BaseHTTPRequestHandler):
@@ -562,7 +573,9 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                 )
                 return
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header(
+                "Content-Type", "multipart/x-mixed-replace; boundary=frame"
+            )
             self._security_headers()
             self.end_headers()
             try:
@@ -590,7 +603,12 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
             try:
-                if path == "/api/detection/prompt":
+                if path == "/api/detection/prompts":
+                    body = self._request_json()
+                    if set(body) != {"prompts"}:
+                        raise ValueError("body must contain only prompts")
+                    application.detection.set_prompts(body["prompts"])
+                elif path == "/api/detection/prompt":
                     body = self._request_json()
                     if set(body) != {"prompt"}:
                         raise ValueError("body must contain only prompt")

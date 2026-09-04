@@ -18,10 +18,18 @@
     <main>
       <section class="vision" aria-label="Camera and detection">
         <form id="detection-form">
-          <input id="detection-prompt" type="text" maxlength="256" placeholder="Object to find" aria-label="Object to find" autocomplete="off" disabled>
-          <button id="detect-button" type="submit" disabled>Detect</button>
-          <button id="clear-detection" type="button" disabled>Clear</button>
+          <div id="prompt-rows"></div>
+          <button id="update-prompts" type="submit" disabled>Update prompts</button>
         </form>
+        <template id="prompt-row-template">
+          <div class="prompt-row">
+            <input class="detection-prompt" type="text" maxlength="256" placeholder="Object to find" aria-label="Object to find" autocomplete="off" disabled>
+            <button class="add-prompt" type="button" aria-label="Add object" title="Add object" disabled>+</button>
+            <button class="remove-prompt" type="button" aria-label="Remove object" title="Remove object" disabled>
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>
+            </button>
+          </div>
+        </template>
         <p id="detection-status" role="status">SAM: checking</p>
         <div class="feed" aria-label="Live camera">
           <img id="camera-feed" alt="Live turret camera feed">

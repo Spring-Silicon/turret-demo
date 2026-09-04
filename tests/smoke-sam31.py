@@ -60,6 +60,7 @@ def main():
                     raise RuntimeError("camera did not supply a JPEG")
             jpeg = buffer[buffer.index(b"\xff\xd8") : buffer.index(b"\xff\xd9") + 2]
     engine = Sam31Engine(args.checkpoint, 0, "float16", 0.5, True)
+    singles = {}
     for prompt in ("keyboard", "person", "chair", "keyboard"):
         result = engine.detect(jpeg, prompt)
         # Verify graph inputs are updated when the prompt changes, not captured
@@ -76,12 +77,32 @@ def main():
                 torch.testing.assert_close(replayed, reference, rtol=0.001, atol=0.001)
         annotated = base64.b64decode(result.pop("jpeg"))
         assert result["torch_compile"] and result["sycl_graph"]
+        singles[prompt] = [
+            {"xyxy": box["xyxy"], "score": box["score"]} for box in result["boxes"]
+        ]
         if args.output:
             args.output.write_bytes(annotated)
         print(
             json.dumps({"prompt": prompt, **result, "validation": validation}),
             flush=True,
         )
+    prompts = ["person", "keyboard", "chair"]
+    combined = engine.detect_many(jpeg, prompts)
+    assert [category["prompt"] for category in combined["categories"]] == prompts
+    for index, prompt in enumerate(prompts):
+        boxes = [box for box in combined["boxes"] if box["prompt"] == prompt]
+        assert [
+            {"xyxy": box["xyxy"], "score": box["score"]} for box in boxes
+        ] == singles[prompt]
+        assert all(box["prompt_index"] == index for box in boxes)
+        assert combined["categories"][index]["count"] == len(boxes)
+    assert len({category["color"] for category in combined["categories"]}) == len(
+        prompts
+    )
+    annotated = base64.b64decode(combined.pop("jpeg"))
+    if args.output:
+        args.output.write_bytes(annotated)
+    print(json.dumps({"multi_prompt_verified": True, **combined}), flush=True)
 
 
 if __name__ == "__main__":

@@ -10,10 +10,14 @@ import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from contextlib import nullcontext
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spring_turret.detection import DetectionController, validate_config
 from spring_turret.server import TurretApplication, make_handler
+from spring_turret.sam31_worker import Sam31Engine
 
 
 def eventually(check, timeout=3):
@@ -50,8 +54,8 @@ class Worker:
     def receive(self, timeout):
         return {"type": "ready"}
 
-    def detect(self, request_id, jpeg, prompt, progress):
-        self.requests.append((request_id, jpeg, prompt))
+    def detect(self, request_id, jpeg, prompts, progress):
+        self.requests.append((request_id, jpeg, prompts))
         self.entered.set()
         self.release.wait(2)
         if self.fail:
@@ -63,7 +67,7 @@ class Worker:
             "latency_ms": 1,
             "torch_compile": True,
             "sycl_graph": True,
-            "jpeg": base64.b64encode(prompt.encode()).decode(),
+            "jpeg": base64.b64encode("|".join(prompts).encode()).decode(),
         }
 
     def stop(self):
@@ -72,6 +76,54 @@ class Worker:
 
 
 class DetectionTests(unittest.TestCase):
+    def test_engine_preserves_every_instance_and_category_on_one_frame(self):
+        engine = Sam31Engine.__new__(Sam31Engine)
+        engine.device = 0
+        engine.dtype = "fake-fp16"
+        engine.graph_active = True
+        engine.graph_error = None
+        engine.validation = {}
+        engine.torch = SimpleNamespace(
+            __version__="test",
+            inference_mode=nullcontext,
+            autocast=lambda *args, **kwargs: nullcontext(),
+            xpu=SimpleNamespace(
+                synchronize=lambda: None, get_device_name=lambda _: "test"
+            ),
+        )
+        pixels = object()
+        engine._inputs = lambda jpeg, prompt: (pixels, prompt)
+        engine.tokenizer = lambda texts, **kw: SimpleNamespace(
+            to=lambda device: texts[0]
+        )
+        engine._activate_sycl_graph = lambda *args: None
+        instances = {
+            "person": [
+                {"xyxy": [0.1, 0.2, 0.3, 0.4], "score": 0.9},
+                {"xyxy": [0.5, 0.2, 0.8, 0.9], "score": 0.8},
+            ],
+            "cup": [{"xyxy": [0.2, 0.6, 0.3, 0.8], "score": 0.85}],
+            "chair": [],
+        }
+        calls = []
+
+        def detect(image, prompt):
+            calls.append((image, prompt))
+            return instances[prompt]
+
+        engine._detect_boxes = detect
+        with patch("spring_turret.sam31_worker.annotate", return_value=b"jpeg") as draw:
+            result = engine.detect_many(b"original", ["person", "cup", "chair"])
+        self.assertEqual(calls, [(pixels, name) for name in instances])
+        self.assertEqual([c["count"] for c in result["categories"]], [2, 1, 0])
+        self.assertEqual(
+            [b["prompt"] for b in result["boxes"]], ["person", "person", "cup"]
+        )
+        self.assertEqual([b["prompt_index"] for b in result["boxes"]], [0, 0, 1])
+        self.assertEqual(result["boxes"][0]["color"], result["boxes"][1]["color"])
+        self.assertNotEqual(result["boxes"][0]["color"], result["boxes"][2]["color"])
+        draw.assert_called_once_with(b"original", result["boxes"])
+
     def controller(self):
         worker = Worker({})
         controller = DetectionController(
@@ -151,6 +203,45 @@ class DetectionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_config({**base, key: value})
 
+    def test_multiple_categories_share_one_frame_and_clear_atomically(self):
+        c, worker = self.controller()
+        c.set_prompts(["person", "cup", "keyboard"])
+        self.assertTrue(worker.entered.wait(1))
+        self.assertEqual(
+            worker.requests[0][1:], (b"camera-jpeg", ["person", "cup", "keyboard"])
+        )
+        c.set_prompts(["chair", "bottle"])
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        result = c.status()
+        self.assertEqual(result["prompts"], ["chair", "bottle"])
+        self.assertEqual(
+            c.frame(result["frame_url"].split("/")[-1][:-4]), b"chair|bottle"
+        )
+        c.set_prompts([])
+        self.assertEqual(c.status()["state"], "idle")
+        self.assertEqual(c.status()["prompts"], [])
+        self.assertFalse(c.frames)
+
+    def test_prompt_list_validation_and_normalization(self):
+        c, worker = self.controller()
+        for prompts in (
+            None,
+            "person",
+            {},
+            [True],
+            [None],
+            ["x"] * 9,
+            ["x" * 257],
+            ["a\nb"],
+        ):
+            with self.assertRaises(ValueError):
+                c.set_prompts(prompts)
+        c.set_prompts(["  Person  ", "", "person", "cup", "  "])
+        self.assertEqual(c.status()["prompts"], ["Person", "cup"])
+        c.set_prompts(["", " "])
+        self.assertEqual(c.status()["state"], "idle")
+
     def test_http_prompt_and_exact_frame(self):
         c, worker = self.controller()
         worker.release.set()
@@ -193,6 +284,23 @@ class DetectionTests(unittest.TestCase):
         response = connection.getresponse()
         self.assertEqual(response.status, 400)
         response.read()
+        connection.request(
+            "POST", "/api/detection/prompts", '{"prompts":["person","cup"]}'
+        )
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            json.loads(response.read())["detection"]["prompts"], ["person", "cup"]
+        )
+        for payload in (
+            '{"prompts":"person"}',
+            '{"prompts":[false]}',
+            '{"prompts":[],"extra":1}',
+        ):
+            connection.request("POST", "/api/detection/prompts", payload)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
 
 
 if __name__ == "__main__":

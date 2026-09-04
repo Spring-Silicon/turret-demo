@@ -22,8 +22,12 @@ torque, preventing an immediate jump on Arm.
 
 Open `http://HOST:8080/`. The UI contains only the live feed, camera/servo state,
 position, bounded jog controls, Arm, Stop, and the current hardware error. Enter
-an object name in **Object to find** and select **Detect**. **Clear** returns to
-the raw camera feed. Detection never arms, aims, or moves the servo.
+one object category per row (for example `person`, `cup`, `keyboard`). Each row
+has **+** to add another row and a trash button to remove it. Select **Update
+prompts**, or press **Enter** in a text box, to apply every row together.
+Edits do not change active detection until submitted. Up to eight categories
+are supported; blank and duplicate prompts are ignored. Remove/empty all rows
+and update to return to the raw feed. Detection never arms, aims, or moves the servo.
 
 There is no password or application-level access control. Run it only on an
 isolated demo LAN. The software Stop is not an emergency stop; keep a physical
@@ -85,6 +89,12 @@ Implementation:
 - Fixed 1008x1008 inputs and 32-token prompts run through full-graph
   `torch.compile(backend="inductor")` on XPU, then `torch.xpu.XPUGraph` capture
   and replay (SYCL graphs). This does not use the separate Spring Graphs runtime.
+- Multiple categories use independent prompt queries on the **same frame**, with
+  all detected instances merged into one annotated JPEG. Each category has its
+  own label and color. The same compiled graph is replayed for each category:
+  no batch-size recompilation, but inference time scales roughly with category
+  count because each query includes the vision backbone. Overlapping categories
+  can label the same object; boxes are not suppressed across categories.
 - First use validates eager versus compiled outputs and graph replay, and can
   take several minutes. The UI reports loading/compiling/capture separately.
   Errors are visible; there is no silent eager or CPU fallback.
@@ -97,8 +107,9 @@ Implementation:
 - The inference subprocess consumes only the latest available camera frame;
   there is no frame backlog. Boxes are drawn into their exact source JPEG. A
   prompt change/clear invalidates prior results immediately. Stale output is
-  replaced by the raw feed. **Clear** stops new inference; the model remains
-  loaded for the next prompt. An in-flight compilation/inference may finish.
+  replaced by the raw feed. Submitting an empty list stops new inference; the
+  model remains loaded for the next prompt. An in-flight compilation/inference
+  may finish.
 - Confidence is `sigmoid(class logit) * sigmoid(presence logit)`, threshold 0.5
   by default. Boxes are normalized XYXY coordinates in `/api/status`.
 
@@ -117,7 +128,8 @@ Opt-in GPU validation (never controls the servo):
 - `POST /api/servo/disable`
 - `POST /api/servo/center`
 - `POST /api/servo/position` with `{"position": INTEGER}`
-- `POST /api/detection/prompt` with `{"prompt": "chair"}`; empty text clears
+- `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears
+- `POST /api/detection/prompt` with `{"prompt": "chair"}` (single-category compatibility)
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL
   returned in `status.detection.frame_url`; old revisions return 404)
 
