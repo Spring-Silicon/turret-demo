@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Turret Demo</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <header>
+      <h1>Turret Demo</h1>
+      <div class="device-status" aria-label="Hardware status">
+        <span id="camera-status">Camera: checking</span>
+        <span id="servo-status">Servo: checking</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="feed" aria-label="Live camera">
+        <img id="camera-feed" alt="Live turret camera feed">
+        <span class="crosshair" aria-hidden="true"></span>
+        <p id="camera-offline" hidden>Camera unavailable</p>
+      </section>
+
+      <section class="controls" aria-label="Servo controls">
+        <div class="position">
+          <output for="position-slider"><span id="position-degrees">0.0</span>°</output>
+          <span id="position-raw">2048</span>
+        </div>
+
+        <input id="position-slider" type="range" min="1536" max="2560" value="2048" step="1" aria-label="Servo position" disabled>
+
+        <div class="jog" aria-label="Jog controls">
+          <button type="button" data-step="-114" disabled>−10°</button>
+          <button type="button" data-step="-11" disabled>−1°</button>
+          <button id="center-button" type="button" disabled>Center</button>
+          <button type="button" data-step="11" disabled>+1°</button>
+          <button type="button" data-step="114" disabled>+10°</button>
+        </div>
+
+        <div class="safety-actions">
+          <button id="arm-button" type="button" disabled>Arm</button>
+          <button id="stop-button" type="button" disabled>Stop / torque off</button>
+        </div>
+        <p id="message" role="status">Checking hardware…</p>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
