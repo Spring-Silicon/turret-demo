@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Opt-in real XPU test; never opens or moves the servo.
-
-Run with the inference Python and --checkpoint; uses a live camera frame unless
---image points at a local JPEG. Compiling on first use can take several minutes.
-"""
+"""Opt-in XPU parity, cache/alias checks and batch benchmarks. No servo access."""
 
 import argparse
 import base64
+import io
 import json
+import statistics
 import sys
 import urllib.request
 from pathlib import Path
@@ -39,14 +37,33 @@ def test_parity_gate(torch):
         raise AssertionError(f"parity gate accepted a {kind} detection")
 
 
+def parity(engine, jpeg, prompts):
+    torch = engine.torch
+    with torch.inference_mode(), torch.autocast("xpu", dtype=engine.dtype):
+        pixels = engine._pixels(jpeg)
+        embeddings = engine._encode_prompts(prompts)
+        actual = engine._run_heads(engine.image_stage(pixels), embeddings)
+        checks = {}
+        for index, prompt in enumerate(prompts):
+            reference = engine.wrapper(pixels, engine._tokens(prompt))
+            checks[prompt] = validate_detections(
+                torch, reference, tuple(x[index : index + 1] for x in actual), 0.5
+            )
+        return checks
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--image", type=Path)
     parser.add_argument("--camera", default="http://127.0.0.1:8080/stream.mjpg")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--batch-sizes", type=int, nargs="+", default=[1, 2, 4])
+    parser.add_argument("--iterations", type=int, default=15)
+    parser.add_argument("--require-detections", action="store_true")
     args = parser.parse_args()
     import torch
+    from PIL import Image
 
     test_parity_gate(torch)
     if args.image:
@@ -59,50 +76,75 @@ def main():
                 if len(buffer) > 8 * 1024 * 1024:
                     raise RuntimeError("camera did not supply a JPEG")
             jpeg = buffer[buffer.index(b"\xff\xd8") : buffer.index(b"\xff\xd9") + 2]
-    engine = Sam31Engine(args.checkpoint, 0, "float16", 0.5, True)
-    singles = {}
-    for prompt in ("keyboard", "person", "chair", "keyboard"):
-        result = engine.detect(jpeg, prompt)
-        # Verify graph inputs are updated when the prompt changes, not captured
-        # as constants. Compare raw outputs before confidence filtering.
-        torch = engine.torch
-        with torch.inference_mode(), torch.autocast("xpu", dtype=engine.dtype):
-            pixels, tokens = engine._inputs(jpeg, prompt)
-            expected = engine.compiled(pixels, tokens)
-            validation = validate_detections(
-                torch, engine.wrapper(pixels, tokens), expected, 0.5
+    engine = Sam31Engine(args.checkpoint, 0, "float16", 0.5, True, 1)
+    prompts = ["person", "computer monitor", "keyboard", "chair"]
+    for batch_size in args.batch_sizes:
+        engine.grounding_batch_size = batch_size
+        warm = engine.detect_many(jpeg, prompts)
+        checks = parity(engine, jpeg, prompts)
+        if args.require_detections:
+            assert len([b for b in warm["boxes"] if b["prompt"] == "person"]) >= 2
+        for count in (1, 2, 3, 4, 8):
+            selected = (prompts + ["cup", "bottle", "hand", "table"])[:count]
+            engine.detect_many(jpeg, selected)
+            samples = []
+            for _ in range(args.iterations):
+                before_image, before_text = (
+                    engine.image_stage.calls,
+                    engine.text_stage.calls,
+                )
+                result = engine.detect_many(jpeg, selected)
+                assert engine.image_stage.calls == before_image + 1
+                assert engine.text_stage.calls == before_text
+                assert result["text_cache_hit"] and result["sycl_graph"]
+                assert len(result["categories"]) == count
+                assert [c["prompt"] for c in result["categories"]] == selected
+                assert all(
+                    b["prompt"] == selected[b["prompt_index"]] for b in result["boxes"]
+                )
+                samples.append(result)
+            print(
+                json.dumps(
+                    {
+                        "batch_size": batch_size,
+                        "prompts": count,
+                        "latency_ms": statistics.median(
+                            r["latency_ms"] for r in samples
+                        ),
+                        "timing": {
+                            k: round(
+                                statistics.median(r["timing"][k] for r in samples), 2
+                            )
+                            for k in result["timing"]
+                        },
+                        "allocated_mb": round(torch.xpu.memory_allocated() / 1e6),
+                        "reserved_mb": round(torch.xpu.memory_reserved() / 1e6),
+                        "counts": [c["count"] for c in result["categories"]],
+                        "validation": checks,
+                    }
+                ),
+                flush=True,
             )
-            actual = engine.inference_callable(pixels, tokens)
-            for reference, replayed in zip(expected, actual, strict=True):
-                torch.testing.assert_close(replayed, reference, rtol=0.001, atol=0.001)
-        annotated = base64.b64decode(result.pop("jpeg"))
-        assert result["torch_compile"] and result["sycl_graph"]
-        singles[prompt] = [
-            {"xyxy": box["xyxy"], "score": box["score"]} for box in result["boxes"]
-        ]
-        if args.output:
-            args.output.write_bytes(annotated)
-        print(
-            json.dumps({"prompt": prompt, **result, "validation": validation}),
-            flush=True,
-        )
-    prompts = ["person", "keyboard", "chair"]
-    combined = engine.detect_many(jpeg, prompts)
-    assert [category["prompt"] for category in combined["categories"]] == prompts
-    for index, prompt in enumerate(prompts):
-        boxes = [box for box in combined["boxes"] if box["prompt"] == prompt]
-        assert [
-            {"xyxy": box["xyxy"], "score": box["score"]} for box in boxes
-        ] == singles[prompt]
-        assert all(box["prompt_index"] == index for box in boxes)
-        assert combined["categories"][index]["count"] == len(boxes)
-    assert len({category["color"] for category in combined["categories"]}) == len(
-        prompts
+            if args.output:
+                args.output.write_bytes(base64.b64decode(result["jpeg"]))
+    # A different image and changed/reordered prompts must update graph inputs.
+    buffer = io.BytesIO()
+    Image.open(io.BytesIO(jpeg)).transpose(Image.Transpose.FLIP_LEFT_RIGHT).save(
+        buffer, format="JPEG"
     )
-    annotated = base64.b64decode(combined.pop("jpeg"))
-    if args.output:
-        args.output.write_bytes(annotated)
-    print(json.dumps({"multi_prompt_verified": True, **combined}), flush=True)
+    changed = ["chair", "person", "bottle"]
+    checks = parity(engine, buffer.getvalue(), changed)
+    before = engine.text_stage.calls
+    engine.detect_many(buffer.getvalue(), ["person", "chair", "bottle"])
+    assert engine.text_stage.calls == before
+    engine.detect_many(buffer.getvalue(), ["person", "chair", "cup"])
+    assert engine.text_stage.calls == before + 1
+    print(
+        json.dumps(
+            {"shared_features_verified": True, "changed_image_and_prompts": checks}
+        ),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

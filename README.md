@@ -89,12 +89,21 @@ Implementation:
 - Fixed 1008x1008 inputs and 32-token prompts run through full-graph
   `torch.compile(backend="inductor")` on XPU, then `torch.xpu.XPUGraph` capture
   and replay (SYCL graphs). This does not use the separate Spring Graphs runtime.
-- Multiple categories use independent prompt queries on the **same frame**, with
-  all detected instances merged into one annotated JPEG. Each category has its
-  own label and color. The same compiled graph is replayed for each category:
-  no batch-size recompilation, but inference time scales roughly with category
-  count because each query includes the vision backbone. Overlapping categories
-  can label the same object; boxes are not suppressed across categories.
+- The image backbone runs **once per sampled frame**, regardless of prompt
+  count. Text embeddings are cached for the active categories; unchanged or
+  reordered prompts do not rerun the text encoder. Cached embeddings own their
+  buffers so subsequent SYCL replays cannot overwrite another category's text.
+- Prompt-conditioned detection replays the batch-one grounding graph for each
+  category against the shared image features. This was faster than batches of
+  two or four on the B580. Larger fixed batches remain in the benchmark path.
+  All detected instances are merged into the exact source JPEG,
+  with a label and color per category. Overlapping categories can label the same
+  object; boxes are not suppressed across categories. This shares the image
+  backbone, not the text-conditioned fusion encoder/decoder computation.
+- Image, text, and grounding stages are individually full-graph compiled and
+  SYCL-captured. Grounding captures use bounded fixed shapes, not one retained
+  graph for every possible prompt list. First use of a grounding batch also
+  checks the shared-feature output against independent full eager passes.
 - First use validates eager versus compiled outputs and graph replay, and can
   take several minutes. The UI reports loading/compiling/capture separately.
   Errors are visible; there is no silent eager or CPU fallback.
@@ -112,6 +121,11 @@ Implementation:
   may finish.
 - Confidence is `sigmoid(class logit) * sigmoid(presence logit)`, threshold 0.5
   by default. Boxes are normalized XYXY coordinates in `/api/status`.
+- `latency_ms` measures the image encoder, grounding and box postprocessing;
+  it excludes preprocessing, prompt setup and JPEG annotation. `timing` exposes
+  each stage and `worker_total_ms`, which includes those worker-side overheads
+  (including cold compile/validation when applicable). HTTP delivery, camera
+  buffering and browser display remain outside the worker timing.
 
 Opt-in GPU validation (never controls the servo):
 
@@ -119,6 +133,29 @@ Opt-in GPU validation (never controls the servo):
 /var/lib/spring-data/turret-inference/venv/bin/python tests/smoke-sam31.py \
   --checkpoint /var/lib/spring-data/turret-inference/sam3.1_multiplex.pt
 ```
+
+The smoke test benchmarks shared-feature grounding batches of 1, 2 and 4 for
+1–8 categories, verifies one image-encoder replay per steady-state frame, text
+cache reuse, changed/reordered prompts, and a changed image against independent
+full passes. For nonempty regression coverage, supply `--image IMAGE.jpg
+--require-detections` with a frame containing at least two detectable people.
+Run it separately from the service's GPU worker to avoid loading two models.
+
+B580 warm inference medians (10 frames/case, FP16 autocast, same 1280x720 camera
+JPEG with two detected people; preprocessing/annotation excluded):
+
+| Categories | Shared image, grounding batch 1 | Batch 2 | Batch 4 |
+| --- | ---: | ---: | ---: |
+| 1 | 138 ms | 138 ms | 138 ms |
+| 2 | 151 ms | 164 ms | 186 ms |
+| 3 | 164 ms | 177 ms | 186 ms |
+| 4 | 178 ms | 203 ms | 186 ms |
+| 8 | 231 ms | 281 ms | 247 ms |
+
+Batch-one is the deployment default. The image stage is about 124 ms/frame;
+each grounding replay about 13 ms. Three-category worker time including JPEG
+preprocessing and annotation was about 188 ms, versus the old implementation's
+432 ms **inference alone**. Browser/network overhead and the 5 FPS cap are unchanged.
 
 ## API
 

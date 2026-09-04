@@ -92,11 +92,9 @@ class DetectionTests(unittest.TestCase):
             ),
         )
         pixels = object()
-        engine._inputs = lambda jpeg, prompt: (pixels, prompt)
-        engine.tokenizer = lambda texts, **kw: SimpleNamespace(
-            to=lambda device: texts[0]
-        )
-        engine._activate_sycl_graph = lambda *args: None
+        engine._pixels = lambda jpeg: pixels
+        engine._prepare = lambda pixels, prompts: prompts
+        engine.grounding_batch_size = 2
         instances = {
             "person": [
                 {"xyxy": [0.1, 0.2, 0.3, 0.4], "score": 0.9},
@@ -105,16 +103,27 @@ class DetectionTests(unittest.TestCase):
             "cup": [{"xyxy": [0.2, 0.6, 0.3, 0.8], "score": 0.85}],
             "chair": [],
         }
-        calls = []
+        engine.text_cache = dict.fromkeys(instances)
+        image_calls = []
+        head_calls = []
 
-        def detect(image, prompt):
-            calls.append((image, prompt))
-            return instances[prompt]
+        def image_stage(image):
+            image_calls.append(image)
+            return "shared-features"
 
-        engine._detect_boxes = detect
+        def run_heads(features, prompts):
+            head_calls.append((features, prompts))
+            return [instances[prompt] for prompt in prompts]
+
+        engine.image_stage = image_stage
+        engine._run_heads = run_heads
+        engine._decode_outputs = lambda outputs: outputs
         with patch("spring_turret.sam31_worker.annotate", return_value=b"jpeg") as draw:
             result = engine.detect_many(b"original", ["person", "cup", "chair"])
-        self.assertEqual(calls, [(pixels, name) for name in instances])
+        self.assertEqual(image_calls, [pixels])
+        self.assertEqual(head_calls, [("shared-features", list(instances))])
+        self.assertTrue(result["text_cache_hit"])
+        self.assertTrue(result["shared_image_features"])
         self.assertEqual([c["count"] for c in result["categories"]], [2, 1, 0])
         self.assertEqual(
             [b["prompt"] for b in result["boxes"]], ["person", "person", "cup"]
@@ -123,6 +132,49 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(result["boxes"][0]["color"], result["boxes"][1]["color"])
         self.assertNotEqual(result["boxes"][0]["color"], result["boxes"][2]["color"])
         draw.assert_called_once_with(b"original", result["boxes"])
+
+    def test_text_cache_is_owned_bounded_and_reused_across_reordering(self):
+        class Tensor:
+            value = ""
+
+            def clone(self):
+                copy = Tensor()
+                copy.value = self.value
+                return copy
+
+        engine = Sam31Engine.__new__(Sam31Engine)
+        engine.text_cache = {}
+        engine._tokens = lambda prompt: prompt
+        static = Tensor()
+        calls = []
+
+        def text_stage(prompt):
+            calls.append(prompt)
+            static.value = prompt
+            return (static,)
+
+        engine.text_stage = text_stage
+        embeddings = engine._encode_prompts(["person", "cup"])
+        self.assertEqual([e[0].value for e in embeddings], ["person", "cup"])
+        self.assertEqual(calls, ["person", "cup"])
+        engine._encode_prompts(["cup", "person"])
+        self.assertEqual(calls, ["person", "cup"])
+        engine._encode_prompts(["person", "chair"])
+        self.assertEqual(calls, ["person", "cup", "chair"])
+        self.assertEqual(set(engine.text_cache), {"person", "chair"})
+        engine._encode_prompts(["cup"])
+        self.assertEqual(calls, ["person", "cup", "chair", "cup"])
+        self.assertEqual(set(engine.text_cache), {"cup"})
+
+    def test_fixed_batch_shapes_and_single_prompt_tail(self):
+        engine = Sam31Engine.__new__(Sam31Engine)
+        engine.grounding_batch_size = 2
+        self.assertEqual(engine._batch_sizes(1), {1})
+        self.assertEqual(engine._batch_sizes(3), {1, 2})
+        self.assertEqual(engine._batch_sizes(8), {2})
+        engine.grounding_batch_size = 4
+        self.assertEqual(engine._batch_sizes(3), {4})
+        self.assertEqual(engine._batch_sizes(5), {1, 4})
 
     def controller(self):
         worker = Worker({})

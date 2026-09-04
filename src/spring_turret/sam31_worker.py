@@ -24,8 +24,10 @@ from typing import Any
 # This module is also executed as a standalone script in the inference venv.
 if __package__:
     from .prompts import COLORS, normalize_prompts
+    from .sam31_graph import CompiledStage
 else:
     from prompts import COLORS, normalize_prompts
+    from sam31_graph import CompiledStage
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -130,6 +132,80 @@ def _grounding_wrapper(torch: Any, FindStage: Any, Prompt: Any):
             )
 
     return GroundingWrapper
+
+
+def _shared_wrappers(torch: Any, FindStage: Any, Prompt: Any):
+    class ImageEncoder(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.backbone = model.backbone
+
+        def forward(self, pixels):
+            backbone = self.backbone.forward_image(
+                pixels, need_interactive_out=False, need_propagation_out=False
+            )
+            # This detector consumes exactly the final feature level; mask and
+            # tracker branches are disabled. Keep the unfused image features.
+            return (
+                backbone["backbone_fpn"][-1].tensors,
+                backbone["vision_pos_enc"][-1],
+            )
+
+    class TextEncoder(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.language = model.backbone.language_backbone
+
+        def forward(self, token_ids):
+            _, memory = self.language.encoder(token_ids)
+            return (
+                self.language.resizer(memory.transpose(0, 1)),
+                token_ids.eq(0),
+            )
+
+    class GroundingHead(torch.nn.Module):
+        def __init__(self, model):
+            super().__init__()
+            self.model = model
+
+        def forward(self, features, position, text_memory, text_mask):
+            batch = text_mask.shape[0]
+            backbone = {
+                "vision_features": features,
+                "backbone_fpn": [features],
+                "vision_pos_enc": [position],
+                "language_features": text_memory,
+                "language_mask": text_mask,
+            }
+            # Every independent text prompt refers to the same encoded image.
+            find = FindStage(
+                img_ids=torch.zeros(batch, dtype=torch.long, device=features.device),
+                text_ids=torch.arange(batch, device=features.device),
+                input_boxes=None,
+                input_boxes_mask=None,
+                input_boxes_label=None,
+                input_points=None,
+                input_points_mask=None,
+            )
+            geometry = Prompt(
+                box_embeddings=features.new_zeros((0, batch, 4)),
+                box_mask=torch.zeros(
+                    (batch, 0), device=features.device, dtype=torch.bool
+                ),
+            )
+            output = self.model.forward_grounding(
+                backbone_out=backbone,
+                find_input=find,
+                geometric_prompt=geometry,
+                find_target=None,
+            )
+            return (
+                output["pred_logits"],
+                output["pred_boxes"],
+                output["presence_logit_dec"],
+            )
+
+    return ImageEncoder, TextEncoder, GroundingHead
 
 
 def _enable_real_rope(torch: Any, model: Any) -> None:
@@ -321,6 +397,7 @@ class Sam31Engine:
         precision: str,
         confidence: float,
         use_sycl_graph: bool,
+        grounding_batch_size: int = 1,
     ) -> None:
         import torch
         from PIL import Image
@@ -337,11 +414,17 @@ class Sam31Engine:
         self.device = torch.device(f"xpu:{device_index}")
         self.dtype = torch.float16 if precision == "float16" else torch.bfloat16
         self.confidence = confidence
-        self.use_sycl_graph = use_sycl_graph
+        if not use_sycl_graph:
+            raise ValueError("shared-feature inference requires SYCL graphs")
+        if grounding_batch_size not in (1, 2, 4, 8):
+            raise ValueError("grounding batch size must be 1, 2, 4, or 8")
+        self.grounding_batch_size = grounding_batch_size
         self.graph_active = False
         self.graph_error: str | None = None
-        self.compiled: Any | None = None
-        self.inference_callable: Any | None = None
+        self.text_cache: dict[str, Any] = {}
+        self.grounding_stages: dict[int, Any] = {}
+        self.validated_batches: set[int] = set()
+        self.validation: dict[str, Any] = {}
 
         with (
             contextlib.redirect_stdout(sys.stderr),
@@ -386,14 +469,16 @@ class Sam31Engine:
         _move_plain_tensors(torch, model, self.device)
         self.tokenizer = model.backbone.language_backbone.tokenizer
         wrapper_type = _grounding_wrapper(torch, FindStage, Prompt)
+        # Independent full-pass reference used only during correctness checks.
         self.wrapper = wrapper_type(model).to(self.device).eval()
-        self.compiled = torch.compile(
-            self.wrapper,
-            backend="inductor",
-            fullgraph=True,
-            dynamic=False,
-            options={"emulate_precision_casts": True},
+        image_type, text_type, head_type = _shared_wrappers(torch, FindStage, Prompt)
+        self.image_stage = CompiledStage(
+            torch, image_type(model).eval(), "image", self._progress
         )
+        self.text_stage = CompiledStage(
+            torch, text_type(model).eval(), "text", self._progress
+        )
+        self.head = head_type(model).eval()
         self.transform = v2.Compose(
             [
                 v2.ToImage(),
@@ -405,61 +490,80 @@ class Sam31Engine:
         )
 
     def _inputs(self, jpeg: bytes, prompt: str) -> tuple[Any, Any]:
+        return self._pixels(jpeg), self._tokens(prompt)
+
+    def _pixels(self, jpeg: bytes) -> Any:
         image = self.Image.open(io.BytesIO(jpeg)).convert("RGB")
-        pixels = self.transform(image).unsqueeze(0).to(self.device)
-        tokens = self.tokenizer([prompt], context_length=32).to(self.device)
-        return pixels, tokens
+        return self.transform(image).unsqueeze(0).to(self.device)
 
-    def _activate_sycl_graph(self, pixels: Any, tokens: Any) -> None:
-        if self.inference_callable is not None:
-            return
+    def _tokens(self, prompt: str) -> Any:
+        return self.tokenizer([prompt], context_length=32).to(self.device)
+
+    @staticmethod
+    def _progress(stage: str, component: str) -> None:
+        print(f"{stage}: {component}", file=sys.stderr, flush=True)
+        _emit({"type": "progress", "stage": stage, "component": component})
+
+    def _encode_prompts(self, prompts: list[str]) -> list[Any]:
+        # Keep only active categories. Clone graph outputs so encoding another
+        # prompt cannot overwrite a cached embedding through static aliases.
+        self.text_cache = {
+            prompt: self.text_cache[prompt]
+            for prompt in prompts
+            if prompt in self.text_cache
+        }
+        for prompt in prompts:
+            if prompt not in self.text_cache:
+                self.text_cache[prompt] = tuple(
+                    value.clone() for value in self.text_stage(self._tokens(prompt))
+                )
+        return [self.text_cache[prompt] for prompt in prompts]
+
+    def _batch_sizes(self, count: int) -> set[int]:
+        size = self.grounding_batch_size
+        return {
+            1 if min(size, count - start) == 1 else size
+            for start in range(0, count, size)
+        }
+
+    def _run_heads(self, features: Any, embeddings: list[Any]) -> tuple[Any, ...]:
         torch = self.torch
-        print("Validating eager detector", file=sys.stderr, flush=True)
-        _emit({"type": "progress", "stage": "validating"})
-        reference = tuple(value.clone() for value in self.wrapper(pixels, tokens))
-        print("Compiling detector", file=sys.stderr, flush=True)
-        _emit({"type": "progress", "stage": "compiling"})
-        # Warm the exact inference tensors and stream used during capture.
-        # Cloning only after warmup changes Dynamo's inference-tensor guards
-        # and would trigger a forbidden compilation inside graph capture.
-        self.static_pixels = pixels.clone()
-        self.static_tokens = tokens.clone()
-        self.capture_stream = torch.xpu.Stream()
-        torch.xpu.synchronize()
-        with torch.xpu.stream(self.capture_stream):
-            for _ in range(2):
-                compiled_output = self.compiled(self.static_pixels, self.static_tokens)
-        torch.xpu.synchronize()
-        self.validation = validate_detections(
-            torch, reference, compiled_output, self.confidence
-        )
-        print(
-            f"Eager/compiled detection parity: {self.validation}",
-            file=sys.stderr,
-            flush=True,
-        )
-        del reference
-        if not self.use_sycl_graph:
-            self.inference_callable = self.compiled
-            return
-        print("Capturing SYCL graph", file=sys.stderr, flush=True)
-        _emit({"type": "progress", "stage": "capturing"})
-        self.graph = torch.xpu.XPUGraph()
-        with torch.xpu.graph(self.graph, stream=self.capture_stream):
-            self.graph_output = self.compiled(self.static_pixels, self.static_tokens)
-        self.graph.replay()
-        torch.xpu.synchronize()
-        for expected, actual in zip(compiled_output, self.graph_output, strict=True):
-            torch.testing.assert_close(actual, expected, rtol=0.001, atol=0.001)
+        parts: list[Any] = []
+        size = self.grounding_batch_size
+        for start in range(0, len(embeddings), size):
+            group = embeddings[start : start + size]
+            count = len(group)
+            batch = 1 if count == 1 else size
+            group = group + [group[-1]] * (batch - count)
+            memory = torch.cat([value[0] for value in group], dim=1)
+            mask = torch.cat([value[1] for value in group], dim=0)
+            if batch not in self.grounding_stages:
+                self.grounding_stages[batch] = CompiledStage(
+                    torch, self.head, f"grounding-{batch}", self._progress
+                )
+            outputs = self.grounding_stages[batch](*features, memory, mask)
+            # Later chunks reuse the same static graph outputs. Own the useful
+            # slices before replaying, and never publish padded categories.
+            parts.append(tuple(value[:count].clone() for value in outputs))
+        return tuple(torch.cat(values, dim=0) for values in zip(*parts, strict=True))
+
+    def _prepare(self, pixels: Any, prompts: list[str]) -> list[Any]:
+        embeddings = self._encode_prompts(prompts)
+        batches = self._batch_sizes(len(prompts))
+        if not batches <= self.validated_batches:
+            actual = self._run_heads(self.image_stage(pixels), embeddings)
+            self._progress("validating", "shared features versus full passes")
+            for index, prompt in enumerate(prompts):
+                expected = self.wrapper(pixels, self._tokens(prompt))
+                self.validation[prompt] = validate_detections(
+                    self.torch,
+                    expected,
+                    tuple(value[index : index + 1] for value in actual),
+                    self.confidence,
+                )
+            self.validated_batches.update(batches)
         self.graph_active = True
-
-        def replay(new_pixels: Any, new_tokens: Any) -> Any:
-            self.static_pixels.copy_(new_pixels)
-            self.static_tokens.copy_(new_tokens)
-            self.graph.replay()
-            return self.graph_output
-
-        self.inference_callable = replay
+        return embeddings
 
     def detect(self, jpeg: bytes, prompt: str) -> dict[str, Any]:
         return self.detect_many(jpeg, [prompt])
@@ -469,18 +573,29 @@ class Sam31Engine:
         if not prompts:
             raise ValueError("at least one nonempty prompt is required")
         torch = self.torch
-        # One image, one compiled shape, sequential independent text queries.
-        # Copy each result to CPU before graph replay overwrites its outputs.
-        pixels, tokens = self._inputs(jpeg, prompts[0])
+        worker_started = time.perf_counter()
+        pixels = self._pixels(jpeg)
+        torch.xpu.synchronize()
+        preprocess_ms = (time.perf_counter() - worker_started) * 1000
         detections = []
         categories = []
         with torch.inference_mode(), torch.autocast("xpu", dtype=self.dtype):
-            self._activate_sycl_graph(pixels, tokens)
+            cached = all(prompt in self.text_cache for prompt in prompts)
+            text_started = time.perf_counter()
+            embeddings = self._prepare(pixels, prompts)
+            torch.xpu.synchronize()
+            prompt_setup_ms = (time.perf_counter() - text_started) * 1000
             started = time.perf_counter()
-            for index, prompt in enumerate(prompts):
-                if index:
-                    tokens = self.tokenizer([prompt], context_length=32).to(self.device)
-                boxes = self._detect_boxes(pixels, tokens)
+            features = self.image_stage(pixels)
+            torch.xpu.synchronize()
+            image_done = time.perf_counter()
+            outputs = self._run_heads(features, embeddings)
+            torch.xpu.synchronize()
+            grounding_done = time.perf_counter()
+            boxes_by_prompt = self._decode_outputs(outputs)
+            for index, (prompt, boxes) in enumerate(
+                zip(prompts, boxes_by_prompt, strict=True)
+            ):
                 color = COLORS[index]
                 categories.append(
                     {"prompt": prompt, "color": color, "count": len(boxes)}
@@ -501,27 +616,46 @@ class Sam31Engine:
             "sycl_graph": self.graph_active,
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
+            "shared_image_features": True,
+            "text_cache_hit": cached,
+            "grounding_batch_size": self.grounding_batch_size,
+            "timing": {
+                "preprocess_ms": round(preprocess_ms, 2),
+                "prompt_setup_ms": round(prompt_setup_ms, 2),
+                "image_encoder_ms": round((image_done - started) * 1000, 2),
+                "grounding_ms": round((grounding_done - image_done) * 1000, 2),
+                "postprocess_ms": round(
+                    latency_ms - (grounding_done - started) * 1000, 2
+                ),
+            },
         }
+        annotation_started = time.perf_counter()
         result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
+        result["timing"]["annotation_ms"] = round(
+            (time.perf_counter() - annotation_started) * 1000, 2
+        )
+        result["timing"]["worker_total_ms"] = round(
+            (time.perf_counter() - worker_started) * 1000, 2
+        )
         return result
 
-    def _detect_boxes(self, pixels: Any, tokens: Any) -> list[dict[str, Any]]:
+    def _decode_outputs(self, outputs: Any) -> list[list[dict[str, Any]]]:
         torch = self.torch
-        logits, boxes, presence = self.inference_callable(pixels, tokens)
-        probability = (logits.sigmoid() * presence.sigmoid().unsqueeze(1)).squeeze(-1)[
-            0
-        ]
-        keep = probability > self.confidence
-        probability, boxes = probability[keep], boxes[0][keep]
+        logits, boxes, presence = outputs
+        probability = (logits.sigmoid() * presence.sigmoid().unsqueeze(1)).squeeze(-1)
         center, size = boxes[..., :2], boxes[..., 2:]
         xyxy = torch.cat((center - size / 2, center + size / 2), -1).clamp(0, 1)
+        # Tiny fixed-size outputs: transfer once, avoiding variable-size GPU
+        # nonzero/filter synchronizations for every category separately.
+        coordinates = xyxy.float().cpu().tolist()
+        scores = probability.float().cpu().tolist()
         return [
-            {"xyxy": coordinates, "score": round(float(score), 4)}
-            for coordinates, score in zip(
-                xyxy.float().cpu().tolist(),
-                probability.float().cpu().tolist(),
-                strict=True,
-            )
+            [
+                {"xyxy": box, "score": round(float(score), 4)}
+                for box, score in zip(boxes, probabilities, strict=True)
+                if score > self.confidence
+            ]
+            for boxes, probabilities in zip(coordinates, scores, strict=True)
         ]
 
 
