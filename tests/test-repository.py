@@ -12,13 +12,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> None:
     hardware = json.loads((ROOT / "hardware.json").read_text())
-    assert hardware["qualification_status"] == "camera_verified_servo_not_responding"
+    assert hardware["qualification_status"] == (
+        "camera_and_servo_communication_verified_motion_not_verified"
+    )
     assert hardware["camera"]["usb_id"] == "0c45:0261"
     assert hardware["camera"]["serial"] == "UC684"
     assert hardware["camera"]["capture_verified"] is True
     assert hardware["servo_adapter"]["usb_id"] == "1a86:55d3"
     assert hardware["servo_adapter"]["serial"] == "5B61036033"
-    assert hardware["servo"]["response_verified"] is False
+    assert hardware["servo"]["name"] == "ROBOTIS DYNAMIXEL XL330-M288-T"
+    assert hardware["servo"]["model_number"] == 1200
+    assert hardware["servo"]["configured_baudrate"] == 57_600
+    assert hardware["servo"]["response_verified"] is True
+    assert hardware["servo"]["position_read_verified"] is True
     assert hardware["servo"]["motion_verified"] is False
 
     config = json.loads((ROOT / "config/spring-turret-demo.json").read_text())
@@ -27,6 +33,9 @@ def main() -> None:
     assert servo["min_position"] < servo["center_position"] < servo["max_position"]
     assert config["camera"]["device"] == "/dev/spring-turret-camera"
     assert servo["device"] == "/dev/spring-turret-servo"
+    assert servo["protocol"] == "dynamixel-2.0"
+    assert servo["model_number"] == 1200
+    assert servo["baudrate"] == 57_600
 
     assert not (ROOT / "scripts/install.sh").exists()
 
@@ -37,7 +46,12 @@ def main() -> None:
     assert "password" not in html.lower()
     assert "authentication" not in server.lower()
     assert "self.armed = False" in server
-    assert 'write1ByteTxRx(int(self.config["id"]), 40, 0)' in server
+    assert "XL330_TORQUE_ENABLE = 64" in server
+    assert "XL330_GOAL_POSITION = 116" in server
+    assert "XL330_PRESENT_POSITION = 132" in server
+    assert "PacketHandler(XL330_PROTOCOL_VERSION)" in server
+    assert '"dynamixel-2.0"' in server
+    assert "scservo_sdk" not in server
     assert "raise ServoDisarmed" in server
     assert 'Path(__file__).with_name("static")' in server
     assert 'default=Path("/etc/' not in server

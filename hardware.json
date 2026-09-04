@@ -1,5 +1,5 @@
 {
-  "qualification_status": "camera_verified_servo_not_responding",
+  "qualification_status": "camera_and_servo_communication_verified_motion_not_verified",
   "observed_host": "spring-edge-2",
   "camera": {
     "name": "Arducam 1080P Low Light",
@@ -17,15 +17,18 @@
     "enumeration_verified": true
   },
   "servo": {
-    "assumed_protocol": "Feetech STS",
+    "name": "ROBOTIS DYNAMIXEL XL330-M288-T",
+    "protocol": "DYNAMIXEL Protocol 2.0",
+    "model_number": 1200,
+    "observed_firmware": 53,
     "configured_id": 1,
-    "configured_baudrate": 1000000,
-    "response_verified": false,
+    "configured_baudrate": 57600,
+    "response_verified": true,
+    "position_read_verified": true,
     "motion_verified": false
   },
-  "feetech_sdk": {
-    "package": "ftservo-python-sdk",
-    "version": "2.0.0",
-    "wheel_sha256": "c8303df01b2c772f3e1dffbb3b789e2d39545f6fb187ec45032c7737356be2a4"
+  "dynamixel_sdk": {
+    "package": "dynamixel-sdk",
+    "version": "4.0.5"
   }
 }

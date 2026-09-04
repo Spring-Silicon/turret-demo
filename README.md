@@ -8,13 +8,15 @@ Minimal camera feed and servo controls for the Spring Edge turret demonstration.
   30 fps verified on `spring-edge-2`.
 - USB Single Serial adapter (`1a86:55d3`, serial `5B61036033`): enumeration and
   stable device naming verified.
-- Servo: assumed Feetech STS, configured as ID 1 at 1,000,000 baud, but it did
-  not answer a read-only PING. Motion is not qualified.
+- ROBOTIS DYNAMIXEL XL330-M288-T: model 1200, firmware 53, Protocol 2.0, ID 1
+  at 57,600 baud. Read-only PING and position are verified; motion is not yet
+  qualified.
 
 The service starts disarmed, sends no startup movement, rejects positions outside
 1536 through 2560, and rejects every movement until the operator selects **Arm**.
 Communication failure clears the armed state. Service shutdown attempts to turn
-torque off.
+torque off. Arming first writes the current position as the goal, then enables
+torque, preventing an immediate jump on Arm.
 
 ## UI
 

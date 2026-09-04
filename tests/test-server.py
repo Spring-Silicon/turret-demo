@@ -76,10 +76,11 @@ class FakeServo:
         return {
             "online": True,
             "device": "/dev/spring-turret-servo",
-            "protocol": "feetech-sts",
-            "baudrate": 1_000_000,
+            "protocol": "dynamixel-2.0",
+            "baudrate": 57_600,
             "id": 1,
-            "model": 3215,
+            "model": 1200,
+            "model_name": "XL330-M288-T",
             "position": self.position,
             "min_position": 1536,
             "center_position": 2048,
@@ -92,15 +93,19 @@ class FakeServo:
 class FakePacket:
     def __init__(self):
         self.torque_writes = []
-        self.position_writes = []
+        self.four_byte_writes = []
+        self.position = 2048
 
-    def write1ByteTxRx(self, servo_id, address, value):
+    def write1ByteTxRx(self, port, servo_id, address, value):
         self.torque_writes.append((servo_id, address, value))
         return 0, 0
 
-    def WritePosEx(self, servo_id, position, speed, acceleration):
-        self.position_writes.append((servo_id, position, speed, acceleration))
+    def write4ByteTxRx(self, port, servo_id, address, value):
+        self.four_byte_writes.append((servo_id, address, value))
         return 0, 0
+
+    def read4ByteTxRx(self, port, servo_id, address):
+        return self.position, 0, 0
 
 
 class FakePort:
@@ -132,31 +137,46 @@ def main() -> None:
     controller = module.ServoController(
         {
             "device": "/dev/spring-turret-servo",
-            "baudrate": 1_000_000,
+            "protocol": "dynamixel-2.0",
+            "model_number": 1200,
+            "baudrate": 57_600,
             "id": 1,
             "min_position": 1536,
             "center_position": 2048,
             "max_position": 2560,
-            "speed": 500,
-            "acceleration": 50,
+            "profile_velocity": 40,
+            "profile_acceleration": 5,
         }
     )
     packet = FakePacket()
     controller.packet = packet
     controller.port = FakePort()
-    controller.model = 3215
+    controller.model = 1200
     controller.comm_success = 0
     try:
         controller.move(2200)
         raise AssertionError("disarmed position command was accepted")
     except module.ServoDisarmed:
         pass
-    assert packet.position_writes == []
+    assert packet.four_byte_writes == []
     controller.arm()
     controller.move(2200)
     controller.disable()
-    assert packet.torque_writes == [(1, 40, 1), (1, 40, 0)]
-    assert packet.position_writes == [(1, 2200, 500, 50)]
+    assert packet.torque_writes == [(1, 64, 1), (1, 64, 0)]
+    assert packet.four_byte_writes == [
+        (1, 108, 5),
+        (1, 112, 40),
+        (1, 116, 2048),
+        (1, 116, 2200),
+    ]
+
+    packet.position = 100
+    try:
+        controller.arm()
+        raise AssertionError("out-of-range servo position was armed")
+    except module.DeviceUnavailable:
+        pass
+    assert packet.torque_writes == [(1, 64, 1), (1, 64, 0)]
 
     with tempfile.TemporaryDirectory() as directory:
         static = Path(directory)

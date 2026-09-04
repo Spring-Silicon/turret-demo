@@ -21,6 +21,12 @@ LOGGER = logging.getLogger("spring-turret")
 JPEG_START = b"\xff\xd8"
 JPEG_END = b"\xff\xd9"
 MAX_JSON_BYTES = 4096
+XL330_PROTOCOL_VERSION = 2.0
+XL330_TORQUE_ENABLE = 64
+XL330_PROFILE_ACCELERATION = 108
+XL330_PROFILE_VELOCITY = 112
+XL330_GOAL_POSITION = 116
+XL330_PRESENT_POSITION = 132
 
 
 class TurretError(RuntimeError):
@@ -70,18 +76,23 @@ def load_config(path: Path) -> dict[str, Any]:
             raise ValueError(f"camera.{key} must be positive")
     if not Path(servo.get("device", "")).is_absolute():
         raise ValueError("servo.device must be an absolute path")
+    if servo.get("protocol") != "dynamixel-2.0":
+        raise ValueError("servo.protocol must be dynamixel-2.0")
     for key in (
+        "model_number",
         "baudrate",
         "id",
         "min_position",
         "center_position",
         "max_position",
-        "speed",
-        "acceleration",
+        "profile_velocity",
+        "profile_acceleration",
     ):
         servo[key] = int(servo[key])
-    if not 0 <= servo["id"] <= 253:
-        raise ValueError("servo.id must be between 0 and 253")
+    if servo["model_number"] != 1200:
+        raise ValueError("servo.model_number must identify an XL330-M288-T (1200)")
+    if not 0 <= servo["id"] <= 252:
+        raise ValueError("servo.id must be between 0 and 252")
     if not (
         0 <= servo["min_position"]
         < servo["center_position"]
@@ -89,8 +100,12 @@ def load_config(path: Path) -> dict[str, Any]:
         <= 4095
     ):
         raise ValueError("servo positions must satisfy 0 <= min < center < max <= 4095")
-    if servo["baudrate"] <= 0 or servo["speed"] <= 0 or servo["acceleration"] <= 0:
-        raise ValueError("servo baudrate, speed, and acceleration must be positive")
+    if servo["baudrate"] <= 0:
+        raise ValueError("servo.baudrate must be positive")
+    if not 1 <= servo["profile_velocity"] <= 445:
+        raise ValueError("servo.profile_velocity must be between 1 and 445")
+    if not 1 <= servo["profile_acceleration"] <= 32767:
+        raise ValueError("servo.profile_acceleration must be between 1 and 32767")
     return config
 
 
@@ -227,7 +242,7 @@ class CameraStream:
 
 
 class ServoController:
-    """Read and control one bounded Feetech STS servo."""
+    """Read and control one bounded ROBOTIS DYNAMIXEL XL330-M288-T."""
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -251,7 +266,12 @@ class ServoController:
         with self.lock:
             if self.packet is not None:
                 try:
-                    self.packet.write1ByteTxRx(int(self.config["id"]), 40, 0)
+                    self.packet.write1ByteTxRx(
+                        self.port,
+                        int(self.config["id"]),
+                        XL330_TORQUE_ENABLE,
+                        0,
+                    )
                 except Exception:
                     LOGGER.exception("failed to disable servo torque during shutdown")
             self._disconnect_locked()
@@ -275,18 +295,32 @@ class ServoController:
         if not device.exists():
             raise DeviceUnavailable(f"servo device is missing: {device}")
 
-        from scservo_sdk import COMM_SUCCESS, PortHandler, sms_sts
+        from dynamixel_sdk import COMM_SUCCESS, PacketHandler, PortHandler
 
         port = PortHandler(str(device))
         if not port.openPort() or not port.setBaudRate(int(self.config["baudrate"])):
+            port.closePort()
             raise DeviceUnavailable("could not open the configured servo bus")
-        packet = sms_sts(port)
-        model, result, error = packet.ping(int(self.config["id"]))
+        packet = PacketHandler(XL330_PROTOCOL_VERSION)
+        model, result, error = packet.ping(port, int(self.config["id"]))
         if result != COMM_SUCCESS or error:
             port.closePort()
             raise DeviceUnavailable(
                 f"servo ID {self.config['id']} did not answer a read-only PING"
             )
+        if int(model) != int(self.config["model_number"]):
+            port.closePort()
+            raise DeviceUnavailable(
+                f"unexpected DYNAMIXEL model {model}; expected "
+                f"{self.config['model_number']} (XL330-M288-T)"
+            )
+
+        result, error = packet.write1ByteTxRx(
+            port, int(self.config["id"]), XL330_TORQUE_ENABLE, 0
+        )
+        if result != COMM_SUCCESS or error:
+            port.closePort()
+            raise DeviceUnavailable("could not force servo torque off during connect")
         self.port = port
         self.packet = packet
         self.comm_success = COMM_SUCCESS
@@ -300,7 +334,9 @@ class ServoController:
 
     def _poll_locked(self) -> None:
         self._connect_locked()
-        position, result, error = self.packet.ReadPos(int(self.config["id"]))
+        position, result, error = self.packet.read4ByteTxRx(
+            self.port, int(self.config["id"]), XL330_PRESENT_POSITION
+        )
         self._require_result(result, error, "position read")
         self.position = int(position)
         self.error = ""
@@ -318,18 +354,55 @@ class ServoController:
     def arm(self) -> None:
         with self.lock:
             self._connect_locked()
+            servo_id = int(self.config["id"])
+            position, result, error = self.packet.read4ByteTxRx(
+                self.port, servo_id, XL330_PRESENT_POSITION
+            )
+            self._require_result(result, error, "position read before arm")
+            if not (
+                int(self.config["min_position"])
+                <= int(position)
+                <= int(self.config["max_position"])
+            ):
+                raise DeviceUnavailable(
+                    "servo is outside the configured safe position range; "
+                    "reposition it with torque off before arming"
+                )
+
+            for address, value, label in (
+                (
+                    XL330_PROFILE_ACCELERATION,
+                    int(self.config["profile_acceleration"]),
+                    "profile acceleration",
+                ),
+                (
+                    XL330_PROFILE_VELOCITY,
+                    int(self.config["profile_velocity"]),
+                    "profile velocity",
+                ),
+                (XL330_GOAL_POSITION, int(position), "hold position"),
+            ):
+                result, error = self.packet.write4ByteTxRx(
+                    self.port, servo_id, address, value
+                )
+                self._require_result(result, error, label)
+
             result, error = self.packet.write1ByteTxRx(
-                int(self.config["id"]), 40, 1
+                self.port, servo_id, XL330_TORQUE_ENABLE, 1
             )
             self._require_result(result, error, "arm")
             self.armed = True
+            self.position = int(position)
             self.error = ""
 
     def disable(self) -> None:
         with self.lock:
             self._connect_locked()
             result, error = self.packet.write1ByteTxRx(
-                int(self.config["id"]), 40, 0
+                self.port,
+                int(self.config["id"]),
+                XL330_TORQUE_ENABLE,
+                0,
             )
             self._require_result(result, error, "torque disable")
             self.armed = False
@@ -345,11 +418,11 @@ class ServoController:
             self._connect_locked()
             if not self.armed:
                 raise ServoDisarmed("servo is disarmed; use Arm before moving")
-            result, error = self.packet.WritePosEx(
+            result, error = self.packet.write4ByteTxRx(
+                self.port,
                 int(self.config["id"]),
+                XL330_GOAL_POSITION,
                 position,
-                int(self.config["speed"]),
-                int(self.config["acceleration"]),
             )
             self._require_result(result, error, "position command")
             self.position = position
@@ -363,10 +436,11 @@ class ServoController:
             return {
                 "online": self.packet is not None and self.model is not None,
                 "device": self.config["device"],
-                "protocol": "feetech-sts",
+                "protocol": "dynamixel-2.0",
                 "baudrate": int(self.config["baudrate"]),
                 "id": int(self.config["id"]),
                 "model": self.model,
+                "model_name": "XL330-M288-T" if self.model == 1200 else None,
                 "position": self.position,
                 "min_position": int(self.config["min_position"]),
                 "center_position": int(self.config["center_position"]),
