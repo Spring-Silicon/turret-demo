@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from spring_turret.detection import DetectionController, validate_config as validate_inference
+
 
 LOGGER = logging.getLogger("spring-turret")
 JPEG_START = b"\xff\xd8"
@@ -59,8 +61,9 @@ def extract_jpeg_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
 def load_config(path: Path) -> dict[str, Any]:
     config = json.loads(path.read_text(encoding="utf-8"))
     required = {"listen", "camera", "servo"}
-    if set(config) != required:
-        raise ValueError(f"config keys must be exactly {sorted(required)}")
+    if not required <= set(config) or set(config) - required - {"inference"}:
+        raise ValueError(f"config must contain {sorted(required)} and optional inference")
+    validate_inference(config.get("inference", {}))
 
     listen = config["listen"]
     camera = config["camera"]
@@ -457,18 +460,22 @@ class TurretApplication:
         camera: Any | None = None,
         servo: Any | None = None,
         static_dir: Path | None = None,
+        detection: Any | None = None,
     ):
         self.config = config
         self.camera = camera or CameraStream(config["camera"])
         self.servo = servo or ServoController(config["servo"])
         self.static_dir = static_dir or Path(__file__).with_name("static")
+        self.detection = detection or DetectionController(config.get("inference", {}), self.camera)
 
     def start(self) -> None:
         self.camera.start()
         self.servo.start()
+        self.detection.start()
 
     def stop(self) -> None:
         self.servo.stop()
+        self.detection.stop()
         self.camera.stop()
 
     def status(self) -> dict[str, Any]:
@@ -476,6 +483,7 @@ class TurretApplication:
             "profile": "turret-demo",
             "camera": self.camera.status(),
             "servo": self.servo.status(),
+            "detection": self.detection.status(),
         }
 
 def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]:
@@ -530,6 +538,18 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                 self._json(HTTPStatus.OK, application.status())
             elif path == "/stream.mjpg":
                 self._stream()
+            elif path.startswith("/api/detection/frame/") and path.endswith(".jpg"):
+                key = path.removeprefix("/api/detection/frame/").removesuffix(".jpg")
+                frame = application.detection.frame(key)
+                if frame is None:
+                    self.send_error(HTTPStatus.NOT_FOUND)
+                    return
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(frame)))
+                self._security_headers()
+                self.end_headers()
+                self.wfile.write(frame)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -570,7 +590,12 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
             try:
-                if path == "/api/servo/arm":
+                if path == "/api/detection/prompt":
+                    body = self._request_json()
+                    if set(body) != {"prompt"}:
+                        raise ValueError("body must contain only prompt")
+                    application.detection.set_prompt(body["prompt"])
+                elif path == "/api/servo/arm":
                     application.servo.arm()
                 elif path == "/api/servo/disable":
                     application.servo.disable()

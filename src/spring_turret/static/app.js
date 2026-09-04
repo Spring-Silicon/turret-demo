@@ -10,6 +10,40 @@ const centerButton = document.getElementById("center-button");
 const jogButtons = [...document.querySelectorAll("[data-step]")];
 let status = null;
 let sending = false;
+let detectionSending = false;
+let feedSource = "";
+let displayedDetection = null;
+let polling = false;
+const promptInput = document.getElementById("detection-prompt");
+const detectionMessage = document.getElementById("detection-status");
+
+function renderDetection(detection) {
+  if (displayedDetection && detection &&
+      (detection.revision < displayedDetection.revision ||
+       (detection.revision === displayedDetection.revision && detection.state === "running" &&
+        detection.frame_sequence < displayedDetection.frame_sequence))) return;
+  if (!displayedDetection && detection?.prompt && document.activeElement !== promptInput) {
+    promptInput.value = detection.prompt;
+  }
+  displayedDetection = detection;
+  promptInput.disabled = !detection?.enabled;
+  document.getElementById("detect-button").disabled = !detection?.enabled || detectionSending;
+  document.getElementById("clear-detection").disabled = !detection?.enabled || detectionSending;
+  const labels = { disabled: "SAM not configured", idle: "SAM 3.1", loading: "Loading SAM 3.1…",
+    compiling: "Compiling SAM 3.1…", validating: "Validating detector…", capturing: "Capturing SYCL graph…",
+    waiting_for_camera: "Waiting for camera…" };
+  const fresh = detection?.state === "running" &&
+    detection.frame_age_ms < Math.max(5000, 2 * detection.latency_ms + 1000);
+  detectionMessage.textContent = detection?.error || (fresh
+    ? `${detection.boxes.length} boxes · ${detection.latency_ms} ms · torch.compile + SYCL graphs`
+    : labels[detection?.state] || "Waiting for detection…");
+  detectionMessage.classList.toggle("error", Boolean(detection?.error));
+  const source = fresh ? detection.frame_url : "/stream.mjpg";
+  if (source !== feedSource) {
+    feedSource = source;
+    document.getElementById("camera-feed").src = source;
+  }
+}
 
 function showPosition(position, servo) {
   const bounded = Math.max(servo.min_position, Math.min(servo.max_position, position));
@@ -33,6 +67,7 @@ function showMessage(text, error = false) {
 
 function render(next) {
   status = next;
+  renderDetection(next.detection);
   const { camera, servo } = next;
   showDevice("camera-status", "Camera", camera.online);
   showDevice("servo-status", "Servo", servo.online);
@@ -97,6 +132,7 @@ centerButton.addEventListener("click", () => action("/api/servo/center"));
 document.addEventListener("keydown", (event) => {
   if (!status || sending) return;
   if (event.key === "Escape") action("/api/servo/disable");
+  if (event.target.matches("input, textarea, button") || event.target.isContentEditable) return;
   if (event.key === " " && status.servo.armed) {
     event.preventDefault();
     action("/api/servo/center");
@@ -106,17 +142,35 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function poll() {
+  if (polling) return;
+  polling = true;
   try {
     await request("/api/status");
   } catch (error) {
     showMessage(error.message, true);
+  } finally {
+    polling = false;
   }
 }
 
-window.addEventListener("load", () => {
-  window.setTimeout(() => {
-    document.getElementById("camera-feed").src = "/stream.mjpg";
-  }, 0);
+async function setPrompt(prompt) {
+  detectionSending = true;
+  try {
+    await request("/api/detection/prompt", { method: "POST", body: JSON.stringify({ prompt }) });
+  } catch (error) {
+    detectionMessage.textContent = error.message;
+    detectionMessage.classList.add("error");
+  } finally {
+    detectionSending = false;
+  }
+}
+document.getElementById("detection-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  setPrompt(promptInput.value.trim());
+});
+document.getElementById("clear-detection").addEventListener("click", () => {
+  promptInput.value = "";
+  setPrompt("");
 });
 poll();
-setInterval(poll, 1000);
+setInterval(poll, 200);

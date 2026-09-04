@@ -1,6 +1,6 @@
 # Spring turret demo
 
-Minimal camera feed and servo controls for the Spring Edge turret demonstration.
+Camera feed, text-prompt SAM 3.1 bounding boxes, and manual servo controls.
 
 ## Current hardware status
 
@@ -21,7 +21,9 @@ torque, preventing an immediate jump on Arm.
 ## UI
 
 Open `http://HOST:8080/`. The UI contains only the live feed, camera/servo state,
-position, bounded jog controls, Arm, Stop, and the current hardware error.
+position, bounded jog controls, Arm, Stop, and the current hardware error. Enter
+an object name in **Object to find** and select **Detect**. **Clear** returns to
+the raw camera feed. Detection never arms, aims, or moves the servo.
 
 There is no password or application-level access control. Run it only on an
 isolated demo LAN. The software Stop is not an emergency stop; keep a physical
@@ -45,6 +47,68 @@ must already exist and be accessible to the process. Check the live state:
 curl http://127.0.0.1:8080/api/status
 ```
 
+## SAM 3.1 on Intel Arc
+
+Inference is optional. Existing camera/servo configurations continue working
+without PyTorch. Use a separate Linux x86_64 / Python 3.12 environment:
+
+```bash
+uv venv --python /usr/bin/python3 /var/lib/spring-data/turret-inference/venv
+uv pip sync --python /var/lib/spring-data/turret-inference/venv/bin/python \
+  --extra-index-url https://download.pytorch.org/whl/xpu \
+  --index-strategy unsafe-best-match requirements-sam31.txt
+```
+
+Put your authorized Meta SAM 3.1 multiplex checkpoint at the path in
+[`config/inference.example.json`](config/inference.example.json), then add that
+object as the `inference` key in the service's JSON config. The checkpoint is
+not included in this repository. The tested checkpoint SHA256 is
+`0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6`.
+
+The host needs both Intel Level Zero and **GPU OpenCL** drivers. On the tested
+Ubuntu 24.04 host, `libze-intel-gpu1` and `intel-opencl-icd` are both
+`26.31.39395.13-1~24.04~ppa1`. `clinfo -l` must list the Arc GPU. Having an XPU
+device alone is insufficient: oneDNN attention also needs OpenCL.
+Install `python3-dev` and `build-essential` for Triton's native compilation helper.
+
+OS/service integration remains in `edge-image`, not this repository. Its service
+user needs `render` in addition to the existing video/serial groups, read access
+to the model/environment, and write access to `inference.cache_dir`. A hardened
+systemd service must allow JIT executable memory (`MemoryDenyWriteExecute=false`)
+and the cache path (`ReadWritePaths=...`) while keeping the other restrictions.
+
+Implementation:
+
+- The exact SAM **3.1 detector** is loaded strictly from `detector.*` weights.
+  The tracker, interactive branch, and mask output are unused; this is text
+  grounding on sampled frames, not persistent video tracking.
+- Fixed 1008x1008 inputs and 32-token prompts run through full-graph
+  `torch.compile(backend="inductor")` on XPU, then `torch.xpu.XPUGraph` capture
+  and replay (SYCL graphs). This does not use the separate Spring Graphs runtime.
+- First use validates eager versus compiled outputs and graph replay, and can
+  take several minutes. The UI reports loading/compiling/capture separately.
+  Errors are visible; there is no silent eager or CPU fallback.
+  Eager/compiled validation bounds confidence differences to 0.03 for candidates
+  within 0.03 of the threshold or above it, and retained XYXY coordinate
+  differences to 0.01 (normalized). Rejected low-confidence queries are checked
+  for finite values but not numerical parity. Decisions right at the threshold
+  can differ with mixed precision. Graph replay is additionally compared to
+  uncaptured compiled raw outputs at `atol=rtol=0.001`.
+- The inference subprocess consumes only the latest available camera frame;
+  there is no frame backlog. Boxes are drawn into their exact source JPEG. A
+  prompt change/clear invalidates prior results immediately. Stale output is
+  replaced by the raw feed. **Clear** stops new inference; the model remains
+  loaded for the next prompt. An in-flight compilation/inference may finish.
+- Confidence is `sigmoid(class logit) * sigmoid(presence logit)`, threshold 0.5
+  by default. Boxes are normalized XYXY coordinates in `/api/status`.
+
+Opt-in GPU validation (never controls the servo):
+
+```bash
+/var/lib/spring-data/turret-inference/venv/bin/python tests/smoke-sam31.py \
+  --checkpoint /var/lib/spring-data/turret-inference/sam3.1_multiplex.pt
+```
+
 ## API
 
 - `GET /stream.mjpg`
@@ -53,6 +117,9 @@ curl http://127.0.0.1:8080/api/status
 - `POST /api/servo/disable`
 - `POST /api/servo/center`
 - `POST /api/servo/position` with `{"position": INTEGER}`
+- `POST /api/detection/prompt` with `{"prompt": "chair"}`; empty text clears
+- `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL
+  returned in `status.detection.frame_url`; old revisions return 404)
 
 ## Validate
 

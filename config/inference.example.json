@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "python": "/var/lib/spring-data/turret-inference/venv/bin/python",
+  "checkpoint": "/var/lib/spring-data/turret-inference/sam3.1_multiplex.pt",
+  "cache_dir": "/var/lib/spring-data/turret-inference/cache",
+  "device": 0,
+  "precision": "float16",
+  "confidence": 0.5,
+  "max_fps": 5
+}

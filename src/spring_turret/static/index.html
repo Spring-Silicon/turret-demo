@@ -16,10 +16,17 @@
     </header>
 
     <main>
-      <section class="feed" aria-label="Live camera">
-        <img id="camera-feed" alt="Live turret camera feed">
-        <span class="crosshair" aria-hidden="true"></span>
-        <p id="camera-offline" hidden>Camera unavailable</p>
+      <section class="vision" aria-label="Camera and detection">
+        <form id="detection-form">
+          <input id="detection-prompt" type="text" maxlength="256" placeholder="Object to find" aria-label="Object to find" autocomplete="off" disabled>
+          <button id="detect-button" type="submit" disabled>Detect</button>
+          <button id="clear-detection" type="button" disabled>Clear</button>
+        </form>
+        <p id="detection-status" role="status">SAM: checking</p>
+        <div class="feed" aria-label="Live camera">
+          <img id="camera-feed" alt="Live turret camera feed">
+          <p id="camera-offline" hidden>Camera unavailable</p>
+        </div>
       </section>
 
       <section class="controls" aria-label="Servo controls">

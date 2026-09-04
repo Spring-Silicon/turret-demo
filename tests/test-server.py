@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import json
+import sys
 import tempfile
 import threading
 from http.client import HTTPConnection
@@ -15,6 +16,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SERVER_PATH = REPO_ROOT / "src/spring_turret/server.py"
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
 
 def load_server():
