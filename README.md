@@ -55,9 +55,11 @@ the frame center (distance in image pixels, not apparent object size or depth).
 A dashed white box previews that instance and the center marker shows the framing
 goal. In class mode the nearest instance is reconsidered on each fresh frame.
 
-**Click a bounding box** to select that particular instance instead, including
-another instance of the same class. The white dashed outline follows the selected
-instance, not whichever matching object is closest to center. The boxes also
+**Click a bounding box** to temporarily retarget to that object, including another
+instance of the same class. The white dashed outline follows the clicked object
+while centering it. Once centered, the original nearest-to-center class tracker
+continues automatically. This is an additional retarget control, not a persistent
+instance-lock mode. The boxes also
 support keyboard focus and Enter/Space. Overlapping boxes prioritize the smaller
 box. Click the class icon to return to nearest-of-class mode, or click another box
 to switch objects. Selection never starts stopped motors.
@@ -65,10 +67,11 @@ to switch objects. Selection never starts stopped motors.
 Instance IDs use conservative class/position/size matching between SAM detections,
 with camera-motion compensation from the encoder/frame pairs. This is not SAM
 video tracking or appearance-based re-identification: occlusion, fast movement or
-crossing similar objects can lose the association. Missing/ambiguous instances
-hold position; there is no nearest-class fallback. A spatially matching instance
-can return within 750 ms; after expiry, click again. Updating prompts clears an
-instance selection. The server validates a click against the exact displayed
+crossing similar objects can lose the association. If the clicked ID disappears,
+the original nearest-of-class tracker takes over immediately. With no matching
+detections it holds, then reacquires automatically when that class returns; it
+does not remain stuck on an expired ID. Updating prompts clears a pending
+retarget. The server validates a click against the exact displayed
 JPEG's cached detections and rejects stale frames or fabricated object IDs.
 
 Selecting a class never starts stopped motors. Stop/Escape still releases both
@@ -283,7 +286,7 @@ preprocessing and annotation was about 188 ms, versus the old implementation's
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` at least once a second while running
 - `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
-- `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` selects a box from the displayed frame without arming.
+- `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` temporarily retargets to a box from the displayed frame without arming.
 - `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
   `{"target": null}` to clear it. Selection is not persisted across restarts.
 - `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears

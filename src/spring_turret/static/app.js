@@ -173,7 +173,7 @@ function renderTracking() {
   const labels = { stopped: "press Start", waiting: "waiting for fresh detections", lost: "not found",
     centered: "centered", tracking: "tracking", limited: "angle limit", uncalibrated: "camera directions not calibrated" };
   element.hidden = !target && !tracking?.error;
-  element.textContent = tracking?.error || (target ? `${target}${tracking.instance_id != null ? " · selected object" : ""} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
+  element.textContent = tracking?.error || (target ? `${target}${tracking.instance_id != null ? " · retargeting" : ""} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
   element.classList.toggle("error", Boolean(tracking?.error));
   document.getElementById("frame-center").toggleAttribute("hidden", !target);
   const detection = frameDetection;

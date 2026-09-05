@@ -229,11 +229,44 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.tracker.box, right)
         self.assertGreater(self.servo.calls[-1]["x"], 0)
         self.frame([left])
-        self.assertEqual(self.tracker.state, "lost")
-        self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
-        self.assertEqual(self.tracker.instance_id, 20)
+        self.assertEqual(self.tracker.state, "tracking")
+        self.assertEqual(self.tracker.box, left)
+        self.assertLess(self.servo.calls[-1]["x"], 0)
+        self.assertIsNone(self.tracker.instance_id)
         self.frame([right, left])
         self.assertEqual(self.tracker.box, right)
+
+    def test_click_retargets_until_centered_then_resumes_original_nearest_tracking(self):
+        selected = {**box(cx=.3), "instance_id": 10}
+        self.frame([selected])
+        self.tracker.set_instance(1, self.detection.data["frame_sequence"], 10)
+        self.tracker.arm()
+        self.frame([selected, {**box(cx=.55), "instance_id": 20}])
+        self.assertEqual(self.tracker.box, selected)
+        self.assertEqual(self.tracker.status()["selection"], "retarget")
+        centered = {**box(cx=.5), "instance_id": 10}
+        self.frame([centered])
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.tracker.target, "cup")
+        self.assertEqual(self.tracker.status()["selection"], "class")
+        other = {**box(cx=.52), "instance_id": 20}
+        self.frame([{**selected, "xyxy": [.75, .45, .85, .55]}, other])
+        self.assertEqual(self.tracker.box, other)
+
+    def test_lost_clicked_id_does_not_block_reacquiring_a_new_instance(self):
+        selected = {**box(cx=.3), "instance_id": 10}
+        self.frame([selected])
+        self.tracker.set_instance(1, self.detection.data["frame_sequence"], 10)
+        self.tracker.arm()
+        self.frame([selected])
+        self.frame([])
+        self.assertEqual(self.tracker.state, "lost")
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
+        self.frame([{**box(cx=.6), "instance_id": 999}])
+        self.assertEqual(self.tracker.state, "tracking")
+        self.assertEqual(self.tracker.box["instance_id"], 999)
+        self.assertTrue(self.servo.armed)
 
     def test_class_selection_manual_and_prompt_change_clear_instance_mode(self):
         selected = {**box(cx=.3), "instance_id": 10}

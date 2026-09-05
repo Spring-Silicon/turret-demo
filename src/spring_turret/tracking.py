@@ -171,7 +171,7 @@ class TrackingController:
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {"target": self.target, "instance_id": self.instance_id,
-                    "selection": "instance" if self.instance_id is not None else "class",
+                    "selection": "retarget" if self.instance_id is not None else "class",
                     "state": self.state, "error": self.error,
                     "box": self.box, "frame": list(self.frame) if self.frame else None,
                     "error_pixels": self.error_pixels, "mode": "absolute-angle",
@@ -212,7 +212,14 @@ class TrackingController:
                 return
             boxes = detection.get("boxes", [])
             if self.instance_id is not None:
-                boxes = [box for box in boxes if box.get("instance_id") == self.instance_id]
+                selected = [box for box in boxes if box.get("instance_id") == self.instance_id]
+                if selected:
+                    boxes = selected
+                else:
+                    # Clicking is a temporary preference, not a persistent ID
+                    # lock. If the association disappears, resume the original
+                    # nearest-of-class behavior on this same fresh frame.
+                    self.instance_id = None
             box = nearest_box(boxes, self.target, camera["width"], camera["height"])
             if box is None:
                 self._pause("lost")
@@ -251,6 +258,10 @@ class TrackingController:
             self.moving = True
             self.state = ("limited" if result["limited"] else
                           "centered" if all(abs(e) <= self.config["deadband"] for e in errors.values()) else "tracking")
+            if self.state == "centered":
+                # Once the clicked object is centered, the ordinary tracker
+                # takes over; no ID continuity is required to keep following.
+                self.instance_id = None
             self.box, self.frame = box, frame
             self.error_pixels = [round(errors["x"] * camera["width"], 1), round(errors["y"] * camera["height"], 1)]
             self.error = None
