@@ -17,6 +17,13 @@ class Element {
   }
   addEventListener(name, action) { this.events[name] = action; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  hasAttribute(name) { return Object.hasOwn(this.attributes, name); }
+  toggleAttribute(name, force) {
+    const present = force ?? !this.hasAttribute(name);
+    if (present) this.attributes[name] = "";
+    else delete this.attributes[name];
+    return present;
+  }
   append(child) { child.parent = this; this.children.push(child); }
   replaceChildren() { this.children = []; }
   focus() {}
@@ -39,6 +46,8 @@ const get = (id) => {
   return elements.get(id);
 };
 get("prompt-row-template").content = { firstElementChild: new Element() };
+// Match the SVG markup: .hidden is not reflected on SVGElement, unlike HTML.
+get("stop-icon").setAttribute("hidden", "");
 const context = vm.createContext({
   document: { getElementById: get, querySelectorAll: () => [], addEventListener() {} },
   fetch: () => new Promise(() => {}),
@@ -90,12 +99,15 @@ run(`status.servo = {online: true, ready: true, armed: false, axes: {
 assert.equal(get("x-slider").disabled, true);
 assert.equal(get("motor-toggle").attributes["aria-label"], "Start motors");
 assert.equal(get("motor-toggle").disabled, false);
+assert.equal(get("start-icon").hasAttribute("hidden"), false);
+assert.equal(get("stop-icon").hasAttribute("hidden"), true);
 assert.equal(get("x-degrees").textContent, "2.0°");
 assert.equal(get("y-slider").min, -30);
 run('status.servo.armed = true; status.servo.axes.x.torque = true; status.servo.axes.y.torque = true; renderMotors();');
 assert.equal(get("x-slider").disabled, false);
 assert.equal(get("motor-toggle").attributes["aria-label"], "Stop motors");
-assert.equal(get("stop-icon").hidden, false);
+assert.equal(get("start-icon").hasAttribute("hidden"), true);
+assert.equal(get("stop-icon").hasAttribute("hidden"), false);
 get("x-slider").value = 12.5;
 get("x-slider").events.input();
 assert.equal(get("x-degrees").textContent, "12.5°");
@@ -111,4 +123,8 @@ run('status.servo.online = false; status.servo.armed = false; status.servo.axes.
 assert.equal(get("motor-toggle").attributes["aria-label"], "Stop motors");
 assert.equal(get("motor-toggle").disabled, false); // Unknown torque must not hide Stop.
 assert.equal(get("x-slider").disabled, true);
+run('status.servo.online = true; status.servo.axes.x.torque = false; status.servo.axes.y.torque = false; renderMotors();');
+assert.equal(get("motor-toggle").attributes["aria-label"], "Start motors");
+assert.equal(get("start-icon").hasAttribute("hidden"), false);
+assert.equal(get("stop-icon").hasAttribute("hidden"), true);
 console.log("validated dual degree sliders, pending edits and start/stop states");

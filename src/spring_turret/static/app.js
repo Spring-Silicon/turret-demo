@@ -135,8 +135,9 @@ function renderMotors() {
   motorToggle.setAttribute("aria-label", stop ? "Stop motors" : "Start motors");
   motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors";
   motorToggle.classList.toggle("stopping", stop);
-  document.getElementById("start-icon").hidden = stop;
-  document.getElementById("stop-icon").hidden = !stop;
+  // SVGElement does not reflect a .hidden property into the HTML attribute.
+  document.getElementById("start-icon").toggleAttribute("hidden", stop);
+  document.getElementById("stop-icon").toggleAttribute("hidden", !stop);
 }
 
 function showDevice(id, name, online) {
