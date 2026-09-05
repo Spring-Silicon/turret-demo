@@ -53,6 +53,15 @@ commands motion. If an axis is outside its new range, Start stays unavailable
 until it is repositioned with torque off. The calibrated zero remains unchanged
 even when zero is outside the allowed range (as it is for Y).
 
+While running, feedback outside these software limits no longer stops the
+motors. The affected axis is commanded back to the nearest limit, with torque
+remaining on. Recovery happens once per excursion so it does not repeatedly
+reset the motion profile or overwrite a subsequent valid slider command. Both
+axes' communication, hardware-fault and torque checks, and the browser control
+timeout, must still pass before any correction. Stop and those fault shutdowns
+are unchanged; recovery never starts a stopped motor. These are corrective
+software limits, not a guarantee against physical overshoot.
+
 Both axes now use `profile_velocity: 0` and `profile_acceleration: 0`.
 In the required velocity-based drive mode, these are the XL330's documented
 [uncapped profile values](https://emanual.robotis.com/docs/en/dxl/x/xl330-m288/#profile-velocity112),
@@ -235,8 +244,10 @@ encoder rollover. A bounded tilt can therefore cross 4095/0. The controller
 holds a continuous local coordinate while armed and chooses the nearest
 equivalent zero after power cycling/reconnecting; it never commands a full turn
 to recover zero. Signed positions are supported. Extended mode ignores the
-servo's EEPROM min/max position limits, so the service enforces both commanded
-and measured limits. Do not turn the assembled mount through full revolutions.
+servo's EEPROM min/max position limits, so the service rejects out-of-range
+commands and corrects out-of-range feedback while running. Invalid readings
+outside the actuator's extended-position range still stop both axes. Do not
+turn the assembled mount through full revolutions.
 
 The service does not rewrite EEPROM on startup. It rejects incompatible modes
 instead of silently changing the coordinate system. The configuration format

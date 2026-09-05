@@ -159,6 +159,126 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(servo.to_position(axis, 45), 1536)
         self.assertEqual(servo.to_degrees(axis, 1536), 45)
 
+    def test_outside_feedback_returns_both_axes_without_stopping(self):
+        self.controller.arm()
+        lease = self.controller.last_keepalive
+        for positions, targets in (((2600, 1500), (2560, 1536)),
+                                   ((1500, 2600), (1536, 2560))):
+            with self.subTest(positions=positions):
+                self.packet.writes.clear()
+                for sid, position in zip((2, 1), positions):
+                    self.packet.registers[sid][132] = position
+                self.controller._tick_locked()
+                self.assertEqual(self.packet.writes, [(2, 116, targets[0]), (1, 116, targets[1])])
+                state = self.controller.status()
+                self.assertTrue(state["armed"])
+                self.assertTrue(state["ready"])
+                self.assertIsNone(state["error"])
+                self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [1, 1])
+                # Recovery is not a browser heartbeat and cannot renew the lease.
+                self.assertEqual(self.controller.last_keepalive, lease)
+                self.packet.writes.clear()
+                self.controller._tick_locked()
+                self.assertEqual(self.packet.writes, [])
+
+    def test_recovery_preserves_new_inward_commands_until_next_excursion(self):
+        self.controller.arm()
+        self.packet.registers[2][132] = 2600
+        self.controller._tick_locked()
+        self.assertEqual(self.packet.registers[2][116], 2560)
+        self.controller.move("x", 0)
+        self.packet.writes.clear()
+        self.controller._tick_locked()
+        self.assertEqual(self.packet.writes, [])
+        self.assertEqual(self.packet.registers[2][116], 2048)
+        # Once feedback has returned inside, a new excursion gets corrected.
+        self.packet.registers[2][132] = 2560
+        self.controller._tick_locked()
+        self.packet.registers[2][132] = 2561
+        self.controller._tick_locked()
+        self.assertEqual(self.packet.writes, [(2, 116, 2560)])
+        # Already heading to the limit: do not rewrite/reset that goal.
+        self.packet.registers[2][132] = 2560
+        self.controller._tick_locked()
+        self.packet.registers[2][132] = 2600
+        self.packet.writes.clear()
+        self.controller._tick_locked()
+        self.assertEqual(self.packet.writes, [])
+
+    def test_recovery_respects_asymmetric_reversed_and_rollover_coordinates(self):
+        axes = self.config["servo"]["axes"]
+        axes["x"].update(center_position=2031, min_degrees=-90, max_degrees=90)
+        axes["y"].update(center_position=4065, min_degrees=30, max_degrees=90)
+        self.packet.registers[2][132] = 2031
+        for direction, turn_offset in ((1, 0), (1, -4096), (-1, 0), (-1, -4096)):
+            with self.subTest(direction=direction, turn_offset=turn_offset):
+                axes["y"]["direction"] = direction
+                axis = {**axes["y"], "center_position": 4065 + turn_offset}
+                self.packet.registers[1][132] = servo.to_position(axis, 45) & 0xFFFFFFFF
+                self.controller.arm()
+                for measured, target in ((29, 30), (91, 90)):
+                    self.packet.registers[1][132] = servo.to_position(axis, measured) & 0xFFFFFFFF
+                    self.packet.writes.clear()
+                    self.controller._tick_locked()
+                    goal = servo.to_position(axis, target)
+                    self.assertEqual(self.packet.writes, [(1, 116, goal)])
+                    self.assertEqual(self.controller.axes["y"]["origin"], axis["center_position"])
+                    self.assertAlmostEqual(self.controller.status()["axes"]["y"]["goal_degrees"], target, delta=.05)
+                    self.assertTrue(self.controller.armed)
+                self.controller.disable()
+
+    def test_stopped_feedback_never_causes_recovery_or_auto_arm(self):
+        self.controller.arm()
+        self.packet.registers[2][132] = 2600
+        self.controller._tick_locked()
+        self.controller.disable()
+        self.packet.writes.clear()
+        self.controller._tick_locked()
+        self.assertEqual(self.packet.writes, [])
+        self.assertFalse(self.controller.armed)
+        self.assertFalse(self.controller.status()["ready"])
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+        self.assertFalse(any(addr == 116 or (addr == 64 and value == 1)
+                             for _, addr, value in self.packet.writes))
+        # Stop/re-arm resets the excursion tracker, even at the same boundary.
+        self.packet.registers[2][132] = 2048
+        self.controller.arm()
+        self.packet.registers[2][132] = 2600
+        self.packet.writes.clear()
+        self.controller._tick_locked()
+        self.assertEqual(self.packet.writes, [(2, 116, 2560)])
+
+    def test_all_fault_checks_precede_recovery_writes(self):
+        for fault in ("hardware", "torque", "communication", "lease", "position_high", "position_low"):
+            with self.subTest(fault=fault):
+                self.packet.registers[2][132] = 2048
+                self.packet.registers[1][132] = 2048
+                self.controller.arm()
+                self.packet.registers[2][132] = 2600
+                if fault == "hardware": self.packet.registers[1][70] = 4
+                if fault == "torque": self.packet.registers[1][64] = 0
+                if fault == "communication": self.packet.fail = ("read", 1, 132)
+                if fault == "lease": self.controller.last_keepalive = time.monotonic() - 4
+                if fault == "position_high": self.packet.registers[1][132] = 1048576
+                if fault == "position_low": self.packet.registers[1][132] = -1048576 & 0xFFFFFFFF
+                self.packet.writes.clear()
+                with self.assertRaises(servo.DeviceUnavailable): self.controller.move("x", 0)
+                self.assertFalse(any(addr == 116 for _, addr, _ in self.packet.writes))
+                self.assertFalse(self.controller.armed)
+                self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+                self.packet.fail = None
+                self.packet.registers[1][70] = 0
+
+    def test_recovery_write_failure_stops_both(self):
+        self.controller.arm()
+        self.packet.registers[2][132] = 2600
+        self.packet.fail = ("write", 2, 116, 2560)
+        self.packet.writes.clear()
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.move("y", 10)
+        self.assertEqual(self.packet.writes, [(2, 116, 2560), (2, 64, 0), (1, 64, 0)])
+        self.assertFalse(self.controller.armed)
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
     def test_uncapped_profiles_are_written_before_torque_on(self):
         for axis in self.config["servo"]["axes"].values():
             axis.update(profile_velocity=0, profile_acceleration=0)

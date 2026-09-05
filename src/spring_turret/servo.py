@@ -95,6 +95,7 @@ class ServoController:
         self.comm_success = 0
         self.axes = {name: {"online": False, "model": None, "position": None,
                             "goal": None, "torque": None, "origin": None} for name in ("x", "y")}
+        self._recovery_boundary: dict[str, int | None] = {name: None for name in self.axes}
         self.armed = False
         self.last_keepalive = 0.0
         self.error = "Checking X/Y servos…"
@@ -150,6 +151,7 @@ class ServoController:
         self.armed = False
         errors = []
         for name, state in self.axes.items():
+            self._recovery_boundary[name] = None
             try:
                 self._open_locked()
                 self._ping(name)  # Never write this table to a different model.
@@ -189,10 +191,10 @@ class ServoController:
         for name, state in self.axes.items():
             position = self._read(name, XL330_PRESENT_POSITION, 4)
             state["position"] = position if position < 2**31 else position - 2**32
+            if not -1048575 <= state["position"] <= 1048575:
+                raise DeviceUnavailable(f"{name.upper()}: invalid extended-position reading")
             if not self.armed:
                 state["origin"] = nearest_center(self.config["axes"][name], state["position"])
-            elif not self._within_limits(name, state["position"], tolerance=3):
-                raise DeviceUnavailable(f"{name.upper()}: measured position outside calibrated limits")
             state["torque"] = bool(self._read(name, XL330_TORQUE_ENABLE, 1))
             if self._read(name, 70, 1):
                 raise DeviceUnavailable(f"{name.upper()}: servo hardware fault")
@@ -203,15 +205,38 @@ class ServoController:
     def _axis_config(self, name: str) -> dict:
         return {**self.config["axes"][name], "center_position": self.axes[name]["origin"]}
 
-    def _within_limits(self, name: str, position: int, tolerance: int = 0) -> bool:
+    def _position_limits(self, name: str) -> tuple[int, int]:
         axis = self._axis_config(name)
         low, high = sorted(to_position(axis, deg) for deg in (axis["min_degrees"], axis["max_degrees"]))
-        return low - tolerance <= position <= high + tolerance and -1048575 <= position <= 1048575
+        return low, high
+
+    def _within_limits(self, name: str, position: int) -> bool:
+        low, high = self._position_limits(name)
+        return low <= position <= high and -1048575 <= position <= 1048575
+
+    def _recover_limits_locked(self) -> None:
+        if not self.armed:
+            return
+        for name, state in self.axes.items():
+            low, high = self._position_limits(name)
+            boundary = min(high, max(low, state["position"]))
+            if boundary == state["position"]:
+                self._recovery_boundary[name] = None
+                continue
+            # Correct once per excursion, not once per poll. A subsequent valid
+            # slider command can move farther inward without being overwritten.
+            if self._recovery_boundary[name] != boundary:
+                if state["goal"] != boundary:
+                    self._write(name, XL330_GOAL_POSITION, 4, boundary)
+                    state["goal"] = boundary
+                self._recovery_boundary[name] = boundary
 
     def _tick_locked(self) -> None:
         self._poll_locked()
         if self.armed and time.monotonic() - self.last_keepalive > CONTROL_TIMEOUT:
             raise DeviceUnavailable("Controls disconnected; motors stopped")
+        # Validate BOTH axes and the control lease before any corrective motion.
+        self._recover_limits_locked()
 
     def _monitor(self) -> None:
         while not self.stop_event.is_set():
@@ -305,7 +330,7 @@ class ServoController:
             range_error = (f"{'/'.join(outside)} outside configured limits; reposition with torque off"
                            if outside and not self.armed else None)
             return {
-                "online": online, "ready": online and self.config["calibrated"] and not outside,
+                "online": online, "ready": online and self.config["calibrated"] and (self.armed or not outside),
                 "device": self.config["device"], "protocol": "dynamixel-2.0",
                 "baudrate": self.config["baudrate"], "armed": self.armed,
                 "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
