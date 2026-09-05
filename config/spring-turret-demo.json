@@ -20,10 +20,10 @@
     "axes": {
       "x": {"id": 2, "center_position": 2048, "direction": 1,
         "min_degrees": -90, "max_degrees": 90,
-        "profile_velocity": 20, "profile_acceleration": 5},
+        "profile_velocity": 0, "profile_acceleration": 0},
       "y": {"id": 1, "center_position": 2048, "direction": 1,
         "min_degrees": 30, "max_degrees": 90,
-        "profile_velocity": 20, "profile_acceleration": 5}
+        "profile_velocity": 0, "profile_acceleration": 0}
     }
   }
 }

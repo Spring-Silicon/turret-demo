@@ -16,6 +16,10 @@
   },
   "original_test_configuration_limits_degrees": [-45, 45],
   "configured_limits_degrees": {"x": [-90, 90], "y": [30, 90]},
+  "configured_motion_profile": {"profile_velocity": 0, "profile_acceleration": 0},
+  "original_motion_test_profile": {"profile_velocity": 20, "profile_acceleration": 5},
+  "uncapped_motion_qualified": false,
+  "uncapped_profile_registers_verified": {"x": {"108": 0, "112": 0}, "y": {"108": 0, "112": 0}},
   "tests": {
     "unique_ids_and_stable_reads": true,
     "neutral_set_by_operator": true,

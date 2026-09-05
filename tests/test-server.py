@@ -159,6 +159,32 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(servo.to_position(axis, 45), 1536)
         self.assertEqual(servo.to_degrees(axis, 1536), 45)
 
+    def test_uncapped_profiles_are_written_before_torque_on(self):
+        for axis in self.config["servo"]["axes"].values():
+            axis.update(profile_velocity=0, profile_acceleration=0)
+        servo.validate_config(self.config["servo"])
+        self.controller.arm()
+        writes = self.packet.writes
+        first_enable = next(i for i, (_, a, v) in enumerate(writes) if a == 64 and v == 1)
+        for sid in (1, 2):
+            self.assertIn((sid, 108, 0), writes[:first_enable])
+            self.assertIn((sid, 112, 0), writes[:first_enable])
+            self.assertIn((sid, 116, 2048), writes[:first_enable])
+            self.assertEqual(self.packet.registers[sid][98], 50)
+        self.controller.disable()
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_profile_register_ranges(self):
+        for field in ("profile_velocity", "profile_acceleration"):
+            for value in (0, 1, 100, 32767):
+                config = copy.deepcopy(self.config["servo"])
+                config["axes"]["x"][field] = value
+                servo.validate_config(config)
+            for value in (-1, 32768, True, 0.5, "0"):
+                config = copy.deepcopy(self.config["servo"])
+                config["axes"]["x"][field] = value
+                with self.assertRaises(ValueError): servo.validate_config(config)
+
     def test_rollover_short_moves_and_reboot_coordinate(self):
         self.config["servo"]["axes"]["y"]["center_position"] = 4065
         self.packet.registers[1][132] = 4065

@@ -60,10 +60,10 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"{name} limits must increase and stay strictly within ±180 degrees")
         if not 0 <= axis["center_position"] <= 4095:
             raise ValueError(f"{name} center_position must be a single-turn encoder reading")
-        if not 1 <= axis["profile_velocity"] <= 40:
-            raise ValueError(f"{name} profile_velocity must be between 1 and 40")
-        if not 1 <= axis["profile_acceleration"] <= 10:
-            raise ValueError(f"{name} profile_acceleration must be between 1 and 10")
+        # In velocity-profile mode, zero explicitly disables that profile cap.
+        for field in ("profile_velocity", "profile_acceleration"):
+            if not 0 <= axis[field] <= 32767:
+                raise ValueError(f"{name} {field} must be between 0 and 32767 (0 = uncapped)")
     if axes["x"]["id"] == axes["y"]["id"]:
         raise ValueError("X and Y must have different servo IDs")
 

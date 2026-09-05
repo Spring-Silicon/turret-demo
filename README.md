@@ -53,6 +53,16 @@ commands motion. If an axis is outside its new range, Start stays unavailable
 until it is repositioned with torque off. The calibrated zero remains unchanged
 even when zero is outside the allowed range (as it is for Y).
 
+Both axes now use `profile_velocity: 0` and `profile_acceleration: 0`.
+In the required velocity-based drive mode, these are the XL330's documented
+[uncapped profile values](https://emanual.robotis.com/docs/en/dxl/x/xl330-m288/#profile-velocity112),
+not zero speed. The service writes them on every Start. Physical speed still
+depends on the actuator, supply and load; current/PWM limits, hardware shutdown,
+angle limits, the bus watchdog and Stop are unchanged. Uncapped motion can be
+abrupt and has not been physically qualified; the recorded small-angle tests
+used the earlier velocity 20 / acceleration 5 profile. Use bounded profiles
+when commissioning a different mount.
+
 There is no password or application-level access control. Run it only on an
 isolated demo LAN. The software Stop is not an emergency stop; keep a physical
 power disconnect available.
