@@ -14,7 +14,7 @@ LOGGER = logging.getLogger("spring-turret.tracking")
 DEFAULTS = {
     "calibrated": False,
     "x_direction": 1, "y_direction": -1,
-    "x_gain": 24.0, "y_gain": 18.0,
+    "x_degrees_per_frame": 160.0, "y_degrees_per_frame": 90.0,
     "deadband": 0.012,
     "max_frame_age_seconds": 0.75,
 }
@@ -31,7 +31,7 @@ def validate_config(config: dict[str, Any]) -> None:
         if type(value) is not int or value not in (-1, 1):
             raise ValueError(f"tracking.{axis}_direction must be -1 or 1")
     for key, (low, high) in {
-        "x_gain": (0.1, 90), "y_gain": (0.1, 90),
+        "x_degrees_per_frame": (1, 360), "y_degrees_per_frame": (1, 180),
         "deadband": (0.001, 0.1), "max_frame_age_seconds": (0.1, 1),
     }.items():
         value = merged[key]
@@ -78,6 +78,9 @@ class TrackingController:
         self.ignore_before = 0.0
         self.moving = False
         self.error_pixels: list[float] | None = None
+        self.previous_pose: dict | None = None
+        self.hold_bias = {"x": 0.0, "y": 0.0}
+        self.goal_degrees: dict | None = None
 
     def start(self) -> None:
         self.thread.start()
@@ -94,6 +97,9 @@ class TrackingController:
             except ServoDisarmed:
                 pass
         self.moving = False
+        self.previous_pose = None
+        self.hold_bias = {"x": 0.0, "y": 0.0}
+        self.goal_degrees = None
         self.state, self.box, self.frame, self.error_pixels = state, None, None, None
 
     def set_target(self, prompt: Any) -> None:
@@ -134,12 +140,16 @@ class TrackingController:
             self.ignore_before = time.monotonic()
             self.last_frame = None
             self.moving = False
+            self.previous_pose = None
+            self.hold_bias = {"x": 0.0, "y": 0.0}
+            self.goal_degrees = None
 
     def disable(self) -> None:
         with self.lock:
             self.moving = False
             self.state = "stopped" if self.target else "off"
             self.box = self.frame = self.error_pixels = None
+            self.goal_degrees = None
             self.servo.disable()
 
     def manual_move(self, axis: str, degrees: float) -> None:
@@ -152,7 +162,8 @@ class TrackingController:
         with self.lock:
             return {"target": self.target, "state": self.state, "error": self.error,
                     "box": self.box, "frame": list(self.frame) if self.frame else None,
-                    "error_pixels": self.error_pixels}
+                    "error_pixels": self.error_pixels, "mode": "absolute-angle",
+                    "goal_degrees": self.goal_degrees}
 
     def _tick(self) -> None:
         with self.lock:
@@ -193,22 +204,55 @@ class TrackingController:
                 return
             x1, y1, x2, y2 = box["xyxy"]
             errors = {"x": (x1 + x2) / 2 - 0.5, "y": (y1 + y2) / 2 - 0.5}
-            offsets = {}
+            pose = detection.get("frame_pose")
+            captured_at = detection.get("captured_at")
+            if not self._valid_pose(pose, captured_at):
+                self._pause("waiting")
+                return
+            goals = {}
             for axis, error in errors.items():
-                step = error * self.config[f"{axis}_gain"] * self.config[f"{axis}_direction"]
-                offsets[axis] = 0.0 if abs(error) <= self.config["deadband"] else step
-            if any(offsets.values()):
-                result = self.servo.track(offsets)
-                self.moving = True
-                self.state = "limited" if result["limited"] else "tracking"
-            else:
-                # Keep the servo's holding bias once the image is centered;
-                # replacing its goal with the measured position can reintroduce
-                # gravity/stiction error and cause a centering oscillation.
-                self.state = "centered"
+                sample = pose["axes"][axis]
+                # Learn load/stiction bias only from two stationary samples of
+                # the SAME goal, never mistake in-flight motion for static error.
+                if self.previous_pose:
+                    previous = self.previous_pose["axes"][axis]
+                    elapsed = pose["sampled_at"] - self.previous_pose["sampled_at"]
+                    if (0 < elapsed <= self.config["max_frame_age_seconds"] and
+                        abs(sample["goal_degrees"] - previous["goal_degrees"]) < 0.1 and
+                        abs(sample["degrees"] - previous["degrees"]) / elapsed < 1.0):
+                        self.hold_bias[axis] = sample["goal_degrees"] - sample["degrees"]
+                scale = self.config[f"{axis}_degrees_per_frame"]
+                correction = error * scale * self.config[f"{axis}_direction"]
+                centered = abs(error) <= self.config["deadband"]
+                goals[axis] = sample["degrees"] + (0.0 if centered else correction) + self.hold_bias[axis]
+                # Keep a settled holding goal inside the image deadband, but
+                # brake at the observed center if an older goal would overshoot.
+                current_goal = servo["axes"][axis]["goal_degrees"]
+                if centered and abs(current_goal - goals[axis]) <= self.config["deadband"] * scale:
+                    goals[axis] = current_goal
+            self.previous_pose = pose
+            result = self.servo.point(goals)
+            self.goal_degrees = result["goal_degrees"]
+            self.moving = True
+            self.state = ("limited" if result["limited"] else
+                          "centered" if all(abs(e) <= self.config["deadband"] for e in errors.values()) else "tracking")
             self.box, self.frame = box, frame
             self.error_pixels = [round(errors["x"] * camera["width"], 1), round(errors["y"] * camera["height"], 1)]
             self.error = None
+
+    def _valid_pose(self, pose: Any, captured_at: Any) -> bool:
+        if not isinstance(pose, dict):
+            return False
+        sampled_at = pose.get("sampled_at")
+        if any(type(v) not in (int, float) or not math.isfinite(v) for v in (sampled_at, captured_at)):
+            return False
+        if sampled_at < self.ignore_before or not 0 <= captured_at - sampled_at <= 0.1:
+            return False
+        if not isinstance(pose.get("axes"), dict) or set(pose["axes"]) != {"x", "y"}:
+            return False
+        return all(isinstance(axis, dict) and all(
+            type(axis.get(key)) in (int, float) and math.isfinite(axis[key])
+            for key in ("degrees", "goal_degrees")) for axis in pose["axes"].values())
 
     def _run(self) -> None:
         while not self.stop_event.is_set():

@@ -65,24 +65,47 @@ still active. Automatic corrections never renew the browser's three-second lease
 
 Tracking has no step-size cap, encoder-to-goal lead cap, or settling delay. Each
 new inference result wakes the controller immediately, including frames captured
-during a preceding move. Goal corrections are clamped only to the X/Y angle
+during a preceding move. Absolute pointing goals are clamped only to the X/Y angle
 limits. `inference.max_fps: 0` (the default) runs inference as fast as the pipeline
-can process fresh camera frames, without an added FPS throttle. The proportional
-image-error gains and 1.2% centering deadband remain controller tuning, not speed
-caps. Reused frames and images from before Start/class selection are still ignored.
+can process fresh camera frames, without an added FPS throttle. The controller
+estimates the full correction as normalized image error times the calibrated
+degrees-per-frame scale, then commands **sampled camera angle + correction**.
+It does not repeatedly add delayed image errors to the previous goal. Fresh
+frames refine that absolute destination; a stationary, unchanged goal allows
+learning the small load/stiction holding bias. The 1.2% centering deadband remains.
+Reused frames and images from before Start/class selection are still ignored.
 Stop, the browser lease, stale-frame rejection, and hardware fault protections
 are unchanged. The existing uncapped motor profile registers are also unchanged.
 The tracker reports `angle limit` when centering would require travel outside
 the configured range. Faster corrections can be more abrupt.
 
 Camera-axis direction must be commissioned separately from the mechanical zero:
-add `"tracking": {"calibrated": true, "x_direction": 1, "y_direction": -1}` to
+add `"tracking": {"calibrated": true, "x_direction": 1, "y_direction": -1,
+"x_degrees_per_frame": 161.6, "y_degrees_per_frame": 82.8}` to
 the device config **only after checking the assembly**. These signs were measured
 on spring-edge-2: +X moves the background left, +Y moves it down. Defaults remain
 uncalibrated so another installation cannot move on assumed camera directions.
-Optional `x_gain`, `y_gain`, `deadband` and `max_frame_age_seconds` settings tune
-the framing loop. The old `max_step_degrees` and `settle_seconds` settings have
-been removed; delete them from custom configurations when upgrading.
+Those scales are **initial linear estimates**, derived from the earlier small
+encoder/phase-correlation measurements (640 × 360): 640 × 2.02 / 8 and
+360 × 1.15 / 5 degrees per frame. They are not measured full lens fields of view
+or a full optical/gimbal calibration; wide-angle distortion and cross-axis
+coupling can leave residual errors that later frames correct. Commission scales
+for another camera rather than copying these blindly. `deadband` and
+`max_frame_age_seconds` also remain configurable. The old `x_gain`, `y_gain`,
+`max_step_degrees` and `settle_seconds` settings have been removed.
+
+Inference pairs each JPEG with fresh X/Y encoder readback just before its receipt
+(at most 100 ms apart), and carries that pose through the model. Missing or stale
+pose pairing holds motion rather than guessing from the current motor position.
+JPEG receipt time is not a hardware exposure timestamp: bus/camera buffering,
+model latency and physical travel still matter. At high speed this pose is an
+estimate, with subsequent frames providing feedback. Pairing can wait up to one
+camera frame in the normal 30 FPS pipeline; there is no added motion-settling wait.
+
+On spring-edge-2, version 0.8.1 passed separate 6° commanded-offset checks against
+a blue bag: first centered detection at 1.05 s (pan) and 0.86 s (tilt) after class
+selection, with final errors under 3 px per axis and stable holding goals. These
+are small-offset hardware checks, not full-range or moving-object benchmarks.
 
 Configured command limits are **X: −90° to +90°** and **Y: −90° to +90°**.
 They are enforced in the API as well as the sliders. Changing limits never

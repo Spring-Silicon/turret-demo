@@ -322,10 +322,30 @@ class ServoController:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error
 
-    def track(self, offsets: dict[str, float]) -> dict[str, Any]:
+    def sample_pose(self) -> dict[str, Any] | None:
+        """Read the encoders for a camera sample; never arm or renew the lease."""
+        with self.lock:
+            if not self.armed:
+                return None
+            try:
+                self._tick_locked()
+                return {"sampled_at": time.monotonic(), "axes": {
+                    name: {"degrees": to_degrees(self._axis_config(name), state["position"]),
+                           "goal_degrees": to_degrees(self._axis_config(name), state["goal"])}
+                    for name, state in self.axes.items()}}
+            except Exception as error:
+                self._fault_locked(error)
+                return None
+
+    def point(self, degrees: dict[str, float]) -> dict[str, Any]:
+        """Command an absolute camera pointing pose, with only angle clamping."""
+        return self.track(degrees, absolute=True)
+
+    def track(self, offsets: dict[str, float], *, absolute: bool = False) -> dict[str, Any]:
         """Camera-framing goal correction; only the browser renews its lease.
 
-        All-zero offsets hold the measured pose (clamped inside the soft limits).
+        With absolute=True, values are absolute degree goals (zero means zero).
+        Otherwise, all-zero offsets hold the measured pose (clamped to limits).
         Otherwise integrate fresh-frame corrections into goals to overcome static
         position error. Only configured angular bounds clamp the requested goal;
         there is no step-size or encoder-to-goal lead cap.
@@ -343,10 +363,12 @@ class ServoController:
             try:
                 self._tick_locked()
                 goals, limited = {}, False
-                hold = not any(offsets.values())
+                hold = not absolute and not any(offsets.values())
                 for name, offset in offsets.items():
                     axis, state = self._axis_config(name), self.axes[name]
-                    if hold:
+                    if absolute:
+                        requested = axis["center_position"] + axis["direction"] * offset * COUNTS_PER_DEGREE
+                    elif hold:
                         requested = state["position"]
                     else:
                         requested = state["goal"] + axis["direction"] * offset * COUNTS_PER_DEGREE
@@ -362,7 +384,8 @@ class ServoController:
                     if goal != self.axes[name]["goal"]:
                         self._write(name, XL330_GOAL_POSITION, 4, goal)
                         self.axes[name]["goal"] = goal
-                return {"limited": limited, "goals": goals}
+                return {"limited": limited, "goals": goals, "goal_degrees": {
+                    name: to_degrees(self._axis_config(name), goal) for name, goal in goals.items()}}
             except Exception as error:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error

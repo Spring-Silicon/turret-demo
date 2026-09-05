@@ -425,13 +425,56 @@ class ControllerTests(unittest.TestCase):
                     self.packet.registers[sid][132] = round(current + .7 * (goal - 17 - current))
                     angles[name] = servo.to_degrees(self.config["servo"]["axes"][name], self.packet.registers[sid][132])
                 cx, cy = .5 + (20 - angles["x"]) / 160, .5 - (15 - angles["y"]) / 90
-                data.update(frame_sequence=index + 1, boxes=[{"prompt": "cup", "score": .9,
+                data.update(frame_sequence=index + 1, frame_age_ms=0, captured_at=now[0],
+                            frame_pose=self.controller.sample_pose(), boxes=[{"prompt": "cup", "score": .9,
                             "xyxy": [cx - .03, cy - .03, cx + .03, cy + .03]}])
                 tracker._tick()
                 self.assertTrue(self.controller.armed)
             self.assertEqual(tracker.state, "centered")
             self.assertLessEqual(abs(cx - .5), .012)
             self.assertLessEqual(abs(cy - .5), .012)
+
+    def test_absolute_point_does_not_accumulate_and_zero_means_zero_not_hold(self):
+        self.controller.arm()
+        lease = self.controller.last_keepalive
+        for _ in range(3): self.controller.point({"x": 30, "y": -20})
+        self.assertEqual(self.packet.registers[2][116], 2389)
+        self.assertEqual(self.packet.registers[1][116], 1820)
+        self.packet.registers[2][132] = 2100
+        self.controller.point({"x": 0, "y": 0})
+        self.assertEqual(self.packet.registers[2][116], 2048)
+        self.assertTrue(self.controller.point({"x": 1e308, "y": -1e308})["limited"])
+        self.assertEqual(self.packet.registers[2][116], 2560)
+        self.assertEqual(self.packet.registers[1][116], 1536)
+        self.assertEqual(self.controller.last_keepalive, lease)
+
+    def test_pose_sample_is_fresh_and_does_not_arm_or_renew_lease(self):
+        self.assertIsNone(self.controller.sample_pose())
+        self.assertEqual(self.packet.writes, [])
+        self.controller.arm()
+        lease = self.controller.last_keepalive
+        self.packet.registers[2][132] = 2100
+        pose = self.controller.sample_pose()
+        self.assertAlmostEqual(pose["axes"]["x"]["degrees"], 4.57)
+        self.assertEqual(pose["axes"]["x"]["goal_degrees"], 0)
+        self.assertEqual(self.controller.last_keepalive, lease)
+        self.packet.registers[1][70] = 4
+        self.assertIsNone(self.controller.sample_pose())
+        self.assertFalse(self.controller.armed)
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_camera_sample_pairs_timestamp_and_waits_until_after_pose_read(self):
+        camera = server.CameraStream(self.config["camera"])
+        camera.latest_sequence, camera.latest_frame, camera.latest_monotonic = 1, b"old", 10.0
+        def publish():
+            with camera.condition:
+                camera.latest_sequence, camera.latest_frame, camera.latest_monotonic = 2, b"new", 10.1
+                camera.condition.notify_all()
+        timer = threading.Timer(.02, publish)
+        timer.start()
+        self.assertEqual(camera.wait_for_sample(0, 1, after=10.05), (2, b"new", 10.1))
+        timer.join()
+        self.assertEqual(camera.wait_for_frame(0, 0), (2, b"new"))
 
     def test_y_full_range_commands_tracking_and_recovery(self):
         axis = self.config["servo"]["axes"]["y"]

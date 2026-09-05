@@ -27,6 +27,31 @@
     "x": {"measured_step_degrees": 2.02, "image_shift_pixels": [-8, 1], "return_shift_pixels": [5, 0], "tracking_direction": 1},
     "y": {"measured_step_degrees": 1.15, "image_shift_pixels": [0, 5], "return_shift_pixels": [0, -4], "tracking_direction": -1},
     "original_goals_restored": true,
+    "absolute_angle_estimate": {
+      "x_degrees_per_frame": 161.6,
+      "y_degrees_per_frame": 82.8,
+      "method": "local linear scale from preceding encoder and image-shift measurements; not full lens calibration"
+    },
+    "absolute_angle_live_check": {
+      "version": "0.8.1",
+      "target": "blue bag",
+      "commanded_test_offset_degrees": 6,
+      "x": {
+        "first_command_correction_degrees": -6.68,
+        "first_centered_seconds_after_selection": 1.052,
+        "final_center_error_pixels": [-1.5, -2.3],
+        "centered_goal_stable_degrees": -6.77
+      },
+      "y": {
+        "first_command_correction_degrees": -4.4,
+        "first_centered_seconds_after_selection": 0.858,
+        "final_center_error_pixels": [-1.3, -1.7],
+        "centered_goal_stable_degrees": -26.19
+      },
+      "pose_to_jpeg_receipt_ms_observed_range": [8.77, 22.46],
+      "verification": "three centered observations per axis; starting angle goals restored; both torque-off readbacks confirmed",
+      "scope": "small-offset acquisition only; not a full-travel or moving-object benchmark"
+    },
     "closed_loop_framing_verified": true,
     "live_check": {
       "initiated_by": "operator",

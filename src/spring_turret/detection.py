@@ -135,9 +135,11 @@ class WorkerClient:
 
 class DetectionController:
     def __init__(
-        self, config: dict[str, Any], camera: Any, worker_factory: Any = WorkerClient
+        self, config: dict[str, Any], camera: Any, worker_factory: Any = WorkerClient,
+        pose_provider: Any = None,
     ):
         self.config, self.camera, self.worker_factory = config, camera, worker_factory
+        self.pose_provider = pose_provider
         self.enabled = config.get("enabled", False)
         self.condition = threading.Condition()
         self.stop_event = threading.Event()
@@ -243,7 +245,10 @@ class DetectionController:
                     if self.stop_event.is_set():
                         break
                     prompts, revision = list(self.prompts), self.revision
-                sequence, jpeg = self.camera.wait_for_frame(last_camera_sequence, 1)
+                pose = self.pose_provider() if self.pose_provider else None
+                sequence, jpeg, captured_at = self.camera.wait_for_sample(
+                    last_camera_sequence, 1, after=pose["sampled_at"] if pose else 0.0
+                )
                 if (
                     jpeg is None
                     or sequence == last_camera_sequence
@@ -254,9 +259,10 @@ class DetectionController:
                     continue
                 last_camera_sequence = sequence
                 started = time.monotonic()
-                captured_at = (
-                    started - self.camera.status().get("frame_age_ms", 0) / 1000
-                )
+                # This is a receipt-time pose estimate, not a hardware exposure
+                # timestamp. Never associate a delayed camera frame with an old pose.
+                if pose and not 0 <= captured_at - pose["sampled_at"] <= 0.1:
+                    pose = None
                 try:
                     if self.worker is None:
                         worker = self.worker_factory(self.config)
@@ -292,6 +298,8 @@ class DetectionController:
                             **result,
                             "frame_sequence": self.sequence,
                             "frame_url": f"/api/detection/frame/{key}.jpg",
+                            "captured_at": captured_at,
+                            "frame_pose": pose,
                         }
                         self.completed_at = captured_at
                         self.state = "running"

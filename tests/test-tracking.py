@@ -35,13 +35,16 @@ class Servo:
     def __init__(self):
         self.armed, self.online, self.limited = False, True, False
         self.calls, self.manual = [], []
-    def status(self): return {"armed": self.armed, "online": self.online}
+        self.goals = {"x": 0.0, "y": 0.0}
+    def status(self): return {"armed": self.armed, "online": self.online,
+                             "axes": {a: {"goal_degrees": v} for a, v in self.goals.items()}}
     def arm(self): self.armed = True
     def disable(self): self.armed = False
     def track(self, offsets):
         if not self.armed: raise ServoDisarmed("stopped")
         self.calls.append(dict(offsets))
-        return {"limited": self.limited}
+        return {"limited": self.limited, "goal_degrees": dict(offsets)}
+    point = track
     def move(self, axis, degrees): self.manual.append((axis, degrees))
 
 
@@ -55,11 +58,14 @@ class TrackingTests(unittest.TestCase):
         self.detection = Detector(lambda: self.now)
         self.tracker = TrackingController({"calibrated": True}, self.detection, self.servo, self.camera)
 
-    def frame(self, boxes, age=100):
+    def frame(self, boxes, age=100, x=0.0, y=0.0, goal_x=0.0, goal_y=0.0):
         self.now += .4
         self.detection.captured = self.now - age / 1000
         self.detection.data.update(frame_sequence=self.detection.data["frame_sequence"] + 1,
-                                   boxes=boxes, state="running")
+                                   boxes=boxes, state="running", captured_at=self.detection.captured,
+                                   frame_pose={"sampled_at": self.detection.captured - .01,
+                                               "axes": {"x": {"degrees": x, "goal_degrees": goal_x},
+                                                        "y": {"degrees": y, "goal_degrees": goal_y}}})
         self.tracker._tick()
 
     def start(self):
@@ -86,7 +92,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.servo.calls, [])
         self.tracker.arm()
         self.frame([box()])
-        self.assertAlmostEqual(self.servo.calls[-1]["x"], 4.8)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 32)
         self.assertEqual(self.servo.calls[-1]["y"], 0)
         self.tracker.disable()
         before = list(self.servo.calls)
@@ -98,19 +104,19 @@ class TrackingTests(unittest.TestCase):
     def test_direction_deadband_and_uncapped_corrections(self):
         self.start()
         self.frame([box(cx=.55, cy=.4)])
-        self.assertAlmostEqual(self.servo.calls[-1]["x"], 1.2)
-        self.assertAlmostEqual(self.servo.calls[-1]["y"], 1.8)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 8)
+        self.assertAlmostEqual(self.servo.calls[-1]["y"], 9)
         self.tracker.config.update(x_direction=-1, y_direction=1)
         self.frame([box(cx=.9, cy=.1)])
-        self.assertAlmostEqual(self.servo.calls[-1]["x"], -9.6)
-        self.assertAlmostEqual(self.servo.calls[-1]["y"], -7.2)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], -64)
+        self.assertAlmostEqual(self.servo.calls[-1]["y"], -36)
         calls = len(self.servo.calls)
         self.frame([box(cx=.505, cy=.495)])
-        self.assertEqual(len(self.servo.calls), calls)
+        self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
         self.assertEqual(self.tracker.state, "centered")
         calls = len(self.servo.calls)
         self.frame([box(cx=.5, cy=.5)])
-        self.assertEqual(len(self.servo.calls), calls)
+        self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
 
     def test_follows_nearest_instance_on_each_fresh_frame(self):
         self.start()
@@ -204,10 +210,61 @@ class TrackingTests(unittest.TestCase):
         self.frame([box()])
         self.assertEqual(self.tracker.state, "limited")
 
+    def test_full_angle_is_based_on_capture_pose_not_accumulated_goals(self):
+        self.start()
+        self.frame([box(cx=.75)], x=10, goal_x=80)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 50)
+        # Camera has moved 20 degrees since capture; the next frame's error
+        # falls by 20 degrees. The estimated absolute destination stays at 50.
+        self.frame([box(cx=.625)], x=30, goal_x=50)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 50)
+
+    def test_centered_frame_brakes_an_overshooting_goal(self):
+        self.start()
+        self.frame([box(cx=.5)], x=20, goal_x=45)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 20)
+
+    def test_centered_frame_keeps_current_hold_not_an_older_capture_goal(self):
+        self.start()
+        self.servo.goals["x"] = 20.2
+        self.frame([box(cx=.5)], x=20, goal_x=19.8)
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 20.2)
+
+    def test_settled_pose_learns_bias_but_motion_does_not(self):
+        self.start()
+        self.frame([box(cx=.5, cy=.48)], y=8, goal_y=10)
+        self.frame([box(cx=.5, cy=.48)], y=8, goal_y=10)
+        self.assertAlmostEqual(self.servo.calls[-1]["y"], 11.8)
+        self.assertEqual(self.tracker.hold_bias["y"], 2)
+        self.tracker.set_target(None)
+        self.start()
+        self.frame([box(cx=.5, cy=.48)], y=4, goal_y=10)
+        self.frame([box(cx=.5, cy=.48)], y=8, goal_y=10)
+        self.assertEqual(self.tracker.hold_bias["y"], 0)
+        self.assertAlmostEqual(self.servo.calls[-1]["y"], 9.8)
+
+    def test_missing_malformed_old_or_unpaired_pose_holds_instead_of_guessing(self):
+        for mutate in (
+            lambda d: d.update(frame_pose=None),
+            lambda d: d["frame_pose"].update(sampled_at=0),
+            lambda d: d["frame_pose"].update(sampled_at=d["captured_at"] - .2),
+            lambda d: d["frame_pose"]["axes"]["x"].update(degrees=float("nan")),
+            lambda d: d["frame_pose"]["axes"].pop("y"),
+        ):
+            self.start()
+            self.frame([box()])
+            self.detection.data["frame_sequence"] += 1
+            mutate(self.detection.data)
+            self.tracker._tick()
+            self.assertEqual(self.tracker.state, "waiting")
+            self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
+            self.tracker.set_target(None)
+
     def test_tracking_config_is_bounded(self):
         validate_config({})
         for config in ({"x_direction": 0}, {"y_direction": True}, {"max_step_degrees": 3}, {"settle_seconds": .1},
-                       {"max_frame_age_seconds": 10}, {"x_gain": float("nan")}, {"deadband": 0},
+                       {"max_frame_age_seconds": 10}, {"x_degrees_per_frame": float("nan")}, {"deadband": 0},
+                       {"x_gain": 24}, {"y_degrees_per_frame": 181},
                        {"unknown": 1}, {"calibrated": 1}, []):
             with self.assertRaises(ValueError): validate_config(config)
 

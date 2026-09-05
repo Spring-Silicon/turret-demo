@@ -180,15 +180,22 @@ class CameraStream:
     def wait_for_frame(
         self, previous_sequence: int, timeout: float
     ) -> tuple[int, bytes | None]:
+        sequence, jpeg, _ = self.wait_for_sample(previous_sequence, timeout)
+        return sequence, jpeg
+
+    def wait_for_sample(
+        self, previous_sequence: int, timeout: float, after: float = 0.0
+    ) -> tuple[int, bytes | None, float]:
+        """Return a JPEG and its receipt timestamp atomically, optionally after a pose read."""
         with self.condition:
             self.condition.wait_for(
                 lambda: (
-                    self.latest_sequence != previous_sequence
+                    (self.latest_sequence != previous_sequence and self.latest_monotonic >= after)
                     or self.stop_event.is_set()
                 ),
                 timeout=timeout,
             )
-            return self.latest_sequence, self.latest_frame
+            return self.latest_sequence, self.latest_frame, self.latest_monotonic
 
     def status(self) -> dict[str, Any]:
         with self.condition:
@@ -222,7 +229,7 @@ class TurretApplication:
         self.servo = servo or ServoController(config["servo"])
         self.static_dir = static_dir or Path(__file__).with_name("static")
         self.detection = detection or DetectionController(
-            config.get("inference", {}), self.camera
+            config.get("inference", {}), self.camera, pose_provider=self.servo.sample_pose
         )
         self.tracking = TrackingController(config.get("tracking", {}), self.detection, self.servo, self.camera)
 

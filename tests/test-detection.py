@@ -36,6 +36,10 @@ class Camera:
         self.sequence += 1
         return self.sequence, b"camera-jpeg"
 
+    def wait_for_sample(self, previous, timeout, after=0.0):
+        sequence, jpeg = self.wait_for_frame(previous, timeout)
+        return sequence, jpeg, time.monotonic()
+
     def status(self):
         return {"online": True, "frame_age_ms": 1}
 
@@ -236,6 +240,29 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(c.status()["state"], "disabled")
         with self.assertRaises(ValueError):
             c.set_prompt("person")
+
+    def test_encoder_pose_survives_inference_delay_and_is_not_resampled_at_completion(self):
+        c, worker = self.controller()
+        pose = {"sampled_at": time.monotonic(), "axes": {
+            "x": {"degrees": 10, "goal_degrees": 40}, "y": {"degrees": 5, "goal_degrees": 5}}}
+        c.pose_provider = lambda: pose
+        c.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        # The capture pose is a snapshot. Inference must not replace it with a
+        # later pose after the motors have moved during model execution.
+        pose = {**pose, "axes": {**pose["axes"], "x": {"degrees": 40, "goal_degrees": 40}}}
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertEqual(c.status()["frame_pose"]["axes"]["x"]["degrees"], 10)
+        self.assertGreaterEqual(c.status()["captured_at"], c.status()["frame_pose"]["sampled_at"])
+
+    def test_old_pose_is_not_paired_with_a_later_camera_frame(self):
+        c, worker = self.controller()
+        c.pose_provider = lambda: {"sampled_at": time.monotonic() - 1}
+        c.set_prompt("cup")
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertIsNone(c.status()["frame_pose"])
 
     def test_config(self):
         validate_config({})
