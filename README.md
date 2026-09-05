@@ -1,6 +1,7 @@
 # Spring turret demo
 
-Camera feed, text-prompt SAM 3.1 bounding boxes, and manual servo controls.
+Camera feed, switchable SAM 3.1 / YOLO26x bounding boxes, and manual or opt-in automatic
+X/Y camera framing.
 
 ## Current hardware status
 
@@ -8,21 +9,36 @@ Camera feed, text-prompt SAM 3.1 bounding boxes, and manual servo controls.
   30 fps verified on `spring-edge-2`.
 - USB Single Serial adapter (`1a86:55d3`, serial `5B61036033`): enumeration and
   stable device naming verified.
-- ROBOTIS DYNAMIXEL XL330-M288-T: model 1200, firmware 53, Protocol 2.0, ID 1
-  at 57,600 baud. Read-only PING and position are verified; motion is not yet
-  qualified.
+- Two ROBOTIS DYNAMIXEL XL330-M288-T servos share one Protocol 2.0 bus at
+  57,600 baud: **X/pan = ID 2**, **Y/tilt = ID 1**. The original single-servo
+  qualification in `hardware.json` is historical; it does not qualify the
+  assembled two-axis mechanism.
 
-The service starts disarmed, sends no startup movement, rejects positions outside
-1536 through 2560, and rejects every movement until the operator selects **Arm**.
-Communication failure clears the armed state. Service shutdown attempts to turn
-torque off. Arming first writes the current position as the goal, then enables
-torque, preventing an immediate jump on Arm.
+Current assembly readbacks and bounded motion results are recorded separately
+in [`hardware-pan-tilt.json`](hardware-pan-tilt.json). Stock motor tuning showed
+up to 1.86° of residual error in ±3° tests. While running, slider values indicate
+the commanded angle; `/api/status` reports measured and goal angles separately.
+
+The service starts torque-off with no startup movement. **Start** writes both
+current positions as hold goals before enabling either motor; it never homes
+the assembly. **Stop** (or Escape) attempts to release both motors even if one
+does not answer. Failed communication or a partial Start cancels motion and
+attempts torque-off on both axes. An unconfirmed stop is reported explicitly;
+reconnection never automatically re-arms. Start checks model, position mode,
+drive mode, secondary ID, homing offset, range and hardware faults.
+
+The browser sends a keepalive while running. After three seconds without one,
+the service releases both motors. Each servo also has a one-second bus watchdog:
+if the process or bus stops sending traffic it stops motion, **but retains
+holding torque**. Neither safeguard is a physical emergency stop. A released
+tilt axis can fall under gravity; support the camera before disconnecting power.
 
 ## UI
 
-Open `http://HOST:8080/`. The UI contains only the live feed, camera/servo state,
-position, bounded jog controls, Arm, Stop, and the current hardware error.
-The motor controls sit below the camera. Enter
+Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
+**triangle/square Start/Stop** button, and a **Y degree slider**. Sliders move
+their respective axes while running; requests are coalesced during a drag.
+Errors appear only when needed. Enter
 one object category per row (for example `person`, `cup`, `keyboard`). Each row
 shows its detected instance count and a trash button. The single **+** below
 the list adds another row. Counts show `—` while unavailable or for unapplied
@@ -30,7 +46,109 @@ prompts; `0` means no instances were detected in the current result. Select **Up
 prompts**, or press **Enter** in a text box, to apply every row together.
 Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
-and update to return to the raw feed. Detection never arms, aims, or moves the servo.
+and update to return to the raw feed. Detection alone never moves either servo.
+
+Select the **target icon** beside an applied object class to follow it; only one
+class can be selected. Click it again to return to manual control. While **Start**
+is active, the camera follows whichever matching bounding-box center is nearest
+the frame center (distance in image pixels, not apparent object size or depth).
+A dashed white box previews that instance and the center marker shows the framing
+goal. In class mode the nearest instance is reconsidered on each fresh frame.
+
+**Click a bounding box** to temporarily retarget to that object, including another
+instance of the same class. The white dashed outline follows the clicked object
+while centering it. Once centered, the original nearest-to-center class tracker
+continues automatically. This is an additional retarget control, not a persistent
+instance-lock mode. The boxes also
+support keyboard focus and Enter/Space. Overlapping boxes prioritize the smaller
+box. Click the class icon to return to nearest-of-class mode, or click another box
+to switch objects. Selection never starts stopped motors.
+
+Instance IDs use conservative class/position/size matching between detections,
+with camera-motion compensation from the encoder/frame pairs. This is not SAM
+video tracking or appearance-based re-identification: occlusion, fast movement or
+crossing similar objects can lose the association. If the clicked ID disappears,
+the original nearest-of-class tracker takes over immediately. With no matching
+detections it holds, then reacquires automatically when that class returns; it
+does not remain stuck on an expired ID. Updating prompts clears a pending
+retarget. The server validates a click against the exact displayed
+JPEG's cached detections and rejects stale frames or fabricated object IDs.
+
+Selecting a class never starts stopped motors. Stop/Escape still releases both
+motors; a manual slider move cancels automatic tracking. Editing/removing the
+selected prompt also cancels tracking. No target, a stale frame (>750 ms), a
+camera/inference fault, or a prompt change pauses corrections and holds position;
+there is no automatic search/sweep. New frames resume tracking while Start is
+still active. Automatic corrections never renew the browser's three-second lease.
+
+Tracking has no step-size cap, encoder-to-goal lead cap, or settling delay. Each
+new inference result wakes the controller immediately, including frames captured
+during a preceding move. Absolute pointing goals are clamped only to the X/Y angle
+limits. `inference.max_fps: 0` (the default) runs inference as fast as the pipeline
+can process fresh camera frames, without an added FPS throttle. The controller
+estimates the full correction as normalized image error times the calibrated
+degrees-per-frame scale, then commands **sampled camera angle + correction**.
+It does not repeatedly add delayed image errors to the previous goal. Fresh
+frames refine that absolute destination; a stationary, unchanged goal allows
+learning the small load/stiction holding bias. The 1.2% centering deadband remains.
+Reused frames and images from before Start/class selection are still ignored.
+Stop, the browser lease, stale-frame rejection, and hardware fault protections
+are unchanged. The existing uncapped motor profile registers are also unchanged.
+The tracker reports `angle limit` when centering would require travel outside
+the configured range. Faster corrections can be more abrupt.
+
+Camera-axis direction must be commissioned separately from the mechanical zero:
+add `"tracking": {"calibrated": true, "x_direction": 1, "y_direction": -1,
+"x_degrees_per_frame": 161.6, "y_degrees_per_frame": 82.8}` to
+the device config **only after checking the assembly**. These signs were measured
+on spring-edge-2: +X moves the background left, +Y moves it down. Defaults remain
+uncalibrated so another installation cannot move on assumed camera directions.
+Those scales are **initial linear estimates**, derived from the earlier small
+encoder/phase-correlation measurements (640 × 360): 640 × 2.02 / 8 and
+360 × 1.15 / 5 degrees per frame. They are not measured full lens fields of view
+or a full optical/gimbal calibration; wide-angle distortion and cross-axis
+coupling can leave residual errors that later frames correct. Commission scales
+for another camera rather than copying these blindly. `deadband` and
+`max_frame_age_seconds` also remain configurable. The old `x_gain`, `y_gain`,
+`max_step_degrees` and `settle_seconds` settings have been removed.
+
+Inference pairs each JPEG with fresh X/Y encoder readback just before its receipt
+(at most 100 ms apart), and carries that pose through the model. Missing or stale
+pose pairing holds motion rather than guessing from the current motor position.
+JPEG receipt time is not a hardware exposure timestamp: bus/camera buffering,
+model latency and physical travel still matter. At high speed this pose is an
+estimate, with subsequent frames providing feedback. Pairing can wait up to one
+camera frame in the normal 30 FPS pipeline; there is no added motion-settling wait.
+
+On spring-edge-2, version 0.8.1 passed separate 6° commanded-offset checks against
+a blue bag: first centered detection at 1.05 s (pan) and 0.86 s (tilt) after class
+selection, with final errors under 3 px per axis and stable holding goals. These
+are small-offset hardware checks, not full-range or moving-object benchmarks.
+
+Configured command limits are **X: −90° to +90°** and **Y: −90° to +90°**.
+They are enforced in the API as well as the sliders. Changing limits never
+commands motion. If an axis is outside its new range, Start stays unavailable
+until it is repositioned with torque off. Changing limits does not change the
+calibrated zero; both axes' current ranges include zero.
+
+While running, feedback outside these software limits no longer stops the
+motors. The affected axis is commanded back to the nearest limit, with torque
+remaining on. Recovery happens once per excursion so it does not repeatedly
+reset the motion profile or overwrite a subsequent valid slider command. Both
+axes' communication, hardware-fault and torque checks, and the browser control
+timeout, must still pass before any correction. Stop and those fault shutdowns
+are unchanged; recovery never starts a stopped motor. These are corrective
+software limits, not a guarantee against physical overshoot.
+
+Both axes now use `profile_velocity: 0` and `profile_acceleration: 0`.
+In the required velocity-based drive mode, these are the XL330's documented
+[uncapped profile values](https://emanual.robotis.com/docs/en/dxl/x/xl330-m288/#profile-velocity112),
+not zero speed. The service writes them on every Start. Physical speed still
+depends on the actuator, supply and load; current/PWM limits, hardware shutdown,
+angle limits, the bus watchdog and Stop are unchanged. Uncapped motion can be
+abrupt and has not been physically qualified; the recorded small-angle tests
+used the earlier velocity 20 / acceleration 5 profile. Use bounded profiles
+when commissioning a different mount.
 
 There is no password or application-level access control. Run it only on an
 isolated demo LAN. The software Stop is not an emergency stop; keep a physical
@@ -54,6 +172,64 @@ must already exist and be accessible to the process. Check the live state:
 curl http://127.0.0.1:8080/api/status
 ```
 
+## Model selector and YOLO26x on Intel Arc
+
+The **Model** selector switches between SAM 3.1 free-text grounding and the
+official **YOLO26x** COCO detector. YOLO's rows are class dropdowns, not free-text
+prompts: it supports the [80 pretrained COCO classes](https://docs.ultralytics.com/models/yolo26/).
+For example, `person` is supported but `face` is not; use SAM for that. Both modes
+retain multiple instances, per-class counts, class tracking and click retargeting.
+The add/trash controls and Update prompts / Enter work in both modes.
+
+Applied object lists are retained separately in server memory; browser drafts
+are retained separately while the page remains open. A model switch clears
+old boxes/instance IDs and the tracking target, holds any automatic motion, and
+never arms the motors. The old worker is interrupted and reaped before the new
+worker allocates GPU memory. First use compiles/captures; later switches still
+need model loading and graph setup. There is no background second GPU model,
+silent model substitution, CPU fallback, or eager-only fallback.
+
+To extend the SAM environment with the pinned YOLO dependencies:
+
+```bash
+uv pip install --python /var/lib/spring-data/turret-inference/venv/bin/python \
+  --extra-index-url https://download.pytorch.org/whl/xpu \
+  --index-strategy unsafe-best-match -r requirements-yolo26.txt
+```
+
+Download [the official v8.4.0 yolo26x.pt checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x.pt)
+to the configured `inference.yolo26x_checkpoint` path. The worker verifies SHA256
+`9fdd44a31c504547ffb81d2c6d9e6dac3493c8eaa8b0398d3f43bae6c7003e92`
+**before** unpickling it. Model downloads never happen in the service. Ultralytics
+provides [AGPL-3.0 and Enterprise licensing options](https://www.ultralytics.com/license);
+its dependency/checkpoint licensing is separate from this repository's code.
+
+YOLO26x uses a centered 640×640 RGB letterbox (114 padding), FP32 master weights
+with FP16 autocast by default, fused Conv/BN and the end-to-end one-to-one head.
+One forward pass produces detections across all 80 classes; selected classes
+are filtered afterward, with at most 300 predictions/frame and confidence >0.5.
+No NMS is needed. Original-frame normalized XYXY coordinates undo the letterbox.
+The complete network, decoding and top-k run through full-graph static
+`torch.compile(backend="inductor")` and `torch.xpu.XPUGraph` replay. CPU work is
+JPEG/resize, result transfer/filtering and annotation. YOLO caches live under
+`inference.cache_dir/yolo26x`; the SAM cache layout is unchanged.
+
+Capture validates replay against uncaptured compiled output. The first three
+frames additionally compare meaningful eager/compiled detections independent
+of top-k ordering (confidence error ≤0.03 and coordinates ≤6.4px at 640px).
+Failure is surfaced in the UI. `tests/smoke-yolo26.py` exercises an official bus
+fixture, its reflection, and optional real MJPEG camera frames; unload other GPU
+workers before running it. In a B580 run on 2026-09-04, both fixture orientations
+retained four people plus one bus. Observed maximum coordinate error was 0.125px
+and score error 0.000488; all 15 SYCL replays passed.
+
+In that same run, 10 warmed live-frame medians were **8.80ms network** and
+**25.38ms worker total** (8.54ms preprocessing, 0.42ms postprocessing, 7.63ms
+annotation; medians need not sum). `latency_ms` is synchronized model execution;
+`timing.worker_total_ms` includes worker-side overhead and cold setup when present.
+Neither includes camera buffering, HTTP delivery or browser display. The first
+uncached compile/capture took about 105 seconds; this is not steady-state latency.
+
 ## SAM 3.1 on Intel Arc
 
 Inference is optional. Existing camera/servo configurations continue working
@@ -71,6 +247,10 @@ Put your authorized Meta SAM 3.1 multiplex checkpoint at the path in
 object as the `inference` key in the service's JSON config. The checkpoint is
 not included in this repository. The tested checkpoint SHA256 is
 `0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6`.
+
+For SAM-only installations, omit `yolo26x_checkpoint` from the example; YOLO
+will remain unavailable in the selector. Both checkpoints are administrator
+configuration, never browser-supplied paths.
 
 The host needs both Intel Level Zero and **GPU OpenCL** drivers. On the tested
 Ubuntu 24.04 host, `libze-intel-gpu1` and `intel-opencl-icd` are both
@@ -166,8 +346,11 @@ preprocessing and annotation was about 188 ms, versus the old implementation's
 - `GET /api/status`
 - `POST /api/servo/arm`
 - `POST /api/servo/disable`
-- `POST /api/servo/center`
-- `POST /api/servo/position` with `{"position": INTEGER}`
+- `POST /api/servo/keepalive` at least once a second while running
+- `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
+- `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` temporarily retargets to a box from the displayed frame without arming.
+- `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
+  `{"target": null}` to clear it. Selection is not persisted across restarts.
 - `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears
 - `POST /api/detection/prompt` with `{"prompt": "chair"}` (single-category compatibility)
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL
@@ -181,7 +364,38 @@ make validate
 
 ## Servo qualification still required
 
-Before changing `hardware.json` to motion-qualified, confirm the actuator model,
-electrical interface, supply voltage, ID, and baud rate. Then verify read-only
-PING/position, mechanical center with linkage disconnected, conservative limits,
-Stop under motion, communication-loss behavior, current, and temperature.
+The sample config is deliberately `calibrated: false`: Start is blocked until
+the actual assembly is commissioned. Use a stopped service and an exclusive bus
+connection for commissioning. Never change an ID with two factory-ID-1 motors
+connected: isolate the bottom/pan motor, torque off, assign ID 2, verify readback,
+then reconnect the upper/tilt motor (ID 1). Both must respond separately at
+57,600 baud with model 1200, drive mode 0, secondary ID 255, homing offset 0,
+torque off and no hardware error. With torque disabled, program and verify
+**Operating Mode (11) = 4** (extended position) on both motors.
+
+With torque off, place the camera straight ahead and level. Read each present
+position modulo 4096 into its axis's `center_position`; set `direction` to 1
+or -1 for the mount's orientation. Use slow profiles and set `calibrated: true`
+after confirming neutral and clearance. The sample reflects the operator's
+requested X ±90° / Y ±90° limits, not a qualified full-travel envelope.
+The [reference CAD](https://github.com/AnthonyZJiang/dynamixal-pan-tilt-camera-cad)
+specifies ±90° maximum travel, but mounting and cable clearance must be checked
+on each assembly. No full-travel sweep was performed when applying these limits.
+
+Extended position mode is intentional: this assembly's neutral tilt is near
+encoder rollover. A bounded tilt can therefore cross 4095/0. The controller
+holds a continuous local coordinate while armed and chooses the nearest
+equivalent zero after power cycling/reconnecting; it never commands a full turn
+to recover zero. Signed positions are supported. Extended mode ignores the
+servo's EEPROM min/max position limits, so the service rejects out-of-range
+commands and corrects out-of-range feedback while running. Invalid readings
+outside the actuator's extended-position range still stop both axes. Do not
+turn the assembled mount through full revolutions.
+
+The service does not rewrite EEPROM on startup. It rejects incompatible modes
+instead of silently changing the coordinate system. The configuration format
+changed in 0.6: migrate the old flat single-servo fields into `servo.axes` and
+preserve the existing `camera`, `listen`, and optional `inference` sections.
+Full mechanical qualification still requires checking travel endpoints, cable
+clearance, direction, Stop during motion, current/temperature and recovery after
+power loss. A small motion/readback test is not full-range qualification.

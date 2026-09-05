@@ -30,7 +30,15 @@ def main() -> None:
     config = json.loads((ROOT / "config/spring-turret-demo.json").read_text())
     assert set(config) == {"listen", "camera", "servo"}
     servo = config["servo"]
-    assert servo["min_position"] < servo["center_position"] < servo["max_position"]
+    assert servo["calibrated"] is False
+    assert servo["axes"]["x"]["id"] == 2
+    assert servo["axes"]["y"]["id"] == 1
+    for axis in servo["axes"].values():
+        assert axis["center_position"] == 2048
+        assert axis["profile_velocity"] == 0
+        assert axis["profile_acceleration"] == 0
+    assert [servo["axes"]["x"][key] for key in ("min_degrees", "max_degrees")] == [-90, 90]
+    assert [servo["axes"]["y"][key] for key in ("min_degrees", "max_degrees")] == [-90, 90]
     assert config["camera"]["device"] == "/dev/spring-turret-camera"
     assert servo["device"] == "/dev/spring-turret-servo"
     assert servo["protocol"] == "dynamixel-2.0"
@@ -41,8 +49,12 @@ def main() -> None:
 
     html = (ROOT / "src/spring_turret/static/index.html").read_text()
     server = (ROOT / "src/spring_turret/server.py").read_text()
-    assert 'id="arm-button" type="button" disabled' in html
-    assert 'id="stop-button" type="button" disabled' in html
+    controller = (ROOT / "src/spring_turret/servo.py").read_text()
+    assert html.count('type="range"') == 2
+    assert html.index('id="x-slider"') < html.index('id="motor-toggle"') < html.index('id="y-slider"')
+    assert 'id="start-icon"' in html and 'id="stop-icon"' in html
+    assert 'id="position-slider"' not in html
+    assert 'class="jog"' not in html
     assert html.count('id="add-prompt"') == 1
     assert html.index('id="prompt-rows"') < html.index('id="add-prompt"')
     template = html.split('<template id="prompt-row-template">')[1].split(
@@ -50,17 +62,20 @@ def main() -> None:
     )[0]
     assert 'class="prompt-count"' in template
     assert 'class="remove-prompt"' in template
+    assert 'class="target-prompt"' in template
+    assert 'aria-pressed="false"' in template
+    assert 'id="frame-center"' in html and 'id="tracking-overlay"' in html
     assert "Add object" not in template
     assert "password" not in html.lower()
     assert "authentication" not in server.lower()
-    assert "self.armed = False" in server
-    assert "XL330_TORQUE_ENABLE = 64" in server
-    assert "XL330_GOAL_POSITION = 116" in server
-    assert "XL330_PRESENT_POSITION = 132" in server
-    assert "PacketHandler(XL330_PROTOCOL_VERSION)" in server
-    assert '"dynamixel-2.0"' in server
+    assert "self.armed = False" in controller
+    assert "XL330_TORQUE_ENABLE = 64" in controller
+    assert "XL330_GOAL_POSITION = 116" in controller
+    assert "XL330_PRESENT_POSITION = 132" in controller
+    assert "PacketHandler(XL330_PROTOCOL_VERSION)" in controller
+    assert '"dynamixel-2.0"' in controller
     assert "scservo_sdk" not in server
-    assert "raise ServoDisarmed" in server
+    assert "raise ServoDisarmed" in controller
     assert 'Path(__file__).with_name("static")' in server
     assert 'default=Path("/etc/' not in server
 

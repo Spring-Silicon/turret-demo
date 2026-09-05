@@ -18,6 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spring_turret.detection import DetectionController, validate_config
 from spring_turret.server import TurretApplication, make_handler
 from spring_turret.sam31_worker import Sam31Engine
+from spring_turret.instances import InstanceAssociator
+from spring_turret.models import COCO_CLASSES
+from spring_turret.yolo26_worker import decode, validate_predictions
 
 
 def eventually(check, timeout=3):
@@ -35,6 +38,10 @@ class Camera:
     def wait_for_frame(self, previous, timeout):
         self.sequence += 1
         return self.sequence, b"camera-jpeg"
+
+    def wait_for_sample(self, previous, timeout, after=0.0):
+        sequence, jpeg = self.wait_for_frame(previous, timeout)
+        return sequence, jpeg, time.monotonic()
 
     def status(self):
         return {"online": True, "frame_age_ms": 1}
@@ -74,8 +81,79 @@ class Worker:
         self.stopped = True
         self.release.set()
 
+    def cancel(self):
+        self.release.set()
+
 
 class DetectionTests(unittest.TestCase):
+    def test_model_switch_serializes_workers_preserves_lists_and_discards_old_frames(self):
+        workers = []
+        def factory(config):
+            self.assertTrue(all(worker.stopped for worker in workers))
+            worker = Worker(config)
+            worker.model = config["model"]
+            workers.append(worker)
+            return worker
+        c = DetectionController({"enabled": True, "max_fps": 30, "yolo26x_checkpoint": "/models/yolo26x.pt"}, Camera(), factory)
+        c.start()
+        self.addCleanup(c.stop)
+        c.set_prompts(["face"])
+        eventually(lambda: workers and workers[0].entered.is_set())
+        c.set_model("yolo26x")
+        self.assertEqual(c.status()["prompts"], ["person"])
+        self.assertNotIn("frame_url", c.status())
+        eventually(lambda: len(workers) == 2 and workers[1].entered.is_set())
+        workers[1].release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertEqual(c.status()["model"], "yolo26x")
+        self.assertTrue(all(key.startswith("2-") for key in c.frames))
+        self.assertEqual(len(c.status()["classes"]), 80)
+        c.set_prompts(["Cup", "person"])
+        self.assertEqual(c.status()["prompts"], ["cup", "person"])
+        with self.assertRaises(ValueError): c.set_prompts(["face"])
+        c.set_model("sam3.1")
+        self.assertEqual(c.status()["prompts"], ["face"])
+        eventually(lambda: len(workers) == 3)
+        c.set_model("yolo26x")
+        self.assertEqual(c.status()["prompts"], ["cup", "person"])
+        with self.assertRaises(ValueError): c.selection(2, 1, 1)
+
+    def test_model_validation_and_switch_to_empty_unloads_previous_worker(self):
+        c, worker = self.controller()
+        for value in (None, True, [], "yolo26n", "unknown"):
+            with self.assertRaises(ValueError): c.set_model(value)
+        with self.assertRaises(ValueError): c.set_model("yolo26x")
+        c.config["yolo26x_checkpoint"] = "/models/yolo26x.pt"
+        c.set_model("yolo26x")
+        self.assertTrue(worker.entered.wait(1))
+        c.set_model("sam3.1")
+        eventually(lambda: worker.stopped)
+        self.assertEqual(c.status()["state"], "idle")
+        self.assertEqual(c.status()["prompts"], [])
+        with self.assertRaises(ValueError):
+            validate_config({"enabled": True, "python": "/p", "checkpoint": "/c", "cache_dir": "/cache", "model": "yolo26x"})
+
+    def test_yolo_letterbox_decoding_classes_counts_and_clipping(self):
+        rows = [[64, 172, 192, 280, .9, 0], [320, 140, 640, 500, .8, 0],
+                [-10, 100, 100, 220, .95, 41], [20, 20, 60, 40, .9, 41],
+                [0, 140, 640, 500, .49, 0], [0, 140, 640, 500, .95, 1]]
+        boxes = decode(rows, ["cup", "person"], 1280, 720, (640, 360), (0, 140), .5)
+        self.assertEqual([b["prompt"] for b in boxes], ["person", "person", "cup"])
+        self.assertEqual(boxes[0]["xyxy"], [.1, 32/360, .3, 140/360])
+        self.assertEqual(boxes[1]["xyxy"], [.5, 0, 1, 1])
+        self.assertEqual(boxes[2]["xyxy"], [0, 0, 100/640, 80/360])
+        self.assertEqual(boxes[0]["color"], boxes[1]["color"])
+        self.assertNotEqual(boxes[0]["color"], boxes[2]["color"])
+        self.assertEqual(len(COCO_CLASSES), 80)
+        with self.assertRaises(RuntimeError): decode([[0, 0, 1, 1, float("nan"), 0]], [], 1, 1, (1, 1), (0, 0), .5)
+
+    def test_yolo_validation_allows_reordering_but_not_wrong_boxes_classes_or_scores(self):
+        rows = [[1, 2, 3, 4, .9, 0], [100, 100, 200, 200, .8, 0]]
+        self.assertEqual(validate_predictions(rows, rows[::-1], .5)["matched"], 4)
+        for wrong in ([[1, 2, 3, 4, .9, 1]], [[20, 20, 30, 40, .9, 0]],
+                      [[1, 2, 3, 4, .2, 0]], [[1, 2, 3, 4, float("nan"), 0]]):
+            with self.assertRaises(RuntimeError): validate_predictions(rows[:1], wrong, .5)
+
     def test_engine_preserves_every_instance_and_category_on_one_frame(self):
         engine = Sam31Engine.__new__(Sam31Engine)
         engine.device = 0
@@ -237,6 +315,29 @@ class DetectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             c.set_prompt("person")
 
+    def test_encoder_pose_survives_inference_delay_and_is_not_resampled_at_completion(self):
+        c, worker = self.controller()
+        pose = {"sampled_at": time.monotonic(), "axes": {
+            "x": {"degrees": 10, "goal_degrees": 40}, "y": {"degrees": 5, "goal_degrees": 5}}}
+        c.pose_provider = lambda: pose
+        c.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        # The capture pose is a snapshot. Inference must not replace it with a
+        # later pose after the motors have moved during model execution.
+        pose = {**pose, "axes": {**pose["axes"], "x": {"degrees": 40, "goal_degrees": 40}}}
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertEqual(c.status()["frame_pose"]["axes"]["x"]["degrees"], 10)
+        self.assertGreaterEqual(c.status()["captured_at"], c.status()["frame_pose"]["sampled_at"])
+
+    def test_old_pose_is_not_paired_with_a_later_camera_frame(self):
+        c, worker = self.controller()
+        c.pose_provider = lambda: {"sampled_at": time.monotonic() - 1}
+        c.set_prompt("cup")
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertIsNone(c.status()["frame_pose"])
+
     def test_config(self):
         validate_config({})
         base = {
@@ -246,14 +347,41 @@ class DetectionTests(unittest.TestCase):
             "cache_dir": "/cache",
         }
         validate_config(base)
+        validate_config({**base, "max_fps": 0})
         for key, value in (
             ("python", "relative"),
             ("confidence", 0),
             ("max_fps", 99),
+            ("max_fps", -1),
+            ("max_fps", float("nan")),
+            ("max_fps", True),
             ("precision", "int8"),
         ):
             with self.assertRaises(ValueError):
                 validate_config({**base, key: value})
+
+    def test_uncapped_sampling_has_no_artificial_wait(self):
+        for config in ({}, {"max_fps": 0}):
+            controller = DetectionController(config, Camera())
+            for elapsed in (0, .001, .05, .18, 2):
+                self.assertEqual(controller._sampling_delay(elapsed), 0)
+        controller = DetectionController({"max_fps": 5}, Camera())
+        self.assertAlmostEqual(controller._sampling_delay(.05), .15)
+        self.assertEqual(controller._sampling_delay(.25), 0)
+
+    def test_new_results_wake_tracking_without_a_poll_timer(self):
+        controller, worker = self.controller()
+        controller.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        previous = controller.frame_version()
+        woke = threading.Event()
+        waiter = threading.Thread(target=lambda: (controller.wait_for_update(previous, 3), woke.set()))
+        waiter.start()
+        self.assertFalse(woke.wait(.01))
+        worker.release.set()
+        self.assertTrue(woke.wait(1))
+        waiter.join(1)
+        self.assertNotEqual(controller.frame_version(), previous)
 
     def test_multiple_categories_share_one_frame_and_clear_atomically(self):
         c, worker = self.controller()
@@ -353,6 +481,94 @@ class DetectionTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
+        c.config["yolo26x_checkpoint"] = "/models/yolo26x.pt"
+        connection.request("POST", "/api/detection/model", '{"model":"yolo26x"}')
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        body = json.loads(response.read())
+        self.assertEqual(body["detection"]["model"], "yolo26x")
+        self.assertFalse(body["servo"]["armed"])
+        self.assertIsNone(body["tracking"]["target"])
+        for payload in ('{"model":"nano"}', '{"model":[]}', '{"model":"sam3.1","extra":1}'):
+            connection.request("POST", "/api/detection/model", payload)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+        for target in ("person", "cup", None):
+            c.set_prompts(["person", "cup"])
+            connection.request("POST", "/api/tracking/target", json.dumps({"target": target}))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            body = json.loads(response.read())
+            self.assertEqual(body["tracking"]["target"], target)
+            self.assertFalse(body["servo"]["armed"])
+        for payload in ('{"target":"unapplied"}', '{"target":true}', '{"target":[]}', '{"target":"person","extra":1}'):
+            connection.request("POST", "/api/tracking/target", payload)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+
+        c.stop()
+        c.state = "running"
+        c.frame_selections[f"{c.revision}-777"] = {"captured_at": time.monotonic(),
+            "boxes": [{"prompt": "cup", "instance_id": 42, "xyxy": [.1, .2, .3, .4], "score": .9}]}
+        selection = {"revision": c.revision, "frame_sequence": 777, "instance_id": 42}
+        connection.request("POST", "/api/tracking/instance", json.dumps(selection))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        body = json.loads(response.read())
+        self.assertEqual(body["tracking"]["instance_id"], 42)
+        self.assertEqual(body["tracking"]["target"], "cup")
+        self.assertFalse(body["servo"]["armed"])
+        for invalid in ({**selection, "instance_id": 100}, {**selection, "revision": -1},
+                        {**selection, "frame_sequence": 778}, {**selection, "instance_id": True},
+                        {**selection, "xyxy": [0, 0, 1, 1]}):
+            connection.request("POST", "/api/tracking/instance", json.dumps(invalid))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            self.assertEqual(app.tracking.instance_id, 42)
+        c.frame_selections[f"{c.revision}-777"]["captured_at"] -= 1
+        with self.assertRaises(ValueError): c.selection(c.revision, 777, 42)
+
+
+class InstanceTests(unittest.TestCase):
+    @staticmethod
+    def box(cx, prompt="cup"):
+        return {"xyxy": [cx-.03, .4, cx+.03, .5], "prompt": prompt, "score": .9}
+
+    def test_ids_survive_reordering_not_nearest_frame_center(self):
+        tracker = InstanceAssociator({})
+        a, b = tracker.update([self.box(.2), self.box(.5)], None, 1)
+        b2, a2 = tracker.update([self.box(.49), self.box(.21)], None, 1.2)
+        self.assertEqual((a["instance_id"], b["instance_id"]), (a2["instance_id"], b2["instance_id"]))
+
+    def test_camera_pan_is_compensated_for_large_image_shift(self):
+        tracker = InstanceAssociator({})
+        pose = lambda x: {"axes": {"x": {"degrees": x}, "y": {"degrees": 0}}}
+        a = tracker.update([self.box(.7)], pose(0), 1)[0]
+        b = tracker.update([self.box(.5)], pose(32), 1.2)[0]
+        self.assertEqual(a["instance_id"], b["instance_id"])
+
+    def test_ambiguous_crossing_does_not_arbitrarily_reassign_clicked_id(self):
+        tracker = InstanceAssociator({})
+        first = tracker.update([self.box(.48), self.box(.52)], None, 1)
+        next_frame = tracker.update([self.box(.495), self.box(.505)], None, 1.2)
+        self.assertTrue({b["instance_id"] for b in first}.isdisjoint(b["instance_id"] for b in next_frame))
+
+    def test_expired_lost_or_different_class_does_not_reuse_identity(self):
+        tracker = InstanceAssociator({})
+        first = tracker.update([self.box(.5)], None, 1)[0]
+        tracker.update([], None, 1.1)
+        brief = tracker.update([self.box(.5)], None, 1.2)[0]
+        self.assertEqual(first["instance_id"], brief["instance_id"])
+        other = tracker.update([self.box(.5, "bottle")], None, 1.3)[0]
+        self.assertNotEqual(first["instance_id"], other["instance_id"])
+        expired = tracker.update([self.box(.5)], None, 2.5)[0]
+        self.assertNotEqual(first["instance_id"], expired["instance_id"])
+        tracker.clear()
+        reset = tracker.update([self.box(.5)], None, 2.6)[0]
+        self.assertNotEqual(expired["instance_id"], reset["instance_id"])
 
 
 if __name__ == "__main__":
