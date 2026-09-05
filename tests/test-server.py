@@ -351,6 +351,89 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.controller.move(name, degrees)
         self.assertEqual(previous, self.packet.writes)
 
+    def test_tracking_integrates_bounded_goals_and_never_renews_lease(self):
+        self.controller.arm()
+        lease = self.controller.last_keepalive
+        self.controller.track({"x": 3, "y": -2})
+        self.assertEqual(self.packet.registers[2][116], 2082)
+        self.assertEqual(self.packet.registers[1][116], 2025)
+        self.assertEqual(self.controller.last_keepalive, lease)
+        # Fresh-frame corrections overcome static error, but lead is bounded
+        # even when the actuator cannot move. Duplicate frames are rejected by
+        # TrackingController before they reach this method.
+        for _ in range(10): self.controller.track({"x": 3, "y": -2})
+        self.assertEqual(self.packet.registers[2][116], 2105)
+        self.assertEqual(self.packet.registers[1][116], 1991)
+        self.packet.writes.clear()
+        self.controller.track({"x": 3, "y": -2})
+        self.assertEqual(self.packet.writes, [])
+        self.controller.track({"x": 0, "y": 0})
+        self.assertEqual([self.packet.registers[i][116] for i in (1, 2)], [2048, 2048])
+        self.assertEqual(self.controller.last_keepalive, lease)
+        self.controller.last_keepalive = time.monotonic() - 4
+        self.packet.writes.clear()
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.track({"x": 3, "y": 0})
+        self.assertFalse(any(addr == 116 for _, addr, _ in self.packet.writes))
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_tracking_clamps_both_limits_with_reversed_rollover_axis(self):
+        axis = self.config["servo"]["axes"]["y"]
+        axis.update(center_position=4065, direction=-1, min_degrees=30, max_degrees=90)
+        self.packet.registers[1][132] = servo.to_position(axis, 30)
+        self.packet.registers[2][132] = 2560
+        self.controller.arm()
+        result = self.controller.track({"x": 3, "y": -3})
+        self.assertTrue(result["limited"])
+        self.assertEqual(self.packet.registers[2][116], 2560)
+        self.assertEqual(self.packet.registers[1][116], servo.to_position(axis, 30))
+        self.controller.track({"x": -2, "y": 3})
+        self.assertEqual(self.packet.registers[1][116], servo.to_position(axis, 30) - 34)
+
+    def test_tracking_rejects_invalid_or_disarmed_requests_without_writes(self):
+        with self.assertRaises(servo.ServoDisarmed): self.controller.track({"x": 1, "y": 0})
+        for offsets in ({"x": 0}, {"x": 6, "y": 0}, {"x": 0, "y": True},
+                        {"x": float("nan"), "y": 0}, {"x": 0, "y": "1"}):
+            with self.assertRaises(ValueError): self.controller.track(offsets)
+        self.assertEqual(self.packet.writes, [])
+
+    def test_tracking_second_axis_fault_is_checked_before_either_move(self):
+        self.controller.arm()
+        self.packet.registers[1][70] = 4
+        self.packet.writes.clear()
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.track({"x": 3, "y": 3})
+        self.assertFalse(any(addr == 116 for _, addr, _ in self.packet.writes))
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_closed_loop_centers_simulated_object_despite_static_servo_error(self):
+        from spring_turret.tracking import TrackingController
+        now = [10.0]
+        data = {"enabled": True, "prompts": ["cup"], "revision": 1, "state": "running",
+                "frame_sequence": 0, "frame_age_ms": 100, "boxes": []}
+        detection = types.SimpleNamespace(status=lambda: data)
+        camera = types.SimpleNamespace(status=lambda: {"online": True, "width": 1280, "height": 720})
+        tracker = TrackingController({"calibrated": True}, detection, self.controller, camera)
+        with patch("time.monotonic", lambda: now[0]):
+            tracker.set_target("cup")
+            tracker.arm()
+            for index in range(120):
+                now[0] += .4
+                # Simulate a browser, not the tracker, keeping the controls alive.
+                self.controller.keepalive()
+                angles = {}
+                for name, sid in (("x", 2), ("y", 1)):
+                    current, goal = self.packet.registers[sid][132], self.packet.registers[sid][116]
+                    # Motion lag and 1.5 degrees of steady-state position error.
+                    self.packet.registers[sid][132] = round(current + .7 * (goal - 17 - current))
+                    angles[name] = servo.to_degrees(self.config["servo"]["axes"][name], self.packet.registers[sid][132])
+                cx, cy = .5 + (20 - angles["x"]) / 160, .5 - (15 - angles["y"]) / 90
+                data.update(frame_sequence=index + 1, boxes=[{"prompt": "cup", "score": .9,
+                            "xyxy": [cx - .03, cy - .03, cx + .03, cy + .03]}])
+                tracker._tick()
+                self.assertTrue(self.controller.armed)
+            self.assertEqual(tracker.state, "centered")
+            self.assertLessEqual(abs(cx - .5), .012)
+            self.assertLessEqual(abs(cy - .5), .012)
+
     def test_http(self):
         class Camera:
             def status(self): return {"online": True}

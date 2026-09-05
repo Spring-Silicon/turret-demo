@@ -20,6 +20,15 @@
   "original_motion_test_profile": {"profile_velocity": 20, "profile_acceleration": 5},
   "uncapped_motion_qualified": false,
   "uncapped_profile_registers_verified": {"x": {"108": 0, "112": 0}, "y": {"108": 0, "112": 0}},
+  "camera_tracking_calibration": {
+    "date": "2026-09-04",
+    "commanded_step_degrees": 3,
+    "method": "640x360 camera phase correlation, encoder readback and reverse-move confirmation",
+    "x": {"measured_step_degrees": 2.02, "image_shift_pixels": [-8, 1], "return_shift_pixels": [5, 0], "tracking_direction": 1},
+    "y": {"measured_step_degrees": 1.15, "image_shift_pixels": [0, 5], "return_shift_pixels": [0, -4], "tracking_direction": -1},
+    "original_goals_restored": true,
+    "closed_loop_framing_verified": false
+  },
   "tests": {
     "unique_ids_and_stable_reads": true,
     "neutral_set_by_operator": true,

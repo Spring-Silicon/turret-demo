@@ -17,6 +17,7 @@ class Element {
   }
   addEventListener(name, action) { this.events[name] = action; }
   setAttribute(name, value) { this.attributes[name] = value; }
+  getAttribute(name) { return this.attributes[name] ?? null; }
   hasAttribute(name) { return Object.hasOwn(this.attributes, name); }
   toggleAttribute(name, force) {
     const present = force ?? !this.hasAttribute(name);
@@ -35,7 +36,7 @@ class Element {
   querySelectorAll(selector) { return this.children.map(child => child.querySelector(selector)); }
   cloneNode() {
     const row = new Element();
-    row.fields = { input: new Element(), ".prompt-count": new Element(), ".remove-prompt": new Element() };
+    row.fields = { input: new Element(), ".prompt-count": new Element(), ".remove-prompt": new Element(), ".target-prompt": new Element() };
     return row;
   }
 }
@@ -128,3 +129,48 @@ assert.equal(get("motor-toggle").attributes["aria-label"], "Start motors");
 assert.equal(get("start-icon").hasAttribute("hidden"), false);
 assert.equal(get("stop-icon").hasAttribute("hidden"), true);
 console.log("validated dual degree sliders, pending edits and start/stop states");
+
+(async () => {
+  run(`status.camera = {online: true, width: 1280, height: 720};
+    status.detection = {enabled: true, state: "running", revision: 4, frame_sequence: 10,
+      frame_age_ms: 200, latency_ms: 150, prompts: ["cup", "bottle"], categories: [],
+      boxes: [{prompt: "cup", xyxy: [.56, .46, .64, .54], score: .9},
+              {prompt: "cup", xyxy: [.46, .61, .54, .69], score: .9},
+              {prompt: "bottle", xyxy: [.46, .46, .54, .54], score: .9}],
+      frame_url: "/test.jpg"};
+    displayedDetection = status.detection;
+    status.tracking = {target: null, state: "off"};
+    setPromptRows(["cup", "bottle", "new class"]);
+    globalThis.targetRequests = [];
+    request = async (path, options) => {
+      targetRequests.push([path, JSON.parse(options.body)]);
+      status.tracking = {target: JSON.parse(options.body).target, state: "waiting"};
+      renderTracking();
+      return status;
+    };`);
+  assert.equal(rows()[2].fields[".target-prompt"].disabled, true);
+  await rows()[0].fields[".target-prompt"].events.click();
+  assert.equal(rows()[0].fields[".target-prompt"].attributes["aria-pressed"], "true");
+  assert.equal(rows()[1].fields[".target-prompt"].attributes["aria-pressed"], "false");
+  assert.equal(get("tracking-overlay").hasAttribute("hidden"), false);
+  assert.equal(get("frame-center").hasAttribute("hidden"), false);
+  assert.equal(get("tracked-box").attributes.y, 610); // Pixel distance selects the vertical cup.
+  await rows()[1].fields[".target-prompt"].events.click();
+  assert.equal(rows()[0].fields[".target-prompt"].attributes["aria-pressed"], "false");
+  assert.equal(rows()[1].fields[".target-prompt"].attributes["aria-pressed"], "true");
+  await rows()[1].fields[".target-prompt"].events.click();
+  assert.equal(run("status.tracking.target"), null);
+  assert.equal(get("tracking-overlay").hasAttribute("hidden"), true);
+  assert.equal(run('targetRequests.every(([path]) => path === "/api/tracking/target")'), true); // Never auto-start.
+  await run('selectTarget("cup");');
+  run('setPromptRows(["cup", "cup", "bottle"]);');
+  assert.equal(rows().filter(row => row.fields[".target-prompt"].attributes["aria-pressed"] === "true").length, 1);
+  assert.equal(rows()[1].fields[".target-prompt"].disabled, true);
+  run('displayedDetection.frame_age_ms = 1000; renderTracking();');
+  assert.equal(get("tracking-overlay").hasAttribute("hidden"), true);
+  rows()[0].fields.input.value = "edited class";
+  rows()[0].fields.input.events.input();
+  await Promise.resolve();
+  assert.equal(run("status.tracking.target"), null); // Editing selected class cancels tracking.
+  console.log("validated single-class target selector, stale overlay and nearest-box highlight");
+})().catch(error => { console.error(error); process.exitCode = 1; });

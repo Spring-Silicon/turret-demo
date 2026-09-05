@@ -24,6 +24,7 @@ from spring_turret.servo import (
     DeviceUnavailable, ServoController, ServoDisarmed, TurretError,
     validate_config as validate_servo,
 )
+from spring_turret.tracking import TrackingController, validate_config as validate_tracking
 
 
 LOGGER = logging.getLogger("spring-turret")
@@ -50,11 +51,12 @@ def extract_jpeg_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
 def load_config(path: Path) -> dict[str, Any]:
     config = json.loads(path.read_text(encoding="utf-8"))
     required = {"listen", "camera", "servo"}
-    if not required <= set(config) or set(config) - required - {"inference"}:
+    if not required <= set(config) or set(config) - required - {"inference", "tracking"}:
         raise ValueError(
-            f"config must contain {sorted(required)} and optional inference"
+            f"config must contain {sorted(required)} and optional inference/tracking"
         )
     validate_inference(config.get("inference", {}))
+    validate_tracking(config.get("tracking", {}))
 
     listen = config["listen"]
     camera = config["camera"]
@@ -222,13 +224,16 @@ class TurretApplication:
         self.detection = detection or DetectionController(
             config.get("inference", {}), self.camera
         )
+        self.tracking = TrackingController(config.get("tracking", {}), self.detection, self.servo, self.camera)
 
     def start(self) -> None:
         self.camera.start()
         self.servo.start()
         self.detection.start()
+        self.tracking.start()
 
     def stop(self) -> None:
+        self.tracking.stop()
         self.servo.stop()
         self.detection.stop()
         self.camera.stop()
@@ -239,6 +244,7 @@ class TurretApplication:
             "camera": self.camera.status(),
             "servo": self.servo.status(),
             "detection": self.detection.status(),
+            "tracking": self.tracking.status(),
         }
 
 
@@ -352,23 +358,28 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                     body = self._request_json()
                     if set(body) != {"prompts"}:
                         raise ValueError("body must contain only prompts")
-                    application.detection.set_prompts(body["prompts"])
+                    application.tracking.set_prompts(body["prompts"])
                 elif path == "/api/detection/prompt":
                     body = self._request_json()
                     if set(body) != {"prompt"}:
                         raise ValueError("body must contain only prompt")
-                    application.detection.set_prompt(body["prompt"])
+                    application.tracking.set_prompts([body["prompt"]])
+                elif path == "/api/tracking/target":
+                    body = self._request_json()
+                    if set(body) != {"target"}:
+                        raise ValueError("body must contain only target")
+                    application.tracking.set_target(body["target"])
                 elif path == "/api/servo/arm":
-                    application.servo.arm()
+                    application.tracking.arm()
                 elif path == "/api/servo/disable":
-                    application.servo.disable()
+                    application.tracking.disable()
                 elif path == "/api/servo/keepalive":
                     application.servo.keepalive()
                 elif path == "/api/servo/position":
                     body = self._request_json()
                     if set(body) != {"axis", "degrees"}:
                         raise ValueError("body must contain only axis and degrees")
-                    application.servo.move(body["axis"], body["degrees"])
+                    application.tracking.manual_move(body["axis"], body["degrees"])
                 else:
                     self.send_error(HTTPStatus.NOT_FOUND)
                     return

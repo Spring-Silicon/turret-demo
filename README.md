@@ -1,6 +1,7 @@
 # Spring turret demo
 
-Camera feed, text-prompt SAM 3.1 bounding boxes, and manual X/Y pan/tilt controls.
+Camera feed, text-prompt SAM 3.1 bounding boxes, and manual or opt-in automatic
+X/Y camera framing.
 
 ## Current hardware status
 
@@ -45,7 +46,37 @@ prompts; `0` means no instances were detected in the current result. Select **Up
 prompts**, or press **Enter** in a text box, to apply every row together.
 Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
-and update to return to the raw feed. Detection never arms, aims, or moves either servo.
+and update to return to the raw feed. Detection alone never moves either servo.
+
+Select the **target icon** beside an applied object class to follow it; only one
+class can be selected. Click it again to return to manual control. While **Start**
+is active, the camera follows whichever matching bounding-box center is nearest
+the frame center (distance in image pixels, not apparent object size or depth).
+A dashed white box previews that instance and the center marker shows the framing
+goal. The selected instance is reconsidered on each fresh frame; this is not a
+persistent object-ID lock.
+
+Selecting a class never starts stopped motors. Stop/Escape still releases both
+motors; a manual slider move cancels automatic tracking. Editing/removing the
+selected prompt also cancels tracking. No target, a stale frame (>750 ms), a
+camera/inference fault, or a prompt change pauses corrections and holds position;
+there is no automatic search/sweep. New frames resume tracking while Start is
+still active. Automatic corrections never renew the browser's three-second lease.
+
+Each fresh-frame correction is at most 3°, with goals bounded to 5° ahead of the
+actual encoder position and the existing X/Y angle limits. A 1.2% image-axis
+deadband reduces jitter. Reused frames and images captured before Start, class
+selection, or the last move's 100 ms settling interval are ignored. The existing
+uncapped motor profile registers are unchanged. The tracker reports `angle limit`
+when centering would require travel outside the configured range.
+
+Camera-axis direction must be commissioned separately from the mechanical zero:
+add `"tracking": {"calibrated": true, "x_direction": 1, "y_direction": -1}` to
+the device config **only after checking the assembly**. These signs were measured
+on spring-edge-2: +X moves the background left, +Y moves it down. Defaults remain
+uncalibrated so another installation cannot move on assumed camera directions.
+Optional `x_gain`, `y_gain`, `max_step_degrees`, `deadband`,
+`max_frame_age_seconds` and `settle_seconds` settings tune the framing loop.
 
 Configured command limits are **X: −90° to +90°** and **Y: 30° to 90°**.
 They are enforced in the API as well as the sliders. Changing limits never
@@ -208,6 +239,8 @@ preprocessing and annotation was about 188 ms, versus the old implementation's
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` at least once a second while running
 - `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
+- `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
+  `{"target": null}` to clear it. Selection is not persisted across restarts.
 - `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears
 - `POST /api/detection/prompt` with `{"prompt": "chair"}` (single-category compatibility)
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL

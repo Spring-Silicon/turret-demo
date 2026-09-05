@@ -22,6 +22,7 @@ const detectionMessage = document.getElementById("detection-status");
 let draftInitialized = false;
 let draftVersion = 0;
 let promptError = "";
+let targetSending = false;
 
 function updatePromptControls() {
   const rows = [...promptRows.children];
@@ -34,6 +35,73 @@ function updatePromptControls() {
   addPromptButton.disabled = !enabled || rows.length >= (status?.detection?.max_prompts || 8);
   updatePromptsButton.disabled = !enabled || detectionSending;
   updatePromptCounts(displayedDetection || status?.detection);
+  updateTargetControls();
+}
+
+function updateTargetControls() {
+  const target = status?.tracking?.target;
+  const prompts = status?.detection?.prompts || [];
+  const seen = new Set();
+  for (const row of promptRows.children) {
+    const prompt = row.querySelector("input").value.trim();
+    const button = row.querySelector(".target-prompt");
+    const applied = Boolean(prompt) && prompts.includes(prompt) && !seen.has(prompt);
+    seen.add(prompt);
+    const selected = applied && prompt === target;
+    button.disabled = !status?.detection?.enabled || !applied || targetSending || detectionSending;
+    button.setAttribute("aria-pressed", String(selected));
+    button.setAttribute("aria-label", selected ? `Stop tracking ${prompt}` : `Track ${prompt || "object"}`);
+    button.title = !applied ? "Update prompts before tracking this class" : selected ? `Stop tracking ${prompt}` : `Track ${prompt}`;
+  }
+}
+
+async function selectTarget(target) {
+  if (targetSending) return;
+  targetSending = true;
+  pendingAngles.clear();
+  updateTargetControls();
+  try {
+    await request("/api/tracking/target", { method: "POST", body: JSON.stringify({ target }) });
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    targetSending = false;
+    updateTargetControls();
+  }
+}
+
+function nearestDisplayedBox(detection, target) {
+  const width = status?.camera?.width || 1280, height = status?.camera?.height || 720;
+  let nearest = null, distance = Infinity;
+  for (const box of detection?.boxes || []) {
+    if (box.prompt !== target || !Array.isArray(box.xyxy) || box.xyxy.length !== 4) continue;
+    const [x1, y1, x2, y2] = box.xyxy;
+    if (!box.xyxy.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1) || x1 >= x2 || y1 >= y2) continue;
+    const d = (((x1 + x2) / 2 - .5) * width) ** 2 + (((y1 + y2) / 2 - .5) * height) ** 2;
+    if (d < distance || (d === distance && box.score > nearest.score)) { nearest = box; distance = d; }
+  }
+  return nearest;
+}
+
+function renderTracking() {
+  const tracking = status?.tracking, target = tracking?.target;
+  const element = document.getElementById("tracking-status");
+  const labels = { stopped: "press Start", waiting: "waiting for fresh detections", lost: "not found",
+    centered: "centered", tracking: "tracking", limited: "angle limit", uncalibrated: "camera directions not calibrated" };
+  element.hidden = !target && !tracking?.error;
+  element.textContent = tracking?.error || (target ? `${target} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
+  element.classList.toggle("error", Boolean(tracking?.error));
+  document.getElementById("frame-center").toggleAttribute("hidden", !target);
+  const detection = displayedDetection;
+  const box = target && isDetectionFresh(detection) && detection.frame_age_ms <= 750
+    ? nearestDisplayedBox(detection, target) : null;
+  document.getElementById("tracking-overlay").toggleAttribute("hidden", !box);
+  if (box) {
+    const [x1, y1, x2, y2] = box.xyxy;
+    const rect = document.getElementById("tracked-box");
+    for (const [key, value] of Object.entries({x: x1 * 1000, y: y1 * 1000, width: (x2 - x1) * 1000, height: (y2 - y1) * 1000})) rect.setAttribute(key, value);
+  }
+  updateTargetControls();
 }
 
 function isDetectionFresh(detection) {
@@ -66,11 +134,14 @@ function addPromptRow(value = "", focus = false) {
   const input = row.querySelector("input");
   input.value = value;
   input.addEventListener("input", () => {
+    if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
     draftVersion += 1;
     promptError = "";
     updatePromptCounts(displayedDetection);
+    updateTargetControls();
   });
   row.querySelector(".remove-prompt").addEventListener("click", () => {
+    if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
     draftVersion += 1;
     promptError = "";
     if (promptRows.children.length === 1) input.value = "";
@@ -78,6 +149,11 @@ function addPromptRow(value = "", focus = false) {
     updatePromptControls();
     const remaining = promptRows.querySelector("input");
     remaining.focus();
+  });
+  row.querySelector(".target-prompt").addEventListener("click", () => {
+    if (row.querySelector(".target-prompt").disabled) return;
+    const prompt = input.value.trim();
+    return selectTarget(status?.tracking?.target === prompt ? null : prompt);
   });
   promptRows.append(row);
   updatePromptControls();
@@ -161,6 +237,7 @@ function render(next) {
   document.getElementById("camera-offline").hidden = camera.online;
   if (!servo.armed) pendingAngles.clear();
   renderMotors();
+  renderTracking();
   showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
 }
 
@@ -272,6 +349,7 @@ async function poll() {
   } catch (error) {
     showMessage(error.message, true);
     updatePromptCounts(null);
+    document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
   } finally {
     polling = false;
   }

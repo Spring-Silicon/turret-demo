@@ -353,6 +353,18 @@ class DetectionTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
+        for target in ("person", "cup", None):
+            connection.request("POST", "/api/tracking/target", json.dumps({"target": target}))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            body = json.loads(response.read())
+            self.assertEqual(body["tracking"]["target"], target)
+            self.assertFalse(body["servo"]["armed"])
+        for payload in ('{"target":"unapplied"}', '{"target":true}', '{"target":[]}', '{"target":"person","extra":1}'):
+            connection.request("POST", "/api/tracking/target", payload)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
 
 
 if __name__ == "__main__":

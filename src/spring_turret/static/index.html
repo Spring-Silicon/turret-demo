@@ -26,6 +26,9 @@
         </form>
         <template id="prompt-row-template">
           <div class="prompt-row">
+            <button class="target-prompt" type="button" aria-label="Track object" aria-pressed="false" title="Track object" disabled>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+            </button>
             <input class="detection-prompt" type="text" maxlength="256" placeholder="Object to find" aria-label="Object to find" autocomplete="off" disabled>
             <output class="prompt-count" aria-label="Detected count unavailable" aria-live="off">—</output>
             <button class="remove-prompt" type="button" aria-label="Remove object" title="Remove object" disabled>
@@ -34,8 +37,11 @@
           </div>
         </template>
         <p id="detection-status" role="status">SAM: checking</p>
+        <p id="tracking-status" role="status" hidden></p>
         <div class="feed" aria-label="Live camera">
           <img id="camera-feed" alt="Live turret camera feed">
+          <svg id="tracking-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" hidden><rect id="tracked-box"/></svg>
+          <svg id="frame-center" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="3"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6"/></svg>
           <p id="camera-offline" hidden>Camera unavailable</p>
         </div>
       </section>

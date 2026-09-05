@@ -322,6 +322,50 @@ class ServoController:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error
 
+    def track(self, offsets: dict[str, float]) -> dict[str, Any]:
+        """Small camera-framing goal correction; only the browser renews its lease.
+
+        All-zero offsets hold the measured pose (clamped inside the soft limits).
+        Otherwise integrate fresh-frame corrections into goals to overcome static
+        position error, with at most 5 degrees of lead over actual encoder position.
+        A zero correction on one axis preserves that axis's existing hold goal.
+        Both axes are validated under the same bus lock before either is moved.
+        """
+        if set(offsets) != {"x", "y"} or any(
+            type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 5
+            for value in offsets.values()
+        ):
+            raise ValueError("tracking offsets must contain x/y steps within ±5 degrees")
+        with self.lock:
+            if not self.armed:
+                raise ServoDisarmed("Motors stopped; press Start before tracking")
+            try:
+                self._tick_locked()
+                goals, limited = {}, False
+                hold = not any(offsets.values())
+                for name, offset in offsets.items():
+                    axis, state = self._axis_config(name), self.axes[name]
+                    if hold:
+                        requested = state["position"]
+                    else:
+                        requested = round(state["goal"] + axis["direction"] * offset * COUNTS_PER_DEGREE)
+                        lead = round(5 * COUNTS_PER_DEGREE)
+                        requested = min(state["position"] + lead, max(state["position"] - lead, requested))
+                    low, high = self._position_limits(name)
+                    goal = min(high, max(low, requested))
+                    if not -1048575 <= goal <= 1048575:
+                        raise DeviceUnavailable(f"{name.upper()}: invalid tracking position")
+                    limited |= requested != goal
+                    goals[name] = goal
+                for name, goal in goals.items():
+                    if goal != self.axes[name]["goal"]:
+                        self._write(name, XL330_GOAL_POSITION, 4, goal)
+                        self.axes[name]["goal"] = goal
+                return {"limited": limited, "goals": goals}
+            except Exception as error:
+                self._fault_locked(error)
+                raise DeviceUnavailable(self.error) from error
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             online = all(state["online"] for state in self.axes.values())

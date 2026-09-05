@@ -8,6 +8,7 @@ bash -n scripts/*.sh
 python3 -m py_compile src/spring_turret/*.py tests/*.py
 python3 tests/test-server.py
 python3 tests/test-detection.py
+python3 tests/test-tracking.py
 python3 tests/test-repository.py
 node --check src/spring_turret/static/app.js
 node tests/test-ui.cjs
