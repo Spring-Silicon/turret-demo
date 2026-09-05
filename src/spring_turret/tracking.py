@@ -15,8 +15,8 @@ DEFAULTS = {
     "calibrated": False,
     "x_direction": 1, "y_direction": -1,
     "x_gain": 24.0, "y_gain": 18.0,
-    "max_step_degrees": 3.0, "deadband": 0.012,
-    "max_frame_age_seconds": 0.75, "settle_seconds": 0.1,
+    "deadband": 0.012,
+    "max_frame_age_seconds": 0.75,
 }
 
 
@@ -32,8 +32,7 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"tracking.{axis}_direction must be -1 or 1")
     for key, (low, high) in {
         "x_gain": (0.1, 90), "y_gain": (0.1, 90),
-        "max_step_degrees": (0.1, 5), "deadband": (0.001, 0.1),
-        "max_frame_age_seconds": (0.1, 1), "settle_seconds": (0, 1),
+        "deadband": (0.001, 0.1), "max_frame_age_seconds": (0.1, 1),
     }.items():
         value = merged[key]
         if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
@@ -183,8 +182,9 @@ class TrackingController:
             if frame == self.last_frame:
                 return
             self.last_frame = frame
-            # Ignore pre-motion images still in flight through SAM. Do not stack
-            # corrections on the same old image while the camera is moving.
+            # Only reject images from before Start or a class/prompt change.
+            # New results during motion are used immediately, with no settling
+            # delay or per-move frame barrier.
             if now - age / 1000 < self.ignore_before:
                 return
             box = nearest_box(detection.get("boxes", []), self.target, camera["width"], camera["height"])
@@ -196,13 +196,11 @@ class TrackingController:
             offsets = {}
             for axis, error in errors.items():
                 step = error * self.config[f"{axis}_gain"] * self.config[f"{axis}_direction"]
-                cap = self.config["max_step_degrees"]
-                offsets[axis] = 0.0 if abs(error) <= self.config["deadband"] else min(cap, max(-cap, step))
+                offsets[axis] = 0.0 if abs(error) <= self.config["deadband"] else step
             if any(offsets.values()):
                 result = self.servo.track(offsets)
                 self.moving = True
                 self.state = "limited" if result["limited"] else "tracking"
-                self.ignore_before = time.monotonic() + self.config["settle_seconds"]
             else:
                 # Keep the servo's holding bias once the image is centered;
                 # replacing its goal with the measured position can reintroduce
@@ -214,6 +212,7 @@ class TrackingController:
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
+            version = self.detection.frame_version()
             try:
                 self._tick()
             except ServoDisarmed:
@@ -231,4 +230,7 @@ class TrackingController:
                         self.servo.disable()
                     except DeviceUnavailable:
                         LOGGER.exception("tracking fault torque-off unconfirmed")
-            self.stop_event.wait(0.05)
+            # Wake on a new inference result, not a fixed-rate control timer.
+            # The timeout only provides checks for Stop, stale data and faults
+            # when inference has stopped publishing results.
+            self.detection.wait_for_update(version, timeout=0.1)

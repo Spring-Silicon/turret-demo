@@ -351,21 +351,20 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.controller.move(name, degrees)
         self.assertEqual(previous, self.packet.writes)
 
-    def test_tracking_integrates_bounded_goals_and_never_renews_lease(self):
+    def test_tracking_has_only_angle_bounds_and_never_renews_lease(self):
         self.controller.arm()
         lease = self.controller.last_keepalive
-        self.controller.track({"x": 3, "y": -2})
-        self.assertEqual(self.packet.registers[2][116], 2082)
-        self.assertEqual(self.packet.registers[1][116], 2025)
+        self.controller.track({"x": 30, "y": -20})
+        self.assertEqual(self.packet.registers[2][116], 2389)
+        self.assertEqual(self.packet.registers[1][116], 1820)
         self.assertEqual(self.controller.last_keepalive, lease)
-        # Fresh-frame corrections overcome static error, but lead is bounded
-        # even when the actuator cannot move. Duplicate frames are rejected by
-        # TrackingController before they reach this method.
-        for _ in range(10): self.controller.track({"x": 3, "y": -2})
-        self.assertEqual(self.packet.registers[2][116], 2105)
-        self.assertEqual(self.packet.registers[1][116], 1991)
+        # The encoder remains at zero: neither the step nor lead is capped.
+        # Goals saturate only at the configured ±45-degree fixture limits.
+        self.assertTrue(self.controller.track({"x": 30, "y": -30})["limited"])
+        self.assertEqual(self.packet.registers[2][116], 2560)
+        self.assertEqual(self.packet.registers[1][116], 1536)
         self.packet.writes.clear()
-        self.controller.track({"x": 3, "y": -2})
+        self.controller.track({"x": 1e308, "y": -1e308})
         self.assertEqual(self.packet.writes, [])
         self.controller.track({"x": 0, "y": 0})
         self.assertEqual([self.packet.registers[i][116] for i in (1, 2)], [2048, 2048])
@@ -391,7 +390,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_tracking_rejects_invalid_or_disarmed_requests_without_writes(self):
         with self.assertRaises(servo.ServoDisarmed): self.controller.track({"x": 1, "y": 0})
-        for offsets in ({"x": 0}, {"x": 6, "y": 0}, {"x": 0, "y": True},
+        for offsets in ({"x": 0}, {"x": float("inf"), "y": 0}, {"x": 0, "y": True},
                         {"x": float("nan"), "y": 0}, {"x": 0, "y": "1"}):
             with self.assertRaises(ValueError): self.controller.track(offsets)
         self.assertEqual(self.packet.writes, [])

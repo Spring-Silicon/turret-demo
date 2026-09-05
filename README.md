@@ -63,20 +63,26 @@ camera/inference fault, or a prompt change pauses corrections and holds position
 there is no automatic search/sweep. New frames resume tracking while Start is
 still active. Automatic corrections never renew the browser's three-second lease.
 
-Each fresh-frame correction is at most 3°, with goals bounded to 5° ahead of the
-actual encoder position and the existing X/Y angle limits. A 1.2% image-axis
-deadband reduces jitter. Reused frames and images captured before Start, class
-selection, or the last move's 100 ms settling interval are ignored. The existing
-uncapped motor profile registers are unchanged. The tracker reports `angle limit`
-when centering would require travel outside the configured range.
+Tracking has no step-size cap, encoder-to-goal lead cap, or settling delay. Each
+new inference result wakes the controller immediately, including frames captured
+during a preceding move. Goal corrections are clamped only to the X/Y angle
+limits. `inference.max_fps: 0` (the default) runs inference as fast as the pipeline
+can process fresh camera frames, without an added FPS throttle. The proportional
+image-error gains and 1.2% centering deadband remain controller tuning, not speed
+caps. Reused frames and images from before Start/class selection are still ignored.
+Stop, the browser lease, stale-frame rejection, and hardware fault protections
+are unchanged. The existing uncapped motor profile registers are also unchanged.
+The tracker reports `angle limit` when centering would require travel outside
+the configured range. Faster corrections can be more abrupt.
 
 Camera-axis direction must be commissioned separately from the mechanical zero:
 add `"tracking": {"calibrated": true, "x_direction": 1, "y_direction": -1}` to
 the device config **only after checking the assembly**. These signs were measured
 on spring-edge-2: +X moves the background left, +Y moves it down. Defaults remain
 uncalibrated so another installation cannot move on assumed camera directions.
-Optional `x_gain`, `y_gain`, `max_step_degrees`, `deadband`,
-`max_frame_age_seconds` and `settle_seconds` settings tune the framing loop.
+Optional `x_gain`, `y_gain`, `deadband` and `max_frame_age_seconds` settings tune
+the framing loop. The old `max_step_degrees` and `settle_seconds` settings have
+been removed; delete them from custom configurations when upgrading.
 
 Configured command limits are **X: −90° to +90°** and **Y: −90° to +90°**.
 They are enforced in the API as well as the sliders. Changing limits never

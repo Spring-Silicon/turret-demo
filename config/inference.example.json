@@ -6,5 +6,5 @@
   "device": 0,
   "precision": "float16",
   "confidence": 0.5,
-  "max_fps": 5
+  "max_fps": 0
 }

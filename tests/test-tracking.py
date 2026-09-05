@@ -86,7 +86,8 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.servo.calls, [])
         self.tracker.arm()
         self.frame([box()])
-        self.assertEqual(self.servo.calls[-1], {"x": 3, "y": 0})
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], 4.8)
+        self.assertEqual(self.servo.calls[-1]["y"], 0)
         self.tracker.disable()
         before = list(self.servo.calls)
         self.frame([box()])
@@ -94,14 +95,15 @@ class TrackingTests(unittest.TestCase):
         self.assertFalse(self.servo.armed)
         self.assertEqual(self.tracker.state, "stopped")
 
-    def test_direction_deadband_and_bounded_corrections(self):
+    def test_direction_deadband_and_uncapped_corrections(self):
         self.start()
         self.frame([box(cx=.55, cy=.4)])
         self.assertAlmostEqual(self.servo.calls[-1]["x"], 1.2)
         self.assertAlmostEqual(self.servo.calls[-1]["y"], 1.8)
         self.tracker.config.update(x_direction=-1, y_direction=1)
         self.frame([box(cx=.9, cy=.1)])
-        self.assertEqual(self.servo.calls[-1], {"x": -3, "y": -3})
+        self.assertAlmostEqual(self.servo.calls[-1]["x"], -9.6)
+        self.assertAlmostEqual(self.servo.calls[-1]["y"], -7.2)
         calls = len(self.servo.calls)
         self.frame([box(cx=.505, cy=.495)])
         self.assertEqual(len(self.servo.calls), calls)
@@ -121,17 +123,21 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.tracker.box, left)
         self.assertLess(self.servo.calls[-1]["x"], 0)
 
-    def test_same_frame_is_not_reused_and_old_inflight_frames_are_ignored(self):
+    def test_same_frame_is_not_reused_but_every_new_motion_frame_is_processed(self):
         self.start()
         self.frame([box()])
         calls = len(self.servo.calls)
         for _ in range(4): self.tracker._tick()
         self.assertEqual(len(self.servo.calls), calls)
-        # Captured before the previous command plus its settling interval.
-        self.frame([box()], age=600)
-        self.assertEqual(len(self.servo.calls), calls)
-        self.frame([box()])
+        # This new frame was captured while the preceding correction was in
+        # flight. There is no settling delay or post-move capture-time barrier.
+        self.now += .2
+        self.detection.captured = self.now - .2
+        self.detection.data["frame_sequence"] += 1
+        self.tracker._tick()
         self.assertEqual(len(self.servo.calls), calls + 1)
+        self.frame([box()])
+        self.assertEqual(len(self.servo.calls), calls + 2)
 
     def test_frames_from_before_start_or_class_selection_never_move(self):
         self.start()
@@ -200,7 +206,7 @@ class TrackingTests(unittest.TestCase):
 
     def test_tracking_config_is_bounded(self):
         validate_config({})
-        for config in ({"x_direction": 0}, {"y_direction": True}, {"max_step_degrees": 6},
+        for config in ({"x_direction": 0}, {"y_direction": True}, {"max_step_degrees": 3}, {"settle_seconds": .1},
                        {"max_frame_age_seconds": 10}, {"x_gain": float("nan")}, {"deadband": 0},
                        {"unknown": 1}, {"calibrated": 1}, []):
             with self.assertRaises(ValueError): validate_config(config)

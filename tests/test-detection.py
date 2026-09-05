@@ -246,14 +246,41 @@ class DetectionTests(unittest.TestCase):
             "cache_dir": "/cache",
         }
         validate_config(base)
+        validate_config({**base, "max_fps": 0})
         for key, value in (
             ("python", "relative"),
             ("confidence", 0),
             ("max_fps", 99),
+            ("max_fps", -1),
+            ("max_fps", float("nan")),
+            ("max_fps", True),
             ("precision", "int8"),
         ):
             with self.assertRaises(ValueError):
                 validate_config({**base, key: value})
+
+    def test_uncapped_sampling_has_no_artificial_wait(self):
+        for config in ({}, {"max_fps": 0}):
+            controller = DetectionController(config, Camera())
+            for elapsed in (0, .001, .05, .18, 2):
+                self.assertEqual(controller._sampling_delay(elapsed), 0)
+        controller = DetectionController({"max_fps": 5}, Camera())
+        self.assertAlmostEqual(controller._sampling_delay(.05), .15)
+        self.assertEqual(controller._sampling_delay(.25), 0)
+
+    def test_new_results_wake_tracking_without_a_poll_timer(self):
+        controller, worker = self.controller()
+        controller.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        previous = controller.frame_version()
+        woke = threading.Event()
+        waiter = threading.Thread(target=lambda: (controller.wait_for_update(previous, 3), woke.set()))
+        waiter.start()
+        self.assertFalse(woke.wait(.01))
+        worker.release.set()
+        self.assertTrue(woke.wait(1))
+        waiter.join(1)
+        self.assertNotEqual(controller.frame_version(), previous)
 
     def test_multiple_categories_share_one_frame_and_clear_atomically(self):
         c, worker = self.controller()

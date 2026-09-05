@@ -323,19 +323,20 @@ class ServoController:
                 raise DeviceUnavailable(self.error) from error
 
     def track(self, offsets: dict[str, float]) -> dict[str, Any]:
-        """Small camera-framing goal correction; only the browser renews its lease.
+        """Camera-framing goal correction; only the browser renews its lease.
 
         All-zero offsets hold the measured pose (clamped inside the soft limits).
         Otherwise integrate fresh-frame corrections into goals to overcome static
-        position error, with at most 5 degrees of lead over actual encoder position.
+        position error. Only configured angular bounds clamp the requested goal;
+        there is no step-size or encoder-to-goal lead cap.
         A zero correction on one axis preserves that axis's existing hold goal.
         Both axes are validated under the same bus lock before either is moved.
         """
         if set(offsets) != {"x", "y"} or any(
-            type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 5
+            type(value) not in (int, float) or not math.isfinite(value)
             for value in offsets.values()
         ):
-            raise ValueError("tracking offsets must contain x/y steps within ±5 degrees")
+            raise ValueError("tracking offsets must contain finite x/y degree corrections")
         with self.lock:
             if not self.armed:
                 raise ServoDisarmed("Motors stopped; press Start before tracking")
@@ -348,14 +349,14 @@ class ServoController:
                     if hold:
                         requested = state["position"]
                     else:
-                        requested = round(state["goal"] + axis["direction"] * offset * COUNTS_PER_DEGREE)
-                        lead = round(5 * COUNTS_PER_DEGREE)
-                        requested = min(state["position"] + lead, max(state["position"] - lead, requested))
+                        requested = state["goal"] + axis["direction"] * offset * COUNTS_PER_DEGREE
                     low, high = self._position_limits(name)
-                    goal = min(high, max(low, requested))
+                    # Clamp before rounding so even a huge finite correction
+                    # cannot overflow conversion or produce an invalid goal.
+                    goal = round(min(high, max(low, requested)))
                     if not -1048575 <= goal <= 1048575:
                         raise DeviceUnavailable(f"{name.upper()}: invalid tracking position")
-                    limited |= requested != goal
+                    limited |= requested < low or requested > high
                     goals[name] = goal
                 for name, goal in goals.items():
                     if goal != self.axes[name]["goal"]:

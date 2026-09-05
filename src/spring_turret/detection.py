@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import selectors
 import subprocess
@@ -28,8 +29,9 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"inference.{key} must be an absolute path")
     if not 0 < float(config.get("confidence", 0.5)) < 1:
         raise ValueError("inference.confidence must be between zero and one")
-    if not 0.1 <= float(config.get("max_fps", 5)) <= 30:
-        raise ValueError("inference.max_fps must be between 0.1 and 30")
+    fps = config.get("max_fps", 0)
+    if type(fps) not in (int, float) or not math.isfinite(fps) or not (fps == 0 or 0.1 <= fps <= 30):
+        raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
     if isinstance(config.get("device", 0), bool) or int(config.get("device", 0)) < 0:
@@ -206,6 +208,21 @@ class DetectionController:
         with self.condition:
             return self.frames.get(key)
 
+    def frame_version(self) -> tuple[int, int | None]:
+        with self.condition:
+            return self.revision, self.result.get("frame_sequence")
+
+    def wait_for_update(self, previous: tuple[int, int | None], timeout: float) -> None:
+        with self.condition:
+            self.condition.wait_for(
+                lambda: self.stop_event.is_set() or self.frame_version() != previous,
+                timeout=timeout,
+            )
+
+    def _sampling_delay(self, elapsed: float) -> float:
+        fps = float(self.config.get("max_fps", 0))
+        return max(0, 1 / fps - elapsed) if fps else 0.0
+
     def _progress(self, revision: int, stage: str) -> None:
         with self.condition:
             if revision == self.revision and self.prompts:
@@ -279,6 +296,7 @@ class DetectionController:
                         self.completed_at = captured_at
                         self.state = "running"
                         self.error = None
+                        self.condition.notify_all()
                 except Exception as error:
                     with self.condition:
                         if revision == self.revision:
@@ -289,13 +307,9 @@ class DetectionController:
                     if worker:
                         worker.stop()
                     failed_revision = revision
-                self.stop_event.wait(
-                    max(
-                        0,
-                        1 / float(self.config.get("max_fps", 5))
-                        - (time.monotonic() - started),
-                    )
-                )
+                delay = self._sampling_delay(time.monotonic() - started)
+                if delay:
+                    self.stop_event.wait(delay)
         finally:
             if self.worker:
                 self.worker.stop()
