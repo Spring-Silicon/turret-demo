@@ -58,6 +58,8 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.config = server.load_config(ROOT / "config/spring-turret-demo.json")
         self.config["servo"]["calibrated"] = True
+        for axis in self.config["servo"]["axes"].values():
+            axis.update(min_degrees=-45, max_degrees=45)
         self.packet = FakePacket()
         sdk = types.SimpleNamespace(COMM_SUCCESS=0, PortHandler=FakePort,
                                     PacketHandler=lambda _: self.packet)
@@ -174,10 +176,34 @@ class ControllerTests(unittest.TestCase):
 
     def test_config_validation(self):
         for key, value in (("id", 2), ("direction", 0), ("center_position", -1),
-                           ("min_degrees", -91), ("max_degrees", float("nan")), ("profile_velocity", True)):
+                           ("min_degrees", -180), ("min_degrees", 45),
+                           ("max_degrees", 180), ("max_degrees", float("nan")), ("profile_velocity", True)):
             config = copy.deepcopy(self.config["servo"])
             config["axes"]["y"][key] = value
             with self.assertRaises(ValueError): servo.validate_config(config)
+
+    def test_requested_asymmetric_limits_and_rearm_gate(self):
+        axes = self.config["servo"]["axes"]
+        axes["x"].update(min_degrees=-110, max_degrees=110)
+        axes["y"].update(min_degrees=30, max_degrees=90)
+        servo.validate_config(self.config["servo"])
+        self.controller._poll_locked()
+        self.controller.error = ""  # A successful monitor iteration clears startup status.
+        self.assertFalse(self.controller.status()["ready"])
+        self.assertIn("Y outside", self.controller.status()["error"])
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+        self.assertFalse(any(a == 64 and v == 1 for _, a, v in self.packet.writes))
+        self.packet.registers[1][132] = servo.to_position(axes["y"], 45)
+        self.controller._poll_locked()
+        self.assertTrue(self.controller.status()["ready"])
+        self.controller.arm()
+        for name, degrees in (("x", -110), ("x", 110), ("y", 30), ("y", 90)):
+            self.controller.move(name, degrees)
+            self.assertEqual(self.packet.registers[axes[name]["id"]][116], servo.to_position(axes[name], degrees))
+        previous = self.packet.writes.copy()
+        for name, degrees in (("x", -110.01), ("x", 110.01), ("y", 29.99), ("y", 90.01), ("y", 0)):
+            with self.assertRaises(ValueError): self.controller.move(name, degrees)
+        self.assertEqual(previous, self.packet.writes)
 
     def test_http(self):
         class Camera:

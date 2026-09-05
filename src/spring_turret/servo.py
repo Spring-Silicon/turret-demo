@@ -56,8 +56,8 @@ def validate_config(config: dict[str, Any]) -> None:
             value = axis.get(field)
             if type(value) not in (int, float) or not math.isfinite(value):
                 raise ValueError(f"{name}.{field} must be a finite number")
-        if not -90 <= axis["min_degrees"] < 0 < axis["max_degrees"] <= 90:
-            raise ValueError(f"{name} limits must contain zero and stay within ±90 degrees")
+        if not -180 < axis["min_degrees"] < axis["max_degrees"] < 180:
+            raise ValueError(f"{name} limits must increase and stay strictly within ±180 degrees")
         if not 0 <= axis["center_position"] <= 4095:
             raise ValueError(f"{name} center_position must be a single-turn encoder reading")
         if not 1 <= axis["profile_velocity"] <= 40:
@@ -300,11 +300,15 @@ class ServoController:
     def status(self) -> dict[str, Any]:
         with self.lock:
             online = all(state["online"] for state in self.axes.values())
+            outside = [name.upper() for name, state in self.axes.items()
+                       if state["position"] is not None and not self._within_limits(name, state["position"])]
+            range_error = (f"{'/'.join(outside)} outside configured limits; reposition with torque off"
+                           if outside and not self.armed else None)
             return {
-                "online": online, "ready": online and self.config["calibrated"],
+                "online": online, "ready": online and self.config["calibrated"] and not outside,
                 "device": self.config["device"], "protocol": "dynamixel-2.0",
                 "baudrate": self.config["baudrate"], "armed": self.armed,
-                "error": self.error or (None if self.config["calibrated"] else "X/Y calibration required"),
+                "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
                 "axes": {name: {**state, "id": self.config["axes"][name]["id"],
                     "degrees": to_degrees(self._axis_config(name), state["position"]),
                     "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
