@@ -29,6 +29,10 @@ class Detector:
     def status(self): return {**copy.deepcopy(self.data), "frame_age_ms": (self.clock() - self.captured) * 1000}
     def set_prompts(self, prompts):
         self.data.update(prompts=prompts, revision=self.data["revision"] + 1, state="loading", boxes=[])
+    def selection(self, revision, sequence, instance_id):
+        if (revision, sequence) != (self.data["revision"], self.data["frame_sequence"]):
+            raise ValueError("stale frame")
+        return next(b for b in self.data["boxes"] if b["instance_id"] == instance_id)
 
 
 class Servo:
@@ -209,6 +213,45 @@ class TrackingTests(unittest.TestCase):
         self.servo.limited = True
         self.frame([box()])
         self.assertEqual(self.tracker.state, "limited")
+
+    def test_clicked_instance_overrides_nearest_and_can_switch_within_same_class(self):
+        left, right = {**box(cx=.3), "instance_id": 10}, {**box(cx=.6), "instance_id": 20}
+        self.frame([left, right])
+        self.tracker.set_instance(1, self.detection.data["frame_sequence"], 10)
+        self.assertFalse(self.servo.armed)
+        self.assertEqual(self.servo.calls, [])
+        self.tracker.arm()
+        self.frame([right, left])
+        self.assertEqual(self.tracker.box, left)
+        self.assertLess(self.servo.calls[-1]["x"], 0)
+        self.tracker.set_instance(1, self.detection.data["frame_sequence"], 20)
+        self.frame([left, right])
+        self.assertEqual(self.tracker.box, right)
+        self.assertGreater(self.servo.calls[-1]["x"], 0)
+        self.frame([left])
+        self.assertEqual(self.tracker.state, "lost")
+        self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
+        self.assertEqual(self.tracker.instance_id, 20)
+        self.frame([right, left])
+        self.assertEqual(self.tracker.box, right)
+
+    def test_class_selection_manual_and_prompt_change_clear_instance_mode(self):
+        selected = {**box(cx=.3), "instance_id": 10}
+        def pick():
+            self.frame([selected])
+            self.tracker.set_instance(self.detection.data["revision"], self.detection.data["frame_sequence"], 10)
+        pick()
+        self.tracker.set_target("cup")
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.tracker.target, "cup")
+        pick()
+        self.tracker.manual_move("x", 4)
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertIsNone(self.tracker.target)
+        pick()
+        self.tracker.set_prompts(["cup"])
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertIsNone(self.tracker.target)
 
     def test_full_angle_is_based_on_capture_pose_not_accumulated_goals(self):
         self.start()

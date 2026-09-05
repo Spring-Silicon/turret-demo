@@ -23,6 +23,89 @@ let draftInitialized = false;
 let draftVersion = 0;
 let promptError = "";
 let targetSending = false;
+const cameraFeed = document.getElementById("camera-feed");
+const boxTargets = document.getElementById("box-targets");
+const boxButtons = new Map();
+let frameDetection = null;
+let loadingDetection = null;
+
+function clickableFrame() {
+  return frameDetection?.state === "running" && status?.camera?.online &&
+    frameDetection.revision === status?.detection?.revision &&
+    status?.detection?.state === "running" &&
+    frameDetection.frame_age_ms + performance.now() - frameDetection.receivedAt <= 750;
+}
+
+async function selectInstance(selection) {
+  if (targetSending || detectionSending) return;
+  targetSending = true;
+  pendingAngles.clear();
+  renderTracking();
+  try {
+    await request("/api/tracking/instance", {method: "POST", body: JSON.stringify(selection)});
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    targetSending = false;
+    renderTracking();
+  }
+}
+
+function renderBoxTargets() {
+  boxTargets.hidden = !clickableFrame();
+  if (boxTargets.hidden) return;
+  const ids = new Set();
+  for (const box of frameDetection.boxes) {
+    if (!Number.isInteger(box.instance_id)) continue;
+    const id = box.instance_id;
+    ids.add(id);
+    let button = boxButtons.get(id);
+    if (!button) {
+      button = document.createElement("button");
+      button.type = "button";
+      button.className = "box-target";
+      let pressedSelection = null;
+      const selection = () => ({revision: frameDetection.revision,
+        frame_sequence: frameDetection.frame_sequence, instance_id: id});
+      button.addEventListener("pointerdown", () => { pressedSelection = clickableFrame() ? selection() : null; });
+      button.addEventListener("pointercancel", () => { pressedSelection = null; });
+      button.addEventListener("keydown", () => { pressedSelection = null; });
+      button.addEventListener("click", () => {
+        if (!clickableFrame() || button.disabled) { pressedSelection = null; return; }
+        const picked = pressedSelection || selection();
+        pressedSelection = null;
+        return selectInstance(picked);
+      });
+      boxButtons.set(id, button);
+      boxTargets.append(button);
+    }
+    const [x1, y1, x2, y2] = box.xyxy;
+    Object.assign(button.style, {left: `${x1*100}%`, top: `${y1*100}%`,
+      width: `${(x2-x1)*100}%`, height: `${(y2-y1)*100}%`,
+      zIndex: String(Math.round(1000000*(1-(x2-x1)*(y2-y1))))});
+    button.disabled = targetSending || detectionSending;
+    button.setAttribute("aria-label", `Track ${box.prompt} object ${id}`);
+    button.setAttribute("aria-pressed", String(status?.tracking?.instance_id === id));
+    button.title = `Track this ${box.prompt}`;
+  }
+  for (const [id, button] of boxButtons) if (!ids.has(id)) {
+    button.remove();
+    boxButtons.delete(id);
+  }
+}
+
+cameraFeed.addEventListener("load", () => {
+  // A click must refer to the JPEG actually on screen, not the newest API
+  // result while that image is still downloading. Only one JPEG loads at once.
+  frameDetection = loadingDetection;
+  loadingDetection = null;
+  renderTracking();
+});
+cameraFeed.addEventListener("error", () => {
+  loadingDetection = frameDetection = null;
+  feedSource = "";
+  renderTracking();
+});
 
 function updatePromptControls() {
   const rows = [...promptRows.children];
@@ -50,8 +133,9 @@ function updateTargetControls() {
     const selected = applied && prompt === target;
     button.disabled = !status?.detection?.enabled || !applied || targetSending || detectionSending;
     button.setAttribute("aria-pressed", String(selected));
-    button.setAttribute("aria-label", selected ? `Stop tracking ${prompt}` : `Track ${prompt || "object"}`);
-    button.title = !applied ? "Update prompts before tracking this class" : selected ? `Stop tracking ${prompt}` : `Track ${prompt}`;
+    const label = selected && status?.tracking?.instance_id != null ? `Track nearest ${prompt}` : selected ? `Stop tracking ${prompt}` : `Track ${prompt || "object"}`;
+    button.setAttribute("aria-label", label);
+    button.title = !applied ? "Update prompts before tracking this class" : label;
   }
 }
 
@@ -89,12 +173,13 @@ function renderTracking() {
   const labels = { stopped: "press Start", waiting: "waiting for fresh detections", lost: "not found",
     centered: "centered", tracking: "tracking", limited: "angle limit", uncalibrated: "camera directions not calibrated" };
   element.hidden = !target && !tracking?.error;
-  element.textContent = tracking?.error || (target ? `${target} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
+  element.textContent = tracking?.error || (target ? `${target}${tracking.instance_id != null ? " · selected object" : ""} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
   element.classList.toggle("error", Boolean(tracking?.error));
   document.getElementById("frame-center").toggleAttribute("hidden", !target);
-  const detection = displayedDetection;
-  const box = target && isDetectionFresh(detection) && detection.frame_age_ms <= 750
-    ? nearestDisplayedBox(detection, target) : null;
+  const detection = frameDetection;
+  const box = target && clickableFrame()
+    ? tracking.instance_id != null ? detection.boxes.find(b => b.instance_id === tracking.instance_id)
+      : nearestDisplayedBox(detection, target) : null;
   document.getElementById("tracking-overlay").toggleAttribute("hidden", !box);
   if (box) {
     const [x1, y1, x2, y2] = box.xyxy;
@@ -102,6 +187,7 @@ function renderTracking() {
     for (const [key, value] of Object.entries({x: x1 * 1000, y: y1 * 1000, width: (x2 - x1) * 1000, height: (y2 - y1) * 1000})) rect.setAttribute(key, value);
   }
   updateTargetControls();
+  renderBoxTargets();
 }
 
 function isDetectionFresh(detection) {
@@ -153,7 +239,7 @@ function addPromptRow(value = "", focus = false) {
   row.querySelector(".target-prompt").addEventListener("click", () => {
     if (row.querySelector(".target-prompt").disabled) return;
     const prompt = input.value.trim();
-    return selectTarget(status?.tracking?.target === prompt ? null : prompt);
+    return selectTarget(status?.tracking?.target === prompt && status?.tracking?.instance_id == null ? null : prompt);
   });
   promptRows.append(row);
   updatePromptControls();
@@ -185,9 +271,11 @@ function renderDetection(detection) {
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";
-  if (source !== feedSource) {
+  if (source !== feedSource && (!loadingDetection || !fresh)) {
     feedSource = source;
-    document.getElementById("camera-feed").src = source;
+    loadingDetection = fresh ? {...detection, receivedAt: performance.now()} : null;
+    if (!fresh) frameDetection = null;
+    cameraFeed.src = source;
   }
 }
 
@@ -232,6 +320,7 @@ function render(next) {
   status = next;
   renderDetection(next.detection);
   const { camera, servo } = next;
+  cameraFeed.parentElement.style.aspectRatio = `${camera.width} / ${camera.height}`;
   showDevice("camera-status", "Camera", camera.online);
   showDevice("servo-status", "X/Y", servo.online);
   document.getElementById("camera-offline").hidden = camera.online;
@@ -350,6 +439,7 @@ async function poll() {
     showMessage(error.message, true);
     updatePromptCounts(null);
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
+    boxTargets.hidden = true;
   } finally {
     polling = false;
   }

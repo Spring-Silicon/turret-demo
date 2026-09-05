@@ -70,6 +70,7 @@ class TrackingController:
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="camera-tracking", daemon=True)
         self.target: str | None = None
+        self.instance_id: int | None = None
         self.state = "off"
         self.error: str | None = None
         self.box: dict | None = None
@@ -110,25 +111,33 @@ class TrackingController:
                 prompt not in detection.get("prompts", []) or not detection.get("enabled")
             ):
                 raise ValueError("target must be one of the applied object classes, or null")
-            if prompt == self.target:
-                return
-            # Clear first even if holding fails: never leave stale automatic intent.
-            self.target = None
-            was_moving = self.moving
-            self._pause("off")
-            if prompt and not was_moving and self.servo.status()["armed"]:
-                self.servo.track({"x": 0.0, "y": 0.0})
-            self.target = prompt
-            self.last_frame = None
-            self.ignore_before = time.monotonic()
-            self.error = None
-            self.state = "waiting" if prompt else "off"
+            self._select(prompt, None)
+
+    def set_instance(self, revision: int, sequence: int, instance_id: int) -> None:
+        with self.lock:
+            box = self.detection.selection(revision, sequence, instance_id)
+            self._select(box["prompt"], instance_id)
+
+    def _select(self, prompt: str | None, instance_id: int | None) -> None:
+        if (prompt, instance_id) == (self.target, self.instance_id):
+            return
+        # Clear first even if holding fails: never leave stale automatic intent.
+        self.target = self.instance_id = None
+        was_moving = self.moving
+        self._pause("off")
+        if prompt and not was_moving and self.servo.status()["armed"]:
+            self.servo.track({"x": 0.0, "y": 0.0})
+        self.target, self.instance_id = prompt, instance_id
+        self.last_frame = None
+        self.ignore_before = time.monotonic()
+        self.error = None
+        self.state = "waiting" if prompt else "off"
 
     def set_prompts(self, prompts: Any) -> None:
         with self.lock:
             self.detection.set_prompts(prompts)
-            if self.target not in self.detection.status()["prompts"]:
-                self.target = None
+            if self.instance_id is not None or self.target not in self.detection.status()["prompts"]:
+                self.target = self.instance_id = None
             self._pause("waiting" if self.target else "off")
             self.last_frame = None
             self.ignore_before = time.monotonic()
@@ -156,11 +165,14 @@ class TrackingController:
         with self.lock:
             self.servo.move(axis, degrees)
             self.target, self.moving = None, False
+            self.instance_id = None
             self._pause("off")
 
     def status(self) -> dict[str, Any]:
         with self.lock:
-            return {"target": self.target, "state": self.state, "error": self.error,
+            return {"target": self.target, "instance_id": self.instance_id,
+                    "selection": "instance" if self.instance_id is not None else "class",
+                    "state": self.state, "error": self.error,
                     "box": self.box, "frame": list(self.frame) if self.frame else None,
                     "error_pixels": self.error_pixels, "mode": "absolute-angle",
                     "goal_degrees": self.goal_degrees}
@@ -181,7 +193,7 @@ class TrackingController:
             now = time.monotonic()
             age = detection.get("frame_age_ms")
             if self.target not in detection.get("prompts", []):
-                self.target = None
+                self.target = self.instance_id = None
                 self._pause("off")
                 return
             if (not camera["online"] or detection.get("state") != "running" or
@@ -198,7 +210,10 @@ class TrackingController:
             # delay or per-move frame barrier.
             if now - age / 1000 < self.ignore_before:
                 return
-            box = nearest_box(detection.get("boxes", []), self.target, camera["width"], camera["height"])
+            boxes = detection.get("boxes", [])
+            if self.instance_id is not None:
+                boxes = [box for box in boxes if box.get("instance_id") == self.instance_id]
+            box = nearest_box(boxes, self.target, camera["width"], camera["height"])
             if box is None:
                 self._pause("lost")
                 return
@@ -266,7 +281,7 @@ class TrackingController:
             except Exception as error:
                 LOGGER.exception("camera tracking stopped")
                 with self.lock:
-                    self.target = None
+                    self.target = self.instance_id = None
                     self.moving = False
                     self.state, self.error = "error", str(error)
                     self.box = self.frame = self.error_pixels = None

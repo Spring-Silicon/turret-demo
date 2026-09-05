@@ -229,7 +229,8 @@ class TurretApplication:
         self.servo = servo or ServoController(config["servo"])
         self.static_dir = static_dir or Path(__file__).with_name("static")
         self.detection = detection or DetectionController(
-            config.get("inference", {}), self.camera, pose_provider=self.servo.sample_pose
+            config.get("inference", {}), self.camera, pose_provider=self.servo.sample_pose,
+            tracking_config=config.get("tracking", {}),
         )
         self.tracking = TrackingController(config.get("tracking", {}), self.detection, self.servo, self.camera)
 
@@ -376,6 +377,11 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                     if set(body) != {"target"}:
                         raise ValueError("body must contain only target")
                     application.tracking.set_target(body["target"])
+                elif path == "/api/tracking/instance":
+                    body = self._request_json()
+                    if set(body) != {"revision", "frame_sequence", "instance_id"}:
+                        raise ValueError("body must contain only revision, frame_sequence and instance_id")
+                    application.tracking.set_instance(body["revision"], body["frame_sequence"], body["instance_id"])
                 elif path == "/api/servo/arm":
                     application.tracking.arm()
                 elif path == "/api/servo/disable":

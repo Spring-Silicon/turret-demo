@@ -53,8 +53,23 @@ class can be selected. Click it again to return to manual control. While **Start
 is active, the camera follows whichever matching bounding-box center is nearest
 the frame center (distance in image pixels, not apparent object size or depth).
 A dashed white box previews that instance and the center marker shows the framing
-goal. The selected instance is reconsidered on each fresh frame; this is not a
-persistent object-ID lock.
+goal. In class mode the nearest instance is reconsidered on each fresh frame.
+
+**Click a bounding box** to select that particular instance instead, including
+another instance of the same class. The white dashed outline follows the selected
+instance, not whichever matching object is closest to center. The boxes also
+support keyboard focus and Enter/Space. Overlapping boxes prioritize the smaller
+box. Click the class icon to return to nearest-of-class mode, or click another box
+to switch objects. Selection never starts stopped motors.
+
+Instance IDs use conservative class/position/size matching between SAM detections,
+with camera-motion compensation from the encoder/frame pairs. This is not SAM
+video tracking or appearance-based re-identification: occlusion, fast movement or
+crossing similar objects can lose the association. Missing/ambiguous instances
+hold position; there is no nearest-class fallback. A spatially matching instance
+can return within 750 ms; after expiry, click again. Updating prompts clears an
+instance selection. The server validates a click against the exact displayed
+JPEG's cached detections and rejects stale frames or fabricated object IDs.
 
 Selecting a class never starts stopped motors. Stop/Escape still releases both
 motors; a manual slider move cancels automatic tracking. Editing/removing the
@@ -268,6 +283,7 @@ preprocessing and annotation was about 188 ms, versus the old implementation's
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` at least once a second while running
 - `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
+- `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` selects a box from the displayed frame without arming.
 - `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
   `{"target": null}` to clear it. Selection is not persisted across restarts.
 - `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from spring_turret.prompts import COLORS, MAX_PROMPTS, normalize_prompts
+from spring_turret.instances import InstanceAssociator
 
 
 def validate_config(config: dict[str, Any]) -> None:
@@ -136,10 +137,12 @@ class WorkerClient:
 class DetectionController:
     def __init__(
         self, config: dict[str, Any], camera: Any, worker_factory: Any = WorkerClient,
-        pose_provider: Any = None,
+        pose_provider: Any = None, tracking_config: dict | None = None,
     ):
         self.config, self.camera, self.worker_factory = config, camera, worker_factory
         self.pose_provider = pose_provider
+        self.instances = InstanceAssociator(tracking_config or {})
+        self.frame_selections: OrderedDict[str, dict] = OrderedDict()
         self.enabled = config.get("enabled", False)
         self.condition = threading.Condition()
         self.stop_event = threading.Event()
@@ -181,6 +184,8 @@ class DetectionController:
             self.revision += 1
             self.result = {}
             self.frames.clear()
+            self.frame_selections.clear()
+            self.instances.clear()
             self.completed_at = 0
             self.error = None
             self.state = "loading" if self.prompts else "idle"
@@ -209,6 +214,19 @@ class DetectionController:
     def frame(self, key: str) -> bytes | None:
         with self.condition:
             return self.frames.get(key)
+
+    def selection(self, revision: int, sequence: int, instance_id: int) -> dict:
+        if any(type(v) is not int or v < 0 for v in (revision, sequence, instance_id)):
+            raise ValueError("selection requires integer revision, frame_sequence and instance_id")
+        with self.condition:
+            frame = self.frame_selections.get(f"{revision}-{sequence}")
+            if (revision != self.revision or self.state != "running" or not frame or
+                    not 0 <= time.monotonic() - frame["captured_at"] <= .75):
+                raise ValueError("That camera frame is stale; click a box in a fresh frame")
+            for box in frame["boxes"]:
+                if box["instance_id"] == instance_id:
+                    return dict(box)
+            raise ValueError("That object is not in the displayed frame")
 
     def frame_version(self) -> tuple[int, int | None]:
         with self.condition:
@@ -292,8 +310,11 @@ class DetectionController:
                         if revision != self.revision:
                             continue  # Never display boxes from an obsolete prompt.
                         self.frames[key] = annotated
-                        while len(self.frames) > 3:
-                            self.frames.popitem(last=False)
+                        result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
+                        self.frame_selections[key] = {"boxes": result["boxes"], "captured_at": captured_at}
+                        while len(self.frames) > 8:
+                            removed, _ = self.frames.popitem(last=False)
+                            self.frame_selections.pop(removed, None)
                         self.result = {
                             **result,
                             "frame_sequence": self.sequence,
@@ -311,6 +332,8 @@ class DetectionController:
                             self.state, self.error = "error", str(error)
                             self.result = {}
                             self.frames.clear()
+                            self.frame_selections.clear()
+                            self.instances.clear()
                         worker, self.worker = self.worker, None
                     if worker:
                         worker.stop()

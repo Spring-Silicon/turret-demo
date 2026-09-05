@@ -50,7 +50,8 @@ get("prompt-row-template").content = { firstElementChild: new Element() };
 // Match the SVG markup: .hidden is not reflected on SVGElement, unlike HTML.
 get("stop-icon").setAttribute("hidden", "");
 const context = vm.createContext({
-  document: { getElementById: get, querySelectorAll: () => [], addEventListener() {} },
+  document: { getElementById: get, createElement: () => new Element(), querySelectorAll: () => [], addEventListener() {} },
+  performance: {now: () => 1000},
   fetch: () => new Promise(() => {}),
   AbortSignal,
   setTimeout() { return 1; },
@@ -142,6 +143,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
               {prompt: "bottle", xyxy: [.46, .46, .54, .54], score: .9}],
       frame_url: "/test.jpg"};
     displayedDetection = status.detection;
+    frameDetection = {...status.detection, receivedAt: 1000};
     status.tracking = {target: null, state: "off"};
     setPromptRows(["cup", "bottle", "new class"]);
     globalThis.targetRequests = [];
@@ -169,11 +171,50 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   run('setPromptRows(["cup", "cup", "bottle"]);');
   assert.equal(rows().filter(row => row.fields[".target-prompt"].attributes["aria-pressed"] === "true").length, 1);
   assert.equal(rows()[1].fields[".target-prompt"].disabled, true);
-  run('displayedDetection.frame_age_ms = 1000; renderTracking();');
+  run('frameDetection.frame_age_ms = 1000; renderTracking();');
   assert.equal(get("tracking-overlay").hasAttribute("hidden"), true);
   rows()[0].fields.input.value = "edited class";
   rows()[0].fields.input.events.input();
   await Promise.resolve();
   assert.equal(run("status.tracking.target"), null); // Editing selected class cancels tracking.
   console.log("validated single-class target selector, stale overlay and nearest-box highlight");
+
+  run(`status.detection.frame_sequence = 11;
+    status.detection.boxes = [{prompt: "cup", xyxy: [.1,.2,.3,.4], score: .9, instance_id: 7},
+      {prompt: "cup", xyxy: [.45,.45,.55,.55], score: .9, instance_id: 8}];
+    status.servo.armed = false;
+    frameDetection = {...status.detection, receivedAt: 1000};
+    status.tracking = {target: "cup", instance_id: 7, state: "stopped"};
+    renderTracking();
+    request = async (path, options) => {
+      const body = JSON.parse(options.body);
+      targetRequests.push([path, body]);
+      status.tracking = {target: "cup", instance_id: body.instance_id, state: "stopped"};
+      return status;
+    };`);
+  assert.equal(get("tracked-box").attributes.x, 100); // Selected, not the centered cup.
+  assert.equal(get("box-targets").children.length, 2);
+  assert.equal(get("box-targets").hidden, false);
+  const clickBox = get("box-targets").children[0];
+  clickBox.events.pointerdown();
+  run('status.detection = {...status.detection, frame_sequence: 12};');
+  await clickBox.events.click();
+  assert.equal(run('JSON.stringify(targetRequests.at(-1))'),
+    '["/api/tracking/instance",{"revision":4,"frame_sequence":11,"instance_id":7}]');
+  assert.equal(run('status.servo.armed'), false);
+  await get("box-targets").children[1].events.click();
+  assert.equal(run('status.tracking.instance_id'), 8);
+  const before = run('targetRequests.length');
+  run('frameDetection.receivedAt = 0; renderTracking();');
+  await clickBox.events.click();
+  assert.equal(run('targetRequests.length'), before);
+  assert.equal(get("box-targets").hidden, true);
+  run(`loadingDetection = {...status.detection, frame_sequence: 12, receivedAt: 1000};
+    frameDetection = null;`);
+  get("camera-feed").events.load();
+  assert.equal(run('frameDetection.frame_sequence'), 12);
+  assert.equal(run('loadingDetection'), null);
+  get("camera-feed").events.error();
+  assert.equal(get("box-targets").hidden, true);
+  console.log("validated clickable instances, exact displayed-frame selection, stale clicks and no auto-start");
 })().catch(error => { console.error(error); process.exitCode = 1; });

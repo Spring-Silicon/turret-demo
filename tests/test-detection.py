@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spring_turret.detection import DetectionController, validate_config
 from spring_turret.server import TurretApplication, make_handler
 from spring_turret.sam31_worker import Sam31Engine
+from spring_turret.instances import InstanceAssociator
 
 
 def eventually(check, timeout=3):
@@ -419,6 +420,68 @@ class DetectionTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
+
+        c.stop()
+        c.state = "running"
+        c.frame_selections[f"{c.revision}-777"] = {"captured_at": time.monotonic(),
+            "boxes": [{"prompt": "cup", "instance_id": 42, "xyxy": [.1, .2, .3, .4], "score": .9}]}
+        selection = {"revision": c.revision, "frame_sequence": 777, "instance_id": 42}
+        connection.request("POST", "/api/tracking/instance", json.dumps(selection))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        body = json.loads(response.read())
+        self.assertEqual(body["tracking"]["instance_id"], 42)
+        self.assertEqual(body["tracking"]["target"], "cup")
+        self.assertFalse(body["servo"]["armed"])
+        for invalid in ({**selection, "instance_id": 100}, {**selection, "revision": -1},
+                        {**selection, "frame_sequence": 778}, {**selection, "instance_id": True},
+                        {**selection, "xyxy": [0, 0, 1, 1]}):
+            connection.request("POST", "/api/tracking/instance", json.dumps(invalid))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
+            self.assertEqual(app.tracking.instance_id, 42)
+        c.frame_selections[f"{c.revision}-777"]["captured_at"] -= 1
+        with self.assertRaises(ValueError): c.selection(c.revision, 777, 42)
+
+
+class InstanceTests(unittest.TestCase):
+    @staticmethod
+    def box(cx, prompt="cup"):
+        return {"xyxy": [cx-.03, .4, cx+.03, .5], "prompt": prompt, "score": .9}
+
+    def test_ids_survive_reordering_not_nearest_frame_center(self):
+        tracker = InstanceAssociator({})
+        a, b = tracker.update([self.box(.2), self.box(.5)], None, 1)
+        b2, a2 = tracker.update([self.box(.49), self.box(.21)], None, 1.2)
+        self.assertEqual((a["instance_id"], b["instance_id"]), (a2["instance_id"], b2["instance_id"]))
+
+    def test_camera_pan_is_compensated_for_large_image_shift(self):
+        tracker = InstanceAssociator({})
+        pose = lambda x: {"axes": {"x": {"degrees": x}, "y": {"degrees": 0}}}
+        a = tracker.update([self.box(.7)], pose(0), 1)[0]
+        b = tracker.update([self.box(.5)], pose(32), 1.2)[0]
+        self.assertEqual(a["instance_id"], b["instance_id"])
+
+    def test_ambiguous_crossing_does_not_arbitrarily_reassign_clicked_id(self):
+        tracker = InstanceAssociator({})
+        first = tracker.update([self.box(.48), self.box(.52)], None, 1)
+        next_frame = tracker.update([self.box(.495), self.box(.505)], None, 1.2)
+        self.assertTrue({b["instance_id"] for b in first}.isdisjoint(b["instance_id"] for b in next_frame))
+
+    def test_expired_lost_or_different_class_does_not_reuse_identity(self):
+        tracker = InstanceAssociator({})
+        first = tracker.update([self.box(.5)], None, 1)[0]
+        tracker.update([], None, 1.1)
+        brief = tracker.update([self.box(.5)], None, 1.2)[0]
+        self.assertEqual(first["instance_id"], brief["instance_id"])
+        other = tracker.update([self.box(.5, "bottle")], None, 1.3)[0]
+        self.assertNotEqual(first["instance_id"], other["instance_id"])
+        expired = tracker.update([self.box(.5)], None, 2.5)[0]
+        self.assertNotEqual(first["instance_id"], expired["instance_id"])
+        tracker.clear()
+        reset = tracker.update([self.box(.5)], None, 2.6)[0]
+        self.assertNotEqual(expired["instance_id"], reset["instance_id"])
 
 
 if __name__ == "__main__":
