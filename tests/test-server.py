@@ -434,6 +434,25 @@ class ControllerTests(unittest.TestCase):
             self.assertLessEqual(abs(cx - .5), .012)
             self.assertLessEqual(abs(cy - .5), .012)
 
+    def test_y_full_range_commands_tracking_and_recovery(self):
+        axis = self.config["servo"]["axes"]["y"]
+        axis.update(center_position=4065, min_degrees=-90, max_degrees=90)
+        self.packet.registers[1][132] = 4065
+        self.controller.arm()
+        for degrees in (-90, 0, 90):
+            self.controller.move("y", degrees)
+            self.assertEqual(self.packet.registers[1][116], servo.to_position(axis, degrees))
+        for degrees in (-90.01, 90.01):
+            with self.assertRaises(ValueError): self.controller.move("y", degrees)
+        self.controller.move("y", -90)
+        self.packet.registers[1][132] = servo.to_position(axis, -90)
+        self.assertTrue(self.controller.track({"x": 0, "y": -3})["limited"])
+        self.assertEqual(self.packet.registers[1][116], servo.to_position(axis, -90))
+        self.packet.registers[1][132] = servo.to_position(axis, -92)
+        self.controller._tick_locked()
+        self.assertTrue(self.controller.armed)
+        self.assertEqual(self.packet.registers[1][116], servo.to_position(axis, -90))
+
     def test_http(self):
         class Camera:
             def status(self): return {"online": True}

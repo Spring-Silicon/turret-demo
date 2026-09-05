@@ -78,11 +78,11 @@ uncalibrated so another installation cannot move on assumed camera directions.
 Optional `x_gain`, `y_gain`, `max_step_degrees`, `deadband`,
 `max_frame_age_seconds` and `settle_seconds` settings tune the framing loop.
 
-Configured command limits are **X: −90° to +90°** and **Y: 30° to 90°**.
+Configured command limits are **X: −90° to +90°** and **Y: −90° to +90°**.
 They are enforced in the API as well as the sliders. Changing limits never
 commands motion. If an axis is outside its new range, Start stays unavailable
-until it is repositioned with torque off. The calibrated zero remains unchanged
-even when zero is outside the allowed range (as it is for Y).
+until it is repositioned with torque off. Changing limits does not change the
+calibrated zero; both axes' current ranges include zero.
 
 While running, feedback outside these software limits no longer stops the
 motors. The affected axis is commanded back to the nearest limit, with torque
@@ -267,7 +267,7 @@ With torque off, place the camera straight ahead and level. Read each present
 position modulo 4096 into its axis's `center_position`; set `direction` to 1
 or -1 for the mount's orientation. Use slow profiles and set `calibrated: true`
 after confirming neutral and clearance. The sample reflects the operator's
-requested X ±90° / Y 30–90° limits, not a qualified full-travel envelope.
+requested X ±90° / Y ±90° limits, not a qualified full-travel envelope.
 The [reference CAD](https://github.com/AnthonyZJiang/dynamixal-pan-tilt-camera-cad)
 specifies ±90° maximum travel, but mounting and cable clearance must be checked
 on each assembly. No full-travel sweep was performed when applying these limits.

@@ -38,7 +38,7 @@ def main() -> None:
         assert axis["profile_velocity"] == 0
         assert axis["profile_acceleration"] == 0
     assert [servo["axes"]["x"][key] for key in ("min_degrees", "max_degrees")] == [-90, 90]
-    assert [servo["axes"]["y"][key] for key in ("min_degrees", "max_degrees")] == [30, 90]
+    assert [servo["axes"]["y"][key] for key in ("min_degrees", "max_degrees")] == [-90, 90]
     assert config["camera"]["device"] == "/dev/spring-turret-camera"
     assert servo["device"] == "/dev/spring-turret-servo"
     assert servo["protocol"] == "dynamixel-2.0"

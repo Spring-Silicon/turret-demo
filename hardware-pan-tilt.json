@@ -15,7 +15,7 @@
     "y": {"id": 1, "center_position": 4065, "direction": 1}
   },
   "original_test_configuration_limits_degrees": [-45, 45],
-  "configured_limits_degrees": {"x": [-90, 90], "y": [30, 90]},
+  "configured_limits_degrees": {"x": [-90, 90], "y": [-90, 90]},
   "configured_motion_profile": {"profile_velocity": 0, "profile_acceleration": 0},
   "original_motion_test_profile": {"profile_velocity": 20, "profile_acceleration": 5},
   "uncapped_motion_qualified": false,
