@@ -10,6 +10,7 @@ python3 tests/test-server.py
 python3 tests/test-detection.py
 python3 tests/test-repository.py
 node --check src/spring_turret/static/app.js
+node tests/test-ui.cjs
 
 if command -v shellcheck >/dev/null; then
   shellcheck scripts/*.sh

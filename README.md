@@ -21,9 +21,12 @@ torque, preventing an immediate jump on Arm.
 ## UI
 
 Open `http://HOST:8080/`. The UI contains only the live feed, camera/servo state,
-position, bounded jog controls, Arm, Stop, and the current hardware error. Enter
+position, bounded jog controls, Arm, Stop, and the current hardware error.
+The motor controls sit below the camera. Enter
 one object category per row (for example `person`, `cup`, `keyboard`). Each row
-has **+** to add another row and a trash button to remove it. Select **Update
+shows its detected instance count and a trash button. The single **+** below
+the list adds another row. Counts show `—` while unavailable or for unapplied
+prompts; `0` means no instances were detected in the current result. Select **Update
 prompts**, or press **Enter** in a text box, to apply every row together.
 Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows

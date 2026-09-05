@@ -15,6 +15,7 @@ let feedSource = "";
 let displayedDetection = null;
 let polling = false;
 const promptRows = document.getElementById("prompt-rows");
+const addPromptButton = document.getElementById("add-prompt");
 const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
 let draftInitialized = false;
@@ -25,23 +26,48 @@ function updatePromptControls() {
   const rows = [...promptRows.children];
   const enabled = Boolean(status?.detection?.enabled);
   rows.forEach((row, index) => {
-    row.style.setProperty("--prompt-color", status?.detection?.colors?.[index] || "#55e8ce");
     row.querySelector("input").disabled = !enabled;
     row.querySelector("input").setAttribute("aria-label", `Object ${index + 1} to find`);
-    row.querySelector(".add-prompt").disabled = !enabled || rows.length >= (status?.detection?.max_prompts || 8);
     row.querySelector(".remove-prompt").disabled = !enabled;
   });
+  addPromptButton.disabled = !enabled || rows.length >= (status?.detection?.max_prompts || 8);
   updatePromptsButton.disabled = !enabled || detectionSending;
+  updatePromptCounts(displayedDetection || status?.detection);
 }
 
-function addPromptRow(value = "", after = null, focus = false) {
+function isDetectionFresh(detection) {
+  return detection?.state === "running" &&
+    detection.frame_age_ms < Math.max(5000, 2 * detection.latency_ms + 1000);
+}
+
+function updatePromptCounts(detection) {
+  const fresh = isDetectionFresh(detection);
+  [...promptRows.children].forEach((row, index) => {
+    const prompt = row.querySelector("input").value.trim();
+    // Match the category, not its old row index: drafts can remove/edit rows
+    // without applying them to the detector yet.
+    const category = detection?.categories?.find((item) => item.prompt === prompt);
+    const count = fresh && category && Number.isInteger(category.count) && category.count >= 0
+      ? category.count : null;
+    const output = row.querySelector(".prompt-count");
+    output.textContent = count === null ? "—" : String(count);
+    output.setAttribute("aria-label", count === null ? `${prompt || "Object"}: count unavailable` : `${prompt}: ${count} detected`);
+    output.title = count === null
+      ? (prompt && !detection?.prompts?.includes(prompt) ? "Update prompts to count this object" : "Waiting for detection")
+      : `${count} detected`;
+    output.classList.toggle("unavailable", count === null);
+    row.style.setProperty("--prompt-color", category?.color || detection?.colors?.[index] || "#55e8ce");
+  });
+}
+
+function addPromptRow(value = "", focus = false) {
   const row = document.getElementById("prompt-row-template").content.firstElementChild.cloneNode(true);
   const input = row.querySelector("input");
   input.value = value;
-  input.addEventListener("input", () => { draftVersion += 1; promptError = ""; });
-  row.querySelector(".add-prompt").addEventListener("click", () => {
+  input.addEventListener("input", () => {
     draftVersion += 1;
-    addPromptRow("", row, true);
+    promptError = "";
+    updatePromptCounts(displayedDetection);
   });
   row.querySelector(".remove-prompt").addEventListener("click", () => {
     draftVersion += 1;
@@ -52,8 +78,7 @@ function addPromptRow(value = "", after = null, focus = false) {
     const remaining = promptRows.querySelector("input");
     remaining.focus();
   });
-  if (after) after.after(row);
-  else promptRows.append(row);
+  promptRows.append(row);
   updatePromptControls();
   if (focus) input.focus();
 }
@@ -77,8 +102,7 @@ function renderDetection(detection) {
   const labels = { disabled: "SAM not configured", idle: "SAM 3.1", loading: "Loading SAM 3.1…",
     compiling: "Compiling SAM 3.1…", validating: "Validating detector…", capturing: "Capturing SYCL graph…",
     waiting_for_camera: "Waiting for camera…" };
-  const fresh = detection?.state === "running" &&
-    detection.frame_age_ms < Math.max(5000, 2 * detection.latency_ms + 1000);
+  const fresh = isDetectionFresh(detection);
   detectionMessage.textContent = promptError || detection?.error || (fresh
     ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${detection.latency_ms} ms · torch.compile + SYCL graphs`
     : labels[detection?.state] || "Waiting for detection…");
@@ -194,6 +218,7 @@ async function poll() {
     await request("/api/status");
   } catch (error) {
     showMessage(error.message, true);
+    updatePromptCounts(null);
   } finally {
     polling = false;
   }
@@ -221,6 +246,12 @@ async function setPrompts() {
 document.getElementById("detection-form").addEventListener("submit", (event) => {
   event.preventDefault();
   setPrompts();
+});
+addPromptButton.addEventListener("click", () => {
+  if (addPromptButton.disabled) return;
+  draftVersion += 1;
+  promptError = "";
+  addPromptRow("", true);
 });
 setPromptRows([]);
 poll();

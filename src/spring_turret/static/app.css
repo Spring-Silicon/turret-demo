@@ -31,7 +31,7 @@ main {
   margin: 0 auto;
   padding: 24px;
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
@@ -43,7 +43,10 @@ main {
 .prompt-row { display: flex; gap: 8px; }
 .detection-prompt { flex: 1; min-width: 0; border: 1px solid var(--line); border-left: 3px solid var(--prompt-color, var(--accent)); background: #151919; color: inherit; padding: 10px; font: inherit; }
 .prompt-row button { flex: 0 0 40px; display: grid; place-items: center; }
-.add-prompt { font-size: 22px; }
+.prompt-count { flex: 0 0 40px; display: grid; place-items: center; color: var(--prompt-color, var(--accent)); font-size: 18px; font-variant-numeric: tabular-nums; }
+.prompt-count.unavailable { color: var(--muted); }
+.prompt-actions { display: flex; justify-content: space-between; gap: 8px; }
+#add-prompt { width: 40px; font-size: 22px; }
 .remove-prompt svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 #update-prompts { justify-self: end; padding: 0 16px; }
 .detection-prompt:focus { outline: 1px solid var(--accent); }

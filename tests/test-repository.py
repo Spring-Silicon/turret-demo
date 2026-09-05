@@ -43,6 +43,14 @@ def main() -> None:
     server = (ROOT / "src/spring_turret/server.py").read_text()
     assert 'id="arm-button" type="button" disabled' in html
     assert 'id="stop-button" type="button" disabled' in html
+    assert html.count('id="add-prompt"') == 1
+    assert html.index('id="prompt-rows"') < html.index('id="add-prompt"')
+    template = html.split('<template id="prompt-row-template">')[1].split(
+        "</template>"
+    )[0]
+    assert 'class="prompt-count"' in template
+    assert 'class="remove-prompt"' in template
+    assert "Add object" not in template
     assert "password" not in html.lower()
     assert "authentication" not in server.lower()
     assert "self.armed = False" in server
