@@ -142,6 +142,17 @@ class TrackingController:
             self.last_frame = None
             self.ignore_before = time.monotonic()
 
+    def set_model(self, model: Any) -> None:
+        with self.lock:
+            previous = self.detection.status()["model"]
+            self.detection.set_model(model)
+            if previous != model:
+                self.target = self.instance_id = None
+                self._pause("off")
+                self.last_frame = None
+                self.ignore_before = time.monotonic()
+                self.error = None
+
     def arm(self) -> None:
         with self.lock:
             self.servo.arm()

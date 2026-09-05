@@ -24,11 +24,15 @@ class Camera:
 class Detector:
     def __init__(self, clock):
         self.clock, self.captured = clock, 0
-        self.data = {"enabled": True, "prompts": ["cup", "bottle"], "revision": 1,
+        self.data = {"enabled": True, "model": "sam3.1", "prompts": ["cup", "bottle"], "revision": 1,
                      "frame_sequence": 0, "state": "running", "boxes": []}
     def status(self): return {**copy.deepcopy(self.data), "frame_age_ms": (self.clock() - self.captured) * 1000}
     def set_prompts(self, prompts):
         self.data.update(prompts=prompts, revision=self.data["revision"] + 1, state="loading", boxes=[])
+    def set_model(self, model):
+        if model not in ("sam3.1", "yolo26x"): raise ValueError("unknown model")
+        self.data["model"] = model
+        self.set_prompts(["person"])
     def selection(self, revision, sequence, instance_id):
         if (revision, sequence) != (self.data["revision"], self.data["frame_sequence"]):
             raise ValueError("stale frame")
@@ -53,6 +57,20 @@ class Servo:
 
 
 class TrackingTests(unittest.TestCase):
+    def test_model_change_clears_tracking_and_holds_without_arming(self):
+        self.start()
+        self.frame([box()])
+        self.assertTrue(self.tracker.moving)
+        self.tracker.instance_id = 42
+        self.tracker.set_model("yolo26x")
+        self.assertIsNone(self.tracker.target)
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
+        self.servo.armed = False
+        self.tracker.set_model("sam3.1")
+        self.assertFalse(self.servo.armed)
+        self.assertEqual(self.tracker.state, "off")
+
     def setUp(self):
         self.now = 10.0
         self.timer = patch("spring_turret.tracking.time.monotonic", lambda: self.now)

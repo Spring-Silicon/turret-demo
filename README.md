@@ -1,6 +1,6 @@
 # Spring turret demo
 
-Camera feed, text-prompt SAM 3.1 bounding boxes, and manual or opt-in automatic
+Camera feed, switchable SAM 3.1 / YOLO26x bounding boxes, and manual or opt-in automatic
 X/Y camera framing.
 
 ## Current hardware status
@@ -64,7 +64,7 @@ support keyboard focus and Enter/Space. Overlapping boxes prioritize the smaller
 box. Click the class icon to return to nearest-of-class mode, or click another box
 to switch objects. Selection never starts stopped motors.
 
-Instance IDs use conservative class/position/size matching between SAM detections,
+Instance IDs use conservative class/position/size matching between detections,
 with camera-motion compensation from the encoder/frame pairs. This is not SAM
 video tracking or appearance-based re-identification: occlusion, fast movement or
 crossing similar objects can lose the association. If the clicked ID disappears,
@@ -172,6 +172,64 @@ must already exist and be accessible to the process. Check the live state:
 curl http://127.0.0.1:8080/api/status
 ```
 
+## Model selector and YOLO26x on Intel Arc
+
+The **Model** selector switches between SAM 3.1 free-text grounding and the
+official **YOLO26x** COCO detector. YOLO's rows are class dropdowns, not free-text
+prompts: it supports the [80 pretrained COCO classes](https://docs.ultralytics.com/models/yolo26/).
+For example, `person` is supported but `face` is not; use SAM for that. Both modes
+retain multiple instances, per-class counts, class tracking and click retargeting.
+The add/trash controls and Update prompts / Enter work in both modes.
+
+Applied object lists are retained separately in server memory; browser drafts
+are retained separately while the page remains open. A model switch clears
+old boxes/instance IDs and the tracking target, holds any automatic motion, and
+never arms the motors. The old worker is interrupted and reaped before the new
+worker allocates GPU memory. First use compiles/captures; later switches still
+need model loading and graph setup. There is no background second GPU model,
+silent model substitution, CPU fallback, or eager-only fallback.
+
+To extend the SAM environment with the pinned YOLO dependencies:
+
+```bash
+uv pip install --python /var/lib/spring-data/turret-inference/venv/bin/python \
+  --extra-index-url https://download.pytorch.org/whl/xpu \
+  --index-strategy unsafe-best-match -r requirements-yolo26.txt
+```
+
+Download [the official v8.4.0 yolo26x.pt checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x.pt)
+to the configured `inference.yolo26x_checkpoint` path. The worker verifies SHA256
+`9fdd44a31c504547ffb81d2c6d9e6dac3493c8eaa8b0398d3f43bae6c7003e92`
+**before** unpickling it. Model downloads never happen in the service. Ultralytics
+provides [AGPL-3.0 and Enterprise licensing options](https://www.ultralytics.com/license);
+its dependency/checkpoint licensing is separate from this repository's code.
+
+YOLO26x uses a centered 640×640 RGB letterbox (114 padding), FP32 master weights
+with FP16 autocast by default, fused Conv/BN and the end-to-end one-to-one head.
+One forward pass produces detections across all 80 classes; selected classes
+are filtered afterward, with at most 300 predictions/frame and confidence >0.5.
+No NMS is needed. Original-frame normalized XYXY coordinates undo the letterbox.
+The complete network, decoding and top-k run through full-graph static
+`torch.compile(backend="inductor")` and `torch.xpu.XPUGraph` replay. CPU work is
+JPEG/resize, result transfer/filtering and annotation. YOLO caches live under
+`inference.cache_dir/yolo26x`; the SAM cache layout is unchanged.
+
+Capture validates replay against uncaptured compiled output. The first three
+frames additionally compare meaningful eager/compiled detections independent
+of top-k ordering (confidence error ≤0.03 and coordinates ≤6.4px at 640px).
+Failure is surfaced in the UI. `tests/smoke-yolo26.py` exercises an official bus
+fixture, its reflection, and optional real MJPEG camera frames; unload other GPU
+workers before running it. In a B580 run on 2026-09-04, both fixture orientations
+retained four people plus one bus. Observed maximum coordinate error was 0.125px
+and score error 0.000488; all 15 SYCL replays passed.
+
+In that same run, 10 warmed live-frame medians were **8.80ms network** and
+**25.38ms worker total** (8.54ms preprocessing, 0.42ms postprocessing, 7.63ms
+annotation; medians need not sum). `latency_ms` is synchronized model execution;
+`timing.worker_total_ms` includes worker-side overhead and cold setup when present.
+Neither includes camera buffering, HTTP delivery or browser display. The first
+uncached compile/capture took about 105 seconds; this is not steady-state latency.
+
 ## SAM 3.1 on Intel Arc
 
 Inference is optional. Existing camera/servo configurations continue working
@@ -189,6 +247,10 @@ Put your authorized Meta SAM 3.1 multiplex checkpoint at the path in
 object as the `inference` key in the service's JSON config. The checkpoint is
 not included in this repository. The tested checkpoint SHA256 is
 `0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6`.
+
+For SAM-only installations, omit `yolo26x_checkpoint` from the example; YOLO
+will remain unavailable in the selector. Both checkpoints are administrator
+configuration, never browser-supplied paths.
 
 The host needs both Intel Level Zero and **GPU OpenCL** drivers. On the tested
 Ubuntu 24.04 host, `libze-intel-gpu1` and `intel-opencl-icd` are both

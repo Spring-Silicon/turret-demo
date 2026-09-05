@@ -362,7 +362,12 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
             try:
-                if path == "/api/detection/prompts":
+                if path == "/api/detection/model":
+                    body = self._request_json()
+                    if set(body) != {"model"}:
+                        raise ValueError("body must contain only model")
+                    application.tracking.set_model(body["model"])
+                elif path == "/api/detection/prompts":
                     body = self._request_json()
                     if set(body) != {"prompts"}:
                         raise ValueError("body must contain only prompts")

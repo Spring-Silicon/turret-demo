@@ -1,4 +1,4 @@
-"""Latest-frame SAM worker orchestration. This module never controls the servo."""
+"""Latest-frame model worker orchestration. This module never controls the servo."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from spring_turret.prompts import COLORS, MAX_PROMPTS, normalize_prompts
+from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
+from spring_turret.models import MODELS, model_prompts
 
 
 def validate_config(config: dict[str, Any]) -> None:
@@ -28,6 +29,12 @@ def validate_config(config: dict[str, Any]) -> None:
     for key in ("python", "checkpoint", "cache_dir"):
         if not Path(config.get(key, "")).is_absolute():
             raise ValueError(f"inference.{key} must be an absolute path")
+    if config.get("model", "sam3.1") not in MODELS:
+        raise ValueError("inference.model must be sam3.1 or yolo26x")
+    if "yolo26x_checkpoint" in config and not Path(config["yolo26x_checkpoint"]).is_absolute():
+        raise ValueError("inference.yolo26x_checkpoint must be an absolute path")
+    if config.get("model") == "yolo26x" and not config.get("yolo26x_checkpoint"):
+        raise ValueError("inference.yolo26x_checkpoint is required for YOLO26x")
     if not 0 < float(config.get("confidence", 0.5)) < 1:
         raise ValueError("inference.confidence must be between zero and one")
     fps = config.get("max_fps", 0)
@@ -44,10 +51,14 @@ class WorkerClient:
         self.config = config
         self.process: subprocess.Popen | None = None
         self.pending = b""
+        self.cancelled = threading.Event()
 
     def launch(self) -> None:
         cache = Path(self.config["cache_dir"])
+        if self.config.get("model") == "yolo26x":
+            cache /= "yolo26x"
         cache.mkdir(parents=True, exist_ok=True)
+        (cache / "ultralytics").mkdir(exist_ok=True)
         env = {
             **os.environ,
             "OMP_NUM_THREADS": "4",
@@ -55,12 +66,15 @@ class WorkerClient:
             "TORCHINDUCTOR_CACHE_DIR": str(cache / "inductor"),
             "TRITON_CACHE_DIR": str(cache / "triton"),
             "XDG_CACHE_HOME": str(cache),
+            "YOLO_CONFIG_DIR": str(cache / "ultralytics"),
+            "YOLO_AUTOINSTALL": "false",
+            "YOLO_OFFLINE": "true",
         }
         self.process = subprocess.Popen(
             [
                 self.config["python"],
                 "-u",
-                str(Path(__file__).with_name("sam31_worker.py")),
+                str(Path(__file__).with_name(MODELS[self.config.get("model", "sam3.1")]["worker"])),
                 "--checkpoint",
                 self.config["checkpoint"],
                 "--device",
@@ -74,6 +88,18 @@ class WorkerClient:
             stdout=subprocess.PIPE,
             env=env,
         )
+        if self.cancelled.is_set():
+            self.cancel()
+
+    def cancel(self) -> None:
+        """Interrupt cold compilation without blocking the HTTP/tracking locks."""
+        self.cancelled.set()
+        process = self.process
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
 
     def receive(self, timeout: float, progress: Any = None) -> dict[str, Any]:
         assert self.process and self.process.stdout
@@ -89,19 +115,19 @@ class WorkerClient:
                             progress(message["stage"])
                         continue
                     if message.get("type") in ("fatal", "error"):
-                        raise RuntimeError(message.get("error", "SAM worker failed"))
+                        raise RuntimeError(message.get("error", "Model worker failed"))
                     return message
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not selector.select(remaining):
                     raise TimeoutError(
-                        "SAM worker timed out; submit the prompt to retry"
+                        "Model worker timed out; submit the prompt to retry"
                     )
                 chunk = os.read(self.process.stdout.fileno(), 65536)
                 if not chunk:
-                    raise RuntimeError("SAM worker exited; check the service log")
+                    raise RuntimeError("Model worker exited; check the service log")
                 self.pending += chunk
                 if len(self.pending) > 4 * 1024 * 1024:
-                    raise RuntimeError("SAM worker response exceeded 4 MiB")
+                    raise RuntimeError("Model worker response exceeded 4 MiB")
 
     def detect(
         self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any
@@ -116,7 +142,7 @@ class WorkerClient:
         self.process.stdin.flush()
         result = self.receive(900, progress)
         if result.get("type") != "result" or result.get("id") != request_id:
-            raise RuntimeError("SAM worker returned an unexpected response")
+            raise RuntimeError("Model worker returned an unexpected response")
         return result
 
     def stop(self) -> None:
@@ -149,6 +175,9 @@ class DetectionController:
         self.thread = threading.Thread(target=self._run, name="detection", daemon=True)
         self.worker: Any = None
         self.prompts: list[str] = []
+        self.model = config.get("model", "sam3.1")
+        self.saved_prompts = {"sam3.1": [], "yolo26x": ["person"]}
+        self.worker_model: str | None = None
         self.revision = 0
         self.sequence = 0
         self.state = "idle" if self.enabled else "disabled"
@@ -176,11 +205,12 @@ class DetectionController:
         self.set_prompts([prompt])
 
     def set_prompts(self, prompts: Any) -> None:
-        prompts = normalize_prompts(prompts)
         if not self.enabled:
-            raise ValueError("SAM inference is not configured on this device")
+            raise ValueError("Inference is not configured on this device")
         with self.condition:
+            prompts = model_prompts(self.model, prompts)
             self.prompts = prompts
+            self.saved_prompts[self.model] = list(prompts)
             self.revision += 1
             self.result = {}
             self.frames.clear()
@@ -189,6 +219,22 @@ class DetectionController:
             self.completed_at = 0
             self.error = None
             self.state = "loading" if self.prompts else "idle"
+            self.condition.notify_all()
+
+    def set_model(self, model: Any) -> None:
+        if type(model) is not str or model not in MODELS:
+            raise ValueError("model must be sam3.1 or yolo26x")
+        if not self.enabled or (model == "yolo26x" and not self.config.get("yolo26x_checkpoint")):
+            raise ValueError(f"{MODELS[model]['label']} is not configured on this device")
+        with self.condition:
+            if model == self.model:
+                return
+            self.model = model
+            self.set_prompts(self.saved_prompts[model])
+            # Interrupt old cold compilation too. Only the worker thread reaps
+            # and replaces the process; no overlapping GPU model lifetimes.
+            if self.worker is not None and self.worker_model != model:
+                self.worker.cancel()
             self.condition.notify_all()
 
     def status(self) -> dict[str, Any]:
@@ -200,6 +246,11 @@ class DetectionController:
             )
             return {
                 "enabled": self.enabled,
+                "model": self.model,
+                "models": [{"id": key, "label": value["label"], "available": self.enabled and
+                            (key == "sam3.1" or bool(self.config.get("yolo26x_checkpoint")))}
+                           for key, value in MODELS.items()],
+                "classes": MODELS[self.model]["classes"],
                 "prompt": self.prompts[0] if len(self.prompts) == 1 else "",
                 "prompts": list(self.prompts),
                 "max_prompts": MAX_PROMPTS,
@@ -257,12 +308,19 @@ class DetectionController:
                     self.condition.wait_for(
                         lambda: (
                             self.stop_event.is_set()
+                            or (self.worker is not None and self.worker_model != self.model)
                             or (self.prompts and self.revision != failed_revision)
                         )
                     )
                     if self.stop_event.is_set():
                         break
-                    prompts, revision = list(self.prompts), self.revision
+                    prompts, revision, model = list(self.prompts), self.revision, self.model
+                if self.worker is not None and self.worker_model != model:
+                    self.worker.stop()  # Exit/reap the old process before allocating the new model.
+                    with self.condition:
+                        self.worker, self.worker_model = None, None
+                if not prompts:
+                    continue
                 pose = self.pose_provider() if self.pose_provider else None
                 sequence, jpeg, captured_at = self.camera.wait_for_sample(
                     last_camera_sequence, 1, after=pose["sampled_at"] if pose else 0.0
@@ -283,14 +341,21 @@ class DetectionController:
                     pose = None
                 try:
                     if self.worker is None:
-                        worker = self.worker_factory(self.config)
+                        worker_config = {**self.config, "model": model}
+                        if model == "yolo26x":
+                            worker_config["checkpoint"] = self.config["yolo26x_checkpoint"]
+                        worker = self.worker_factory(worker_config)
                         with self.condition:
                             self.worker = worker
+                            self.worker_model = model
                         worker.launch()
                         if self.stop_event.is_set():
                             break
                         if worker.receive(120).get("type") != "ready":
-                            raise RuntimeError("SAM worker did not become ready")
+                            raise RuntimeError("Model worker did not become ready")
+                    with self.condition:
+                        if revision != self.revision:
+                            continue
                     self.sequence += 1
                     result = self.worker.detect(
                         self.sequence,
@@ -300,7 +365,7 @@ class DetectionController:
                     )
                     if not result.get("torch_compile") or not result.get("sycl_graph"):
                         raise RuntimeError(
-                            "SAM worker did not verify compiled SYCL graph execution"
+                            "Model worker did not verify compiled SYCL graph execution"
                         )
                     annotated = base64.b64decode(result.pop("jpeg"), validate=True)
                     result.pop("type", None)

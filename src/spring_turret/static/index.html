@@ -17,6 +17,12 @@
 
     <main>
       <section class="vision" aria-label="Camera and detection">
+        <label class="model-control" for="detection-model">Model
+          <select id="detection-model" disabled>
+            <option value="sam3.1">SAM 3.1</option>
+            <option value="yolo26x">YOLO26x</option>
+          </select>
+        </label>
         <form id="detection-form">
           <div id="prompt-rows"></div>
           <div class="prompt-actions">
@@ -36,7 +42,7 @@
             </button>
           </div>
         </template>
-        <p id="detection-status" role="status">SAM: checking</p>
+        <p id="detection-status" role="status">Detector: checking</p>
         <p id="tracking-status" role="status" hidden></p>
         <div class="feed" aria-label="Live camera">
           <img id="camera-feed" alt="Live turret camera feed">

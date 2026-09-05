@@ -1,0 +1,19 @@
+# Extend the pinned XPU/SAM environment without replacing Torch or NumPy.
+-r requirements-sam31.txt
+charset-normalizer==3.5.1
+cloudpickle==3.1.2
+contourpy==1.3.3
+cycler==0.12.1
+fonttools==4.64.0
+kiwisolver==1.5.1
+matplotlib==3.11.1
+nvidia-ml-py==13.610.43
+opencv-python==4.11.0.86
+polars==1.44.1
+polars-runtime-32==1.44.1
+pyparsing==3.3.2
+requests==2.34.2
+ultralytics==8.4.140
+ultralytics-platform==0.1.21
+ultralytics-thop==2.1.6
+urllib3==2.7.0

@@ -39,6 +39,9 @@ main {
 .feed { position: relative; aspect-ratio: 16 / 9; overflow: hidden; background: #000; border: 1px solid var(--line); }
 .feed img { width: 100%; height: 100%; display: block; object-fit: cover; }
 .vision { min-width: 0; }
+.model-control { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 14px; }
+#detection-model { border: 1px solid var(--line); background: #151919; color: inherit; padding: 8px 12px; font: inherit; }
+select:focus { outline: 1px solid var(--accent); }
 #detection-form, #prompt-rows { display: grid; gap: 8px; }
 .prompt-row { display: flex; gap: 8px; }
 .detection-prompt { flex: 1; min-width: 0; border: 1px solid var(--line); border-left: 3px solid var(--prompt-color, var(--accent)); background: #151919; color: inherit; padding: 10px; font: inherit; }

@@ -19,6 +19,10 @@ const promptRows = document.getElementById("prompt-rows");
 const addPromptButton = document.getElementById("add-prompt");
 const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
+const modelSelector = document.getElementById("detection-model");
+let activeModel = null;
+let modelSending = false;
+const modelDrafts = new Map();
 let draftInitialized = false;
 let draftVersion = 0;
 let promptError = "";
@@ -37,7 +41,7 @@ function clickableFrame() {
 }
 
 async function selectInstance(selection) {
-  if (targetSending || detectionSending) return;
+  if (targetSending || detectionSending || modelSending) return;
   targetSending = true;
   pendingAngles.clear();
   renderTracking();
@@ -83,7 +87,7 @@ function renderBoxTargets() {
     Object.assign(button.style, {left: `${x1*100}%`, top: `${y1*100}%`,
       width: `${(x2-x1)*100}%`, height: `${(y2-y1)*100}%`,
       zIndex: String(Math.round(1000000*(1-(x2-x1)*(y2-y1))))});
-    button.disabled = targetSending || detectionSending;
+    button.disabled = targetSending || detectionSending || modelSending;
     button.setAttribute("aria-label", `Track ${box.prompt} object ${id}`);
     button.setAttribute("aria-pressed", String(status?.tracking?.instance_id === id));
     button.title = `Track this ${box.prompt}`;
@@ -109,14 +113,18 @@ cameraFeed.addEventListener("error", () => {
 
 function updatePromptControls() {
   const rows = [...promptRows.children];
-  const enabled = Boolean(status?.detection?.enabled);
+  const enabled = Boolean(status?.detection?.enabled) && !modelSending;
   rows.forEach((row, index) => {
-    row.querySelector("input").disabled = !enabled;
-    row.querySelector("input").setAttribute("aria-label", `Object ${index + 1} to find`);
+    row.querySelector(".detection-prompt").disabled = !enabled;
+    row.querySelector(".detection-prompt").setAttribute("aria-label", `Object ${index + 1} to find`);
     row.querySelector(".remove-prompt").disabled = !enabled;
   });
   addPromptButton.disabled = !enabled || rows.length >= (status?.detection?.max_prompts || 8);
   updatePromptsButton.disabled = !enabled || detectionSending;
+  modelSelector.disabled = !enabled || detectionSending || targetSending;
+  for (const option of modelSelector.options || []) {
+    option.disabled = !status?.detection?.models?.find(model => model.id === option.value)?.available;
+  }
   updatePromptCounts(displayedDetection || status?.detection);
   updateTargetControls();
 }
@@ -126,12 +134,12 @@ function updateTargetControls() {
   const prompts = status?.detection?.prompts || [];
   const seen = new Set();
   for (const row of promptRows.children) {
-    const prompt = row.querySelector("input").value.trim();
+    const prompt = row.querySelector(".detection-prompt").value.trim();
     const button = row.querySelector(".target-prompt");
     const applied = Boolean(prompt) && prompts.includes(prompt) && !seen.has(prompt);
     seen.add(prompt);
     const selected = applied && prompt === target;
-    button.disabled = !status?.detection?.enabled || !applied || targetSending || detectionSending;
+    button.disabled = !status?.detection?.enabled || !applied || targetSending || detectionSending || modelSending;
     button.setAttribute("aria-pressed", String(selected));
     const label = selected && status?.tracking?.instance_id != null ? `Track nearest ${prompt}` : selected ? `Stop tracking ${prompt}` : `Track ${prompt || "object"}`;
     button.setAttribute("aria-label", label);
@@ -140,7 +148,7 @@ function updateTargetControls() {
 }
 
 async function selectTarget(target) {
-  if (targetSending) return;
+  if (targetSending || modelSending) return;
   targetSending = true;
   pendingAngles.clear();
   updateTargetControls();
@@ -198,7 +206,7 @@ function isDetectionFresh(detection) {
 function updatePromptCounts(detection) {
   const fresh = isDetectionFresh(detection);
   [...promptRows.children].forEach((row, index) => {
-    const prompt = row.querySelector("input").value.trim();
+    const prompt = row.querySelector(".detection-prompt").value.trim();
     // Match the category, not its old row index: drafts can remove/edit rows
     // without applying them to the detector yet.
     const category = detection?.categories?.find((item) => item.prompt === prompt);
@@ -217,7 +225,19 @@ function updatePromptCounts(detection) {
 
 function addPromptRow(value = "", focus = false) {
   const row = document.getElementById("prompt-row-template").content.firstElementChild.cloneNode(true);
-  const input = row.querySelector("input");
+  let input = row.querySelector(".detection-prompt");
+  if (status?.detection?.model === "yolo26x") {
+    const select = document.createElement("select");
+    select.className = "detection-prompt";
+    for (const name of ["", ...status.detection.classes]) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.textContent = name || "Select COCO class";
+      select.append(option);
+    }
+    input.replaceWith(select);
+    input = select;
+  }
   input.value = value;
   input.addEventListener("input", () => {
     if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
@@ -233,7 +253,7 @@ function addPromptRow(value = "", focus = false) {
     if (promptRows.children.length === 1) input.value = "";
     else row.remove();
     updatePromptControls();
-    const remaining = promptRows.querySelector("input");
+    const remaining = promptRows.querySelector(".detection-prompt");
     remaining.focus();
   });
   row.querySelector(".target-prompt").addEventListener("click", () => {
@@ -256,14 +276,21 @@ function renderDetection(detection) {
       (detection.revision < displayedDetection.revision ||
        (detection.revision === displayedDetection.revision && detection.state === "running" &&
         detection.frame_sequence < displayedDetection.frame_sequence))) return;
-  if (!draftInitialized && detection) {
-    setPromptRows(detection.prompts || (detection.prompt ? [detection.prompt] : []));
+  if (detection && (!draftInitialized || activeModel !== (detection.model || "sam3.1"))) {
+    if (activeModel) modelDrafts.set(activeModel, readPromptRows());
+    activeModel = detection.model || "sam3.1";
+    draftVersion += 1;
+    setPromptRows(modelDrafts.get(activeModel) || detection.prompts || (detection.prompt ? [detection.prompt] : []));
     draftInitialized = true;
+    frameDetection = loadingDetection = null;
+    promptError = "";
   }
+  modelSelector.value = detection?.model || "sam3.1";
   displayedDetection = detection;
   updatePromptControls();
-  const labels = { disabled: "SAM not configured", idle: "SAM 3.1", loading: "Loading SAM 3.1…",
-    compiling: "Compiling SAM 3.1…", validating: "Validating detector…", capturing: "Capturing SYCL graph…",
+  const name = detection?.model === "yolo26x" ? "YOLO26x · 80 COCO classes" : "SAM 3.1";
+  const labels = { disabled: "Inference not configured", idle: name, loading: `Loading ${name}…`,
+    compiling: `Compiling ${name}…`, validating: "Validating detector…", capturing: "Capturing SYCL graph…",
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
   detectionMessage.textContent = promptError || detection?.error || (fresh
@@ -317,6 +344,7 @@ function showMessage(text, error = false) {
 }
 
 function render(next) {
+  if (status?.detection && next.detection?.revision < status.detection.revision) return;
   status = next;
   renderDetection(next.detection);
   const { camera, servo } = next;
@@ -446,9 +474,9 @@ async function poll() {
 }
 
 async function setPrompts() {
-  if (detectionSending) return;
+  if (detectionSending || modelSending) return;
   const submittedVersion = draftVersion;
-  const prompts = [...promptRows.querySelectorAll("input")].map((input) => input.value.trim());
+  const prompts = readPromptRows();
   detectionSending = true;
   promptError = "";
   updatePromptControls();
@@ -464,6 +492,35 @@ async function setPrompts() {
     updatePromptControls();
   }
 }
+function readPromptRows() {
+  return [...promptRows.querySelectorAll(".detection-prompt")].map(input => input.value.trim());
+}
+
+modelSelector.addEventListener("change", async () => {
+  if (modelSending || detectionSending || targetSending) return;
+  const model = modelSelector.value;
+  modelSending = true;
+  pendingAngles.clear();
+  updatePromptControls();
+  renderBoxTargets();
+  try {
+    await request("/api/detection/model", {method: "POST", body: JSON.stringify({model})});
+  } catch (error) {
+    modelSelector.value = activeModel;
+    promptError = error.message;
+    detectionMessage.textContent = error.message;
+    detectionMessage.classList.add("error");
+  } finally {
+    modelSending = false;
+    updatePromptControls();
+  }
+});
+document.getElementById("detection-form").addEventListener("keydown", event => {
+  if (event.key === "Enter" && event.target.tagName === "SELECT") {
+    event.preventDefault();
+    setPrompts();
+  }
+});
 document.getElementById("detection-form").addEventListener("submit", (event) => {
   event.preventDefault();
   setPrompts();

@@ -30,13 +30,14 @@ class Element {
   focus() {}
   remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
   querySelector(selector) {
-    if (this.fields) return this.fields[selector];
+    if (this.fields) return this.fields[selector === ".detection-prompt" ? "input" : selector];
     return this.children[0]?.querySelector(selector);
   }
   querySelectorAll(selector) { return this.children.map(child => child.querySelector(selector)); }
   cloneNode() {
     const row = new Element();
     row.fields = { input: new Element(), ".prompt-count": new Element(), ".remove-prompt": new Element(), ".target-prompt": new Element() };
+    row.fields.input.replaceWith = replacement => { row.fields.input = replacement; };
     return row;
   }
 }
@@ -217,4 +218,35 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   get("camera-feed").events.error();
   assert.equal(get("box-targets").hidden, true);
   console.log("validated clickable instances, exact displayed-frame selection, stale clicks and no auto-start");
+  run(`displayedDetection = null; activeModel = null; draftInitialized = false;
+    status.detection = {enabled: true, model: "sam3.1", revision: 10, state: "idle", prompts: ["face"]};
+    renderDetection(status.detection);`);
+  rows()[0].fields.input.value = "unapplied SAM text";
+  run(`status.detection = {enabled: true, model: "yolo26x", revision: 11, state: "loading",
+    prompts: ["person"], classes: ["person", "cup"], models: [{id: "sam3.1", available: true}, {id: "yolo26x", available: true}]};
+    renderDetection(status.detection);`);
+  assert.equal(get("detection-model").value, "yolo26x");
+  assert.equal(rows()[0].fields.input.value, "person");
+  assert.deepEqual(rows()[0].fields.input.children.map(option => option.value), ["", "person", "cup"]);
+  assert.equal(run("frameDetection"), null);
+  rows()[0].fields.input.value = "cup";
+  run(`status.detection = {...status.detection, model: "sam3.1", revision: 12, prompts: ["face"], classes: null};
+    renderDetection(status.detection);`);
+  assert.equal(rows()[0].fields.input.value, "unapplied SAM text");
+  run(`request = async (path, options) => {
+    targetRequests.push([path, JSON.parse(options.body)]);
+    status.detection = {...status.detection, model: JSON.parse(options.body).model,
+      revision: 13, prompts: ["person"], classes: ["person", "cup"]};
+    renderDetection(status.detection);
+    return status;
+  };`);
+  get("detection-model").value = "yolo26x";
+  await get("detection-model").events.change();
+  assert.equal(run("JSON.stringify(targetRequests.at(-1))"), '["/api/detection/model",{"model":"yolo26x"}]');
+  assert.equal(rows()[0].fields.input.value, "cup"); // YOLO draft preserved too.
+  assert.equal(run("status.servo.armed"), false);
+  run(`globalThis.submissions = 0; setPrompts = () => { submissions++; };`);
+  get("detection-form").events.keydown({key: "Enter", target: {tagName: "SELECT"}, preventDefault() {}});
+  assert.equal(run("submissions"), 1);
+  console.log("validated model selection, fixed class choices, independent drafts and Enter submission");
 })().catch(error => { console.error(error); process.exitCode = 1; });
