@@ -1,224 +1,217 @@
 #!/usr/bin/env python3
-"""Exercise turret API safety gating and bounded motion."""
-
-from __future__ import annotations
-
-import importlib.machinery
-import importlib.util
+"""Two-axis controller and HTTP tests, with no physical motor writes."""
+import copy
 import json
 import sys
-import tempfile
 import threading
+import time
+import types
+import unittest
 from http.client import HTTPConnection
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from spring_turret import server, servo
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SERVER_PATH = REPO_ROOT / "src/spring_turret/server.py"
-sys.path.insert(0, str(REPO_ROOT / "src"))
-
-
-def load_server():
-    loader = importlib.machinery.SourceFileLoader("spring_turret_server", str(SERVER_PATH))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-class FakeCamera:
-    def start(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        pass
-
-    def status(self) -> dict:
-        return {
-            "online": True,
-            "device": "/dev/spring-turret-camera",
-            "width": 1280,
-            "height": 720,
-            "framerate": 30,
-            "frame_age_ms": 4,
-            "error": None,
-        }
-
-
-class FakeServo:
-    def __init__(self, module):
-        self.module = module
-        self.armed = False
-        self.position = 2048
-
-    def start(self) -> None:
-        pass
-
-    def stop(self) -> None:
-        self.armed = False
-
-    def arm(self) -> None:
-        self.armed = True
-
-    def disable(self) -> None:
-        self.armed = False
-
-    def center(self) -> None:
-        self.move(2048)
-
-    def move(self, position: int) -> None:
-        if not self.armed:
-            raise self.module.ServoDisarmed("servo is disarmed; use Arm before moving")
-        if not 1536 <= position <= 2560:
-            raise ValueError("position must be between 1536 and 2560")
-        self.position = position
-
-    def status(self) -> dict:
-        return {
-            "online": True,
-            "device": "/dev/spring-turret-servo",
-            "protocol": "dynamixel-2.0",
-            "baudrate": 57_600,
-            "id": 1,
-            "model": 1200,
-            "model_name": "XL330-M288-T",
-            "position": self.position,
-            "min_position": 1536,
-            "center_position": 2048,
-            "max_position": 2560,
-            "armed": self.armed,
-            "error": None,
-        }
+class FakePort:
+    def __init__(self, *_): pass
+    def openPort(self): return True
+    def setBaudRate(self, _): return True
+    def closePort(self): pass
 
 
 class FakePacket:
     def __init__(self):
-        self.torque_writes = []
-        self.four_byte_writes = []
-        self.position = 2048
+        defaults = {10: 0, 11: 4, 12: 255, 20: 0, 48: 4095, 52: 0,
+                    64: 0, 70: 0, 98: 0, 116: 100, 132: 2048}
+        self.registers = {1: defaults.copy(), 2: defaults.copy()}
+        self.writes = []
+        self.fail = None
+        self.missing = set()
+        self.model = {1: 1200, 2: 1200}
 
-    def write1ByteTxRx(self, port, servo_id, address, value):
-        self.torque_writes.append((servo_id, address, value))
+    def ping(self, port, sid):
+        return (0, -1, 0) if sid in self.missing else (self.model[sid], 0, 0)
+
+    def read1ByteTxRx(self, port, sid, addr):
+        if sid in self.missing or self.fail == ("read", sid, addr):
+            return 0, -1, 0
+        return self.registers[sid][addr], 0, 0
+
+    read4ByteTxRx = read1ByteTxRx
+
+    def write1ByteTxRx(self, port, sid, addr, value):
+        self.writes.append((sid, addr, value))
+        if sid in self.missing or self.fail == ("write", sid, addr, value):
+            return -1, 0
+        self.registers[sid][addr] = value
         return 0, 0
 
-    def write4ByteTxRx(self, port, servo_id, address, value):
-        self.four_byte_writes.append((servo_id, address, value))
-        return 0, 0
-
-    def read4ByteTxRx(self, port, servo_id, address):
-        return self.position, 0, 0
+    write4ByteTxRx = write1ByteTxRx
 
 
-class FakePort:
-    def closePort(self):
-        pass
+class ControllerTests(unittest.TestCase):
+    def setUp(self):
+        self.config = server.load_config(ROOT / "config/spring-turret-demo.json")
+        self.config["servo"]["calibrated"] = True
+        self.packet = FakePacket()
+        sdk = types.SimpleNamespace(COMM_SUCCESS=0, PortHandler=FakePort,
+                                    PacketHandler=lambda _: self.packet)
+        self.sdk = patch.dict(sys.modules, {"dynamixel_sdk": sdk})
+        self.sdk.start()
+        self.controller = servo.ServoController(self.config["servo"])
 
+    def tearDown(self):
+        self.controller.stop()
+        self.sdk.stop()
 
-def request(port: int, method: str, path: str, body=None):
-    headers = {}
-    payload = None
-    if body is not None:
-        payload = json.dumps(body).encode()
-        headers["Content-Type"] = "application/json"
-    connection = HTTPConnection("127.0.0.1", port, timeout=3)
-    connection.request(method, path, body=payload, headers=headers)
-    response = connection.getresponse()
-    data = response.read()
-    connection.close()
-    return response.status, dict(response.headers), data
+    def test_arm_holds_both_then_moves_only_selected_axis(self):
+        with self.assertRaises(servo.ServoDisarmed): self.controller.move("x", 10)
+        self.assertEqual(self.packet.writes, [])
+        self.controller.arm()
+        writes = self.packet.writes
+        first_enable = next(i for i, (_, a, v) in enumerate(writes) if a == 64 and v == 1)
+        self.assertIn((2, 116, 2048), writes[:first_enable])
+        self.assertIn((1, 116, 2048), writes[:first_enable])
+        self.controller.move("x", 10)
+        self.assertEqual(self.packet.registers[2][116], 2162)
+        self.assertEqual(self.packet.registers[1][116], 2048)
+        self.controller.move("y", -20)
+        self.assertEqual(self.packet.registers[1][116], 1820)
+        state = self.controller.status()
+        self.assertEqual(state["axes"]["x"]["position"], 2048)
+        self.assertAlmostEqual(state["axes"]["x"]["goal_degrees"], 10, delta=.05)
+        self.controller.disable()
+        self.assertFalse(self.controller.armed)
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
 
+    def test_partial_arm_failure_turns_first_motor_back_off(self):
+        self.packet.fail = ("write", 1, 64, 1)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+        self.assertIn((2, 64, 1), self.packet.writes)
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+        self.assertFalse(self.controller.armed)
 
-def main() -> None:
-    module = load_server()
-    assert module.extract_jpeg_frames(b"noise\xff\xd8one\xff\xd9tail") == (
-        [b"\xff\xd8one\xff\xd9"],
-        b"l",
-    )
+    def test_stop_attempts_both_even_if_x_fails(self):
+        self.controller.arm()
+        self.packet.fail = ("write", 2, 64, 0)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.disable()
+        self.assertEqual(self.packet.registers[1][64], 0)
+        self.assertIsNone(self.controller.status()["axes"]["x"]["torque"])
+        self.assertIn("unconfirmed", self.controller.error)
 
-    controller = module.ServoController(
-        {
-            "device": "/dev/spring-turret-servo",
-            "protocol": "dynamixel-2.0",
-            "model_number": 1200,
-            "baudrate": 57_600,
-            "id": 1,
-            "min_position": 1536,
-            "center_position": 2048,
-            "max_position": 2560,
-            "profile_velocity": 40,
-            "profile_acceleration": 5,
-        }
-    )
-    packet = FakePacket()
-    controller.packet = packet
-    controller.port = FakePort()
-    controller.model = 1200
-    controller.comm_success = 0
-    try:
-        controller.move(2200)
-        raise AssertionError("disarmed position command was accepted")
-    except module.ServoDisarmed:
-        pass
-    assert packet.four_byte_writes == []
-    controller.arm()
-    controller.move(2200)
-    controller.disable()
-    assert packet.torque_writes == [(1, 64, 1), (1, 64, 0)]
-    assert packet.four_byte_writes == [
-        (1, 108, 5),
-        (1, 112, 40),
-        (1, 116, 2048),
-        (1, 116, 2200),
-    ]
+    def test_missing_motor_never_arms_other(self):
+        self.packet.missing.add(1)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+        self.assertFalse(any(a == 64 and v == 1 for _, a, v in self.packet.writes))
 
-    packet.position = 100
-    try:
-        controller.arm()
-        raise AssertionError("out-of-range servo position was armed")
-    except module.DeviceUnavailable:
-        pass
-    assert packet.torque_writes == [(1, 64, 1), (1, 64, 0)]
+    def test_wrong_model_never_written(self):
+        self.packet.model[1] = 42
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+        self.assertFalse(any(sid == 1 for sid, _, _ in self.packet.writes))
 
-    with tempfile.TemporaryDirectory() as directory:
-        static = Path(directory)
-        (static / "index.html").write_text("turret demo", encoding="utf-8")
-        config = {
-            "listen": {"host": "127.0.0.1", "port": 8080},
-            "camera": {},
-            "servo": {},
-        }
-        servo = FakeServo(module)
-        application = module.TurretApplication(
-            config, camera=FakeCamera(), servo=servo, static_dir=static
-        )
-        server = ThreadingHTTPServer(("127.0.0.1", 0), module.make_handler(application))
-        server.daemon_threads = True
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+    def test_disconnect_stops_other_and_reconnect_is_disarmed(self):
+        self.controller.arm()
+        self.packet.missing.add(2)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.move("y", 10)
+        self.assertEqual(self.packet.registers[1][64], 0)
+        self.packet.missing.clear()
+        self.controller._poll_locked()
+        self.assertFalse(self.controller.armed)
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_modes_and_ranges_fail_before_torque_on(self):
+        for address, value in ((11, 1), (11, 3), (10, 8), (10, 4), (10, 1), (12, 2), (20, 10),
+                               (132, 100), (132, 4294967295), (70, 4)):
+            with self.subTest(address=address, value=value):
+                original = self.packet.registers[1][address]
+                self.packet.registers[1][address] = value
+                self.packet.writes.clear()
+                with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+                self.assertFalse(any(a == 64 and v == 1 for _, a, v in self.packet.writes))
+                self.packet.registers[1][address] = original
+        self.config["servo"]["calibrated"] = False
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+
+    def test_lease_timeout_rejects_late_move(self):
+        self.controller.arm()
+        self.controller.last_keepalive = time.monotonic() - 4
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.move("x", 10)
+        self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+        self.controller.keepalive()
+        self.assertFalse(self.controller.armed)
+
+    def test_invalid_degrees_or_axis_never_write(self):
+        for name, value in [("z", 0), ([], 0), ("x", True), ("x", "10"), ("y", None),
+                            ("x", float("nan")), ("x", float("inf")), ("y", 46), ("x", -46)]:
+            with self.assertRaises(ValueError): self.controller.move(name, value)
+        self.assertEqual(self.packet.writes, [])
+
+    def test_direction_conversion(self):
+        axis = copy.deepcopy(self.config["servo"]["axes"]["y"])
+        axis["direction"] = -1
+        self.assertEqual(servo.to_position(axis, 45), 1536)
+        self.assertEqual(servo.to_degrees(axis, 1536), 45)
+
+    def test_rollover_short_moves_and_reboot_coordinate(self):
+        self.config["servo"]["axes"]["y"]["center_position"] = 4065
+        self.packet.registers[1][132] = 4065
+        self.controller.arm()
+        self.controller.move("y", 5)
+        self.assertEqual(self.packet.registers[1][116], 4122)
+        self.controller.disable()
+        # After reboot the encoder reports 26 instead of 4122; keep the same angle.
+        self.packet.registers[1][132] = 26
+        self.controller.arm()
+        self.assertAlmostEqual(self.controller.status()["axes"]["y"]["degrees"], 5, delta=.05)
+        self.controller.move("y", 0)
+        self.assertEqual(self.packet.registers[1][116], -31)
+        self.assertLess(abs(self.packet.registers[1][116] - 26), 60)
+
+    def test_config_validation(self):
+        for key, value in (("id", 2), ("direction", 0), ("center_position", -1),
+                           ("min_degrees", -91), ("max_degrees", float("nan")), ("profile_velocity", True)):
+            config = copy.deepcopy(self.config["servo"])
+            config["axes"]["y"][key] = value
+            with self.assertRaises(ValueError): servo.validate_config(config)
+
+    def test_http(self):
+        class Camera:
+            def status(self): return {"online": True}
+        app = server.TurretApplication(self.config, camera=Camera(), servo=self.controller)
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(app))
+        httpd.daemon_threads = True
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
         thread.start()
-        port = server.server_address[1]
+        def request(path, body=None):
+            conn = HTTPConnection("127.0.0.1", httpd.server_port, timeout=3)
+            conn.request("POST", path, json.dumps(body) if body is not None else None,
+                         {"Content-Type": "application/json"})
+            response = conn.getresponse()
+            data = response.read()
+            conn.close()
+            return response.status, json.loads(data)
         try:
-            status, _, body = request(port, "GET", "/api/status")
-            assert status == 200
-            assert json.loads(body)["servo"]["armed"] is False
-
-            status, _, _ = request(port, "POST", "/api/servo/position", {"position": 2200})
-            assert status == 409
-            status, _, body = request(port, "POST", "/api/servo/arm")
-            assert status == 200 and json.loads(body)["servo"]["armed"] is True
-            status, _, body = request(port, "POST", "/api/servo/position", {"position": 2200})
-            assert status == 200 and json.loads(body)["servo"]["position"] == 2200
-            status, _, _ = request(port, "POST", "/api/servo/position", {"position": 3000})
-            assert status == 400
-            status, _, body = request(port, "POST", "/api/servo/disable")
-            assert status == 200 and json.loads(body)["servo"]["armed"] is False
+            self.assertEqual(request("/api/servo/position", {"axis": "x", "degrees": 10})[0], 409)
+            self.assertEqual(request("/api/servo/arm")[0], 200)
+            code, body = request("/api/servo/position", {"axis": "x", "degrees": 10})
+            self.assertEqual(code, 200)
+            self.assertEqual(body["servo"]["axes"]["x"]["goal"], 2162)
+            for payload in ({"position": 2200}, {"axis": "x", "degrees": "10"},
+                            {"axis": "y", "degrees": 100}, {"axis": "z", "degrees": 10},
+                            {"axis": "x", "degrees": True}, {"axis": "x", "degrees": float("nan")}):
+                self.assertEqual(request("/api/servo/position", payload)[0], 400)
+            self.assertEqual(request("/api/servo/keepalive")[0], 200)
+            self.assertFalse(request("/api/servo/disable")[1]["servo"]["armed"])
         finally:
-            server.shutdown()
-            server.server_close()
+            httpd.shutdown()
+            httpd.server_close()
             thread.join(timeout=3)
-
-    print("validated turret demo HTTP safety controls")
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main()

@@ -11,7 +11,7 @@
       <h1>Turret Demo</h1>
       <div class="device-status" aria-label="Hardware status">
         <span id="camera-status">Camera: checking</span>
-        <span id="servo-status">Servo: checking</span>
+        <span id="servo-status">X/Y: checking</span>
       </div>
     </header>
 
@@ -40,27 +40,20 @@
         </div>
       </section>
 
-      <section class="controls" aria-label="Servo controls">
-        <div class="position">
-          <output for="position-slider"><span id="position-degrees">0.0</span>°</output>
-          <span id="position-raw">2048</span>
+      <section class="controls" aria-label="Pan and tilt controls">
+        <div class="axis-control">
+          <label for="x-slider">X <output id="x-degrees" for="x-slider">—</output></label>
+          <input id="x-slider" type="range" min="-45" max="45" value="0" step="0.5" aria-label="X pan angle in degrees" disabled>
         </div>
-
-        <input id="position-slider" type="range" min="1536" max="2560" value="2048" step="1" aria-label="Servo position" disabled>
-
-        <div class="jog" aria-label="Jog controls">
-          <button type="button" data-step="-114" disabled>−10°</button>
-          <button type="button" data-step="-11" disabled>−1°</button>
-          <button id="center-button" type="button" disabled>Center</button>
-          <button type="button" data-step="11" disabled>+1°</button>
-          <button type="button" data-step="114" disabled>+10°</button>
+        <button id="motor-toggle" type="button" aria-label="Start motors" title="Start motors" disabled>
+          <svg id="start-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>
+          <svg id="stop-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" hidden><path d="M5 5h14v14H5z"/></svg>
+        </button>
+        <div class="axis-control">
+          <label for="y-slider">Y <output id="y-degrees" for="y-slider">—</output></label>
+          <input id="y-slider" type="range" min="-45" max="45" value="0" step="0.5" aria-label="Y tilt angle in degrees" disabled>
         </div>
-
-        <div class="safety-actions">
-          <button id="arm-button" type="button" disabled>Arm</button>
-          <button id="stop-button" type="button" disabled>Stop / torque off</button>
-        </div>
-        <p id="message" role="status">Checking hardware…</p>
+        <p id="message" role="status" hidden></p>
       </section>
     </main>
     <script src="/app.js"></script>

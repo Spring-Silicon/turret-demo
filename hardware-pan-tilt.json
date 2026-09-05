@@ -1,0 +1,30 @@
+{
+  "observed_host": "spring-edge-2",
+  "date": "2026-09-04",
+  "qualification_status": "small_angle_motion_and_torque_off_verified_full_travel_not_qualified",
+  "adapter_serial": "5B61036033",
+  "baudrate": 57600,
+  "model_number": 1200,
+  "firmware": 53,
+  "operating_mode": 4,
+  "drive_mode": 0,
+  "homing_offset": 0,
+  "secondary_id": 255,
+  "axes": {
+    "x": {"id": 2, "center_position": 2031, "direction": 1},
+    "y": {"id": 1, "center_position": 4065, "direction": 1}
+  },
+  "limits_degrees": [-45, 45],
+  "tests": {
+    "unique_ids_and_stable_reads": true,
+    "neutral_set_by_operator": true,
+    "independent_plus_minus_3_degree_motion": true,
+    "hold_current_position_on_start": true,
+    "both_torque_off_readback_after_stop": true,
+    "physical_y_encoder_rollover": {"command_degrees": 5, "measured_degrees": 3.08, "position": 4100, "goal": 4122},
+    "maximum_observed_small_motion_error_degrees": 1.86,
+    "full_travel_clearance": false,
+    "physical_power_cycle_recovery": false
+  },
+  "note": "Unit tests cover rollover/reboot coordinates, missing motors, partial arming, disconnects, invalid commands and heartbeat timeout. No full-range sweep or PID tuning was performed. Live config is calibrated; repository sample requires commissioning."
+}

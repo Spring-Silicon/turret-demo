@@ -42,6 +42,8 @@ get("prompt-row-template").content = { firstElementChild: new Element() };
 const context = vm.createContext({
   document: { getElementById: get, querySelectorAll: () => [], addEventListener() {} },
   fetch: () => new Promise(() => {}),
+  AbortSignal,
+  setTimeout() { return 1; },
   setInterval() {},
 });
 vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/spring_turret/static/app.js"), "utf8"), context);
@@ -80,3 +82,33 @@ rows()[7].fields[".remove-prompt"].events.click();
 assert.equal(rows().length, 7);
 assert.equal(get("add-prompt").disabled, false);
 console.log("validated per-category counts, draft/stale states and single add button");
+
+run(`status.servo = {online: true, ready: true, armed: false, axes: {
+  x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
+  y: {degrees: -3, goal_degrees: null, min_degrees: -30, max_degrees: 30, torque: false}
+}}; renderMotors();`);
+assert.equal(get("x-slider").disabled, true);
+assert.equal(get("motor-toggle").attributes["aria-label"], "Start motors");
+assert.equal(get("motor-toggle").disabled, false);
+assert.equal(get("x-degrees").textContent, "2.0°");
+assert.equal(get("y-slider").min, -30);
+run('status.servo.armed = true; status.servo.axes.x.torque = true; status.servo.axes.y.torque = true; renderMotors();');
+assert.equal(get("x-slider").disabled, false);
+assert.equal(get("motor-toggle").attributes["aria-label"], "Stop motors");
+assert.equal(get("stop-icon").hidden, false);
+get("x-slider").value = 12.5;
+get("x-slider").events.input();
+assert.equal(get("x-degrees").textContent, "12.5°");
+assert.equal(run('pendingAngles.get("x")'), 12.5);
+get("y-slider").value = -10;
+get("y-slider").events.input();
+assert.equal(run('pendingAngles.get("y")'), -10);
+run('renderMotors();');
+assert.equal(Number(get("x-slider").value), 12.5); // A poll cannot undo a pending drag.
+run('movingAxis = "x"; renderMotors();');
+assert.equal(get("motor-toggle").disabled, false); // Stop remains available during moves.
+run('status.servo.online = false; status.servo.armed = false; status.servo.axes.x.torque = null; renderMotors();');
+assert.equal(get("motor-toggle").attributes["aria-label"], "Stop motors");
+assert.equal(get("motor-toggle").disabled, false); // Unknown torque must not hide Stop.
+assert.equal(get("x-slider").disabled, true);
+console.log("validated dual degree sliders, pending edits and start/stop states");

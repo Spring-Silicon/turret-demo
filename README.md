@@ -1,6 +1,6 @@
 # Spring turret demo
 
-Camera feed, text-prompt SAM 3.1 bounding boxes, and manual servo controls.
+Camera feed, text-prompt SAM 3.1 bounding boxes, and manual X/Y pan/tilt controls.
 
 ## Current hardware status
 
@@ -8,21 +8,36 @@ Camera feed, text-prompt SAM 3.1 bounding boxes, and manual servo controls.
   30 fps verified on `spring-edge-2`.
 - USB Single Serial adapter (`1a86:55d3`, serial `5B61036033`): enumeration and
   stable device naming verified.
-- ROBOTIS DYNAMIXEL XL330-M288-T: model 1200, firmware 53, Protocol 2.0, ID 1
-  at 57,600 baud. Read-only PING and position are verified; motion is not yet
-  qualified.
+- Two ROBOTIS DYNAMIXEL XL330-M288-T servos share one Protocol 2.0 bus at
+  57,600 baud: **X/pan = ID 2**, **Y/tilt = ID 1**. The original single-servo
+  qualification in `hardware.json` is historical; it does not qualify the
+  assembled two-axis mechanism.
 
-The service starts disarmed, sends no startup movement, rejects positions outside
-1536 through 2560, and rejects every movement until the operator selects **Arm**.
-Communication failure clears the armed state. Service shutdown attempts to turn
-torque off. Arming first writes the current position as the goal, then enables
-torque, preventing an immediate jump on Arm.
+Current assembly readbacks and bounded motion results are recorded separately
+in [`hardware-pan-tilt.json`](hardware-pan-tilt.json). Stock motor tuning showed
+up to 1.86° of residual error in ±3° tests. While running, slider values indicate
+the commanded angle; `/api/status` reports measured and goal angles separately.
+
+The service starts torque-off with no startup movement. **Start** writes both
+current positions as hold goals before enabling either motor; it never homes
+the assembly. **Stop** (or Escape) attempts to release both motors even if one
+does not answer. Failed communication or a partial Start cancels motion and
+attempts torque-off on both axes. An unconfirmed stop is reported explicitly;
+reconnection never automatically re-arms. Start checks model, position mode,
+drive mode, secondary ID, homing offset, range and hardware faults.
+
+The browser sends a keepalive while running. After three seconds without one,
+the service releases both motors. Each servo also has a one-second bus watchdog:
+if the process or bus stops sending traffic it stops motion, **but retains
+holding torque**. Neither safeguard is a physical emergency stop. A released
+tilt axis can fall under gravity; support the camera before disconnecting power.
 
 ## UI
 
-Open `http://HOST:8080/`. The UI contains only the live feed, camera/servo state,
-position, bounded jog controls, Arm, Stop, and the current hardware error.
-The motor controls sit below the camera. Enter
+Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
+**triangle/square Start/Stop** button, and a **Y degree slider**. Sliders move
+their respective axes while running; requests are coalesced during a drag.
+Errors appear only when needed. Enter
 one object category per row (for example `person`, `cup`, `keyboard`). Each row
 shows its detected instance count and a trash button. The single **+** below
 the list adds another row. Counts show `—` while unavailable or for unapplied
@@ -30,7 +45,7 @@ prompts; `0` means no instances were detected in the current result. Select **Up
 prompts**, or press **Enter** in a text box, to apply every row together.
 Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
-and update to return to the raw feed. Detection never arms, aims, or moves the servo.
+and update to return to the raw feed. Detection never arms, aims, or moves either servo.
 
 There is no password or application-level access control. Run it only on an
 isolated demo LAN. The software Stop is not an emergency stop; keep a physical
@@ -166,8 +181,8 @@ preprocessing and annotation was about 188 ms, versus the old implementation's
 - `GET /api/status`
 - `POST /api/servo/arm`
 - `POST /api/servo/disable`
-- `POST /api/servo/center`
-- `POST /api/servo/position` with `{"position": INTEGER}`
+- `POST /api/servo/keepalive` at least once a second while running
+- `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
 - `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears
 - `POST /api/detection/prompt` with `{"prompt": "chair"}` (single-category compatibility)
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL
@@ -181,7 +196,35 @@ make validate
 
 ## Servo qualification still required
 
-Before changing `hardware.json` to motion-qualified, confirm the actuator model,
-electrical interface, supply voltage, ID, and baud rate. Then verify read-only
-PING/position, mechanical center with linkage disconnected, conservative limits,
-Stop under motion, communication-loss behavior, current, and temperature.
+The sample config is deliberately `calibrated: false`: Start is blocked until
+the actual assembly is commissioned. Use a stopped service and an exclusive bus
+connection for commissioning. Never change an ID with two factory-ID-1 motors
+connected: isolate the bottom/pan motor, torque off, assign ID 2, verify readback,
+then reconnect the upper/tilt motor (ID 1). Both must respond separately at
+57,600 baud with model 1200, drive mode 0, secondary ID 255, homing offset 0,
+torque off and no hardware error. With torque disabled, program and verify
+**Operating Mode (11) = 4** (extended position) on both motors.
+
+With torque off, place the camera straight ahead and level. Read each present
+position modulo 4096 into its axis's `center_position`; set `direction` to 1
+or -1 for the mount's orientation. Begin with conservative limits (sample: ±45°)
+and slow profiles; set `calibrated: true` after confirming neutral and clearance.
+The [reference CAD](https://github.com/AnthonyZJiang/dynamixal-pan-tilt-camera-cad)
+specifies ±90° maximum travel, but mounting and cable clearance must be checked
+on each assembly.
+
+Extended position mode is intentional: this assembly's neutral tilt is near
+encoder rollover. A bounded tilt can therefore cross 4095/0. The controller
+holds a continuous local coordinate while armed and chooses the nearest
+equivalent zero after power cycling/reconnecting; it never commands a full turn
+to recover zero. Signed positions are supported. Extended mode ignores the
+servo's EEPROM min/max position limits, so the service enforces both commanded
+and measured limits. Do not turn the assembled mount through full revolutions.
+
+The service does not rewrite EEPROM on startup. It rejects incompatible modes
+instead of silently changing the coordinate system. The configuration format
+changed in 0.6: migrate the old flat single-servo fields into `servo.axes` and
+preserve the existing `camera`, `listen`, and optional `inference` sections.
+Full mechanical qualification still requires checking travel endpoints, cable
+clearance, direction, Stop during motion, current/temperature and recovery after
+power loss. A small motion/readback test is not full-range qualification.

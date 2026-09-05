@@ -15,11 +15,15 @@
     "protocol": "dynamixel-2.0",
     "model_number": 1200,
     "baudrate": 57600,
-    "id": 1,
-    "min_position": 1536,
-    "center_position": 2048,
-    "max_position": 2560,
-    "profile_velocity": 40,
-    "profile_acceleration": 5
+    "operating_mode": 4,
+    "calibrated": false,
+    "axes": {
+      "x": {"id": 2, "center_position": 2048, "direction": 1,
+        "min_degrees": -45, "max_degrees": 45,
+        "profile_velocity": 20, "profile_acceleration": 5},
+      "y": {"id": 1, "center_position": 2048, "direction": 1,
+        "min_degrees": -45, "max_degrees": 45,
+        "profile_velocity": 20, "profile_acceleration": 5}
+    }
   }
 }

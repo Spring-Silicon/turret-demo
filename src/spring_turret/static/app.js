@@ -1,15 +1,16 @@
 "use strict";
 
-const slider = document.getElementById("position-slider");
-const degrees = document.getElementById("position-degrees");
-const raw = document.getElementById("position-raw");
+const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };
+const motorToggle = document.getElementById("motor-toggle");
 const message = document.getElementById("message");
-const armButton = document.getElementById("arm-button");
-const stopButton = document.getElementById("stop-button");
-const centerButton = document.getElementById("center-button");
-const jogButtons = [...document.querySelectorAll("[data-step]")];
+const editingAxes = new Set();
+const pendingAngles = new Map();
+let movingAxis = null;
+let moveTimer = null;
+let arming = false;
+let stopping = false;
+let keepaliveSending = false;
 let status = null;
-let sending = false;
 let detectionSending = false;
 let feedSource = "";
 let displayedDetection = null;
@@ -114,13 +115,28 @@ function renderDetection(detection) {
   }
 }
 
-function showPosition(position, servo) {
-  const bounded = Math.max(servo.min_position, Math.min(servo.max_position, position));
-  slider.min = servo.min_position;
-  slider.max = servo.max_position;
-  slider.value = bounded;
-  degrees.textContent = (((bounded - servo.center_position) * 360) / 4096).toFixed(1);
-  raw.textContent = bounded;
+function renderMotors() {
+  const servo = status?.servo;
+  if (!servo) return;
+  for (const name of ["x", "y"]) {
+    const axis = servo.axes[name];
+    const slider = sliders[name];
+    slider.min = axis.min_degrees;
+    slider.max = axis.max_degrees;
+    slider.disabled = !servo.armed || !servo.online || stopping;
+    if (!editingAxes.has(name) && !pendingAngles.has(name) && movingAxis !== name) {
+      const value = servo.armed ? axis.goal_degrees ?? axis.degrees : axis.degrees;
+      if (value !== null) slider.value = value;
+      document.getElementById(name + "-degrees").textContent = value === null ? "—" : Number(value).toFixed(1) + "°";
+    }
+  }
+  const stop = servo.armed || Object.values(servo.axes).some(axis => axis.torque !== false);
+  motorToggle.disabled = arming || stopping || (!stop && !servo.ready);
+  motorToggle.setAttribute("aria-label", stop ? "Stop motors" : "Start motors");
+  motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors";
+  motorToggle.classList.toggle("stopping", stop);
+  document.getElementById("start-icon").hidden = stop;
+  document.getElementById("stop-icon").hidden = !stop;
 }
 
 function showDevice(id, name, online) {
@@ -131,6 +147,7 @@ function showDevice(id, name, online) {
 
 function showMessage(text, error = false) {
   message.textContent = text;
+  message.hidden = !text;
   message.classList.toggle("error", error);
 }
 
@@ -139,26 +156,17 @@ function render(next) {
   renderDetection(next.detection);
   const { camera, servo } = next;
   showDevice("camera-status", "Camera", camera.online);
-  showDevice("servo-status", "Servo", servo.online);
+  showDevice("servo-status", "X/Y", servo.online);
   document.getElementById("camera-offline").hidden = camera.online;
-  if (!sending) showPosition(servo.position ?? servo.center_position, servo);
-
-  const canMove = servo.online && servo.armed && !sending;
-  slider.disabled = !canMove;
-  centerButton.disabled = !canMove;
-  jogButtons.forEach((button) => { button.disabled = !canMove; });
-  armButton.disabled = !servo.online || servo.armed || sending;
-  stopButton.disabled = !servo.online || sending;
-  armButton.textContent = servo.armed ? "Armed" : "Arm";
-
-  if (servo.error) showMessage(servo.error, true);
-  else if (camera.error) showMessage(camera.error, true);
-  else showMessage(servo.armed ? "Servo armed" : "Servo disarmed");
+  if (!servo.armed) pendingAngles.clear();
+  renderMotors();
+  showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
 }
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
     cache: "no-store",
+    signal: AbortSignal.timeout(5000),
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });
@@ -168,48 +176,92 @@ async function request(path, options = {}) {
   return body;
 }
 
-async function action(path, options = {}) {
-  if (sending) return;
-  sending = true;
+async function startMotors() {
+  if (arming || stopping || !status?.servo?.ready) return;
+  arming = true;
+  renderMotors();
   try {
-    await request(path, { method: "POST", ...options });
+    await request("/api/servo/arm", { method: "POST" });
   } catch (error) {
     showMessage(error.message, true);
   } finally {
-    sending = false;
+    arming = false;
+    renderMotors();
   }
 }
 
-async function sendPosition(position) {
-  if (!status) return;
-  const servo = status.servo;
-  const bounded = Math.max(servo.min_position, Math.min(servo.max_position, Math.round(position)));
-  showPosition(bounded, servo);
-  await action("/api/servo/position", { body: JSON.stringify({ position: bounded }) });
+async function stopMotors() {
+  if (stopping) return;
+  stopping = true;
+  pendingAngles.clear();
+  editingAxes.clear();
+  renderMotors();
+  try {
+    await request("/api/servo/disable", { method: "POST" });
+  } catch (error) {
+    showMessage(error.message + "; torque-off not confirmed", true);
+  } finally {
+    stopping = false;
+    renderMotors();
+  }
 }
 
-slider.addEventListener("input", () => {
-  if (status) showPosition(Number(slider.value), status.servo);
-});
-slider.addEventListener("change", () => sendPosition(Number(slider.value)));
-jogButtons.forEach((button) => button.addEventListener("click", () => {
-  sendPosition(Number(slider.value) + Number(button.dataset.step));
-}));
-armButton.addEventListener("click", () => action("/api/servo/arm"));
-stopButton.addEventListener("click", () => action("/api/servo/disable"));
-centerButton.addEventListener("click", () => action("/api/servo/center"));
+async function flushAngles() {
+  moveTimer = null;
+  if (movingAxis || stopping || !status?.servo?.armed) return;
+  const entry = pendingAngles.entries().next().value;
+  if (!entry) return;
+  const [axis, degrees] = entry;
+  pendingAngles.delete(axis);
+  movingAxis = axis;
+  try {
+    await request("/api/servo/position", { method: "POST", body: JSON.stringify({ axis, degrees }) });
+  } catch (error) {
+    pendingAngles.clear();
+    showMessage(error.message, true);
+  } finally {
+    movingAxis = null;
+    renderMotors();
+    if (pendingAngles.size) moveTimer = setTimeout(flushAngles, 80);
+  }
+}
 
+for (const [axis, slider] of Object.entries(sliders)) {
+  slider.addEventListener("pointerdown", () => editingAxes.add(axis));
+  const finishEdit = () => { editingAxes.delete(axis); };
+  slider.addEventListener("pointerup", finishEdit);
+  slider.addEventListener("pointercancel", finishEdit);
+  slider.addEventListener("blur", finishEdit);
+  slider.addEventListener("input", () => {
+    document.getElementById(axis + "-degrees").textContent = Number(slider.value).toFixed(1) + "°";
+    if (!status?.servo?.armed || stopping) return;
+    pendingAngles.set(axis, Number(slider.value));
+    if (!movingAxis && moveTimer === null) moveTimer = setTimeout(flushAngles, 80);
+  });
+}
+
+motorToggle.addEventListener("click", () => {
+  if (motorToggle.disabled || !status?.servo) return;
+  const stop = status.servo.armed || Object.values(status.servo.axes).some(axis => axis.torque !== false);
+  if (stop) stopMotors();
+  else startMotors();
+});
 document.addEventListener("keydown", (event) => {
-  if (!status || sending) return;
-  if (event.key === "Escape") action("/api/servo/disable");
-  if (event.target.matches("input, textarea, button") || event.target.isContentEditable) return;
-  if (event.key === " " && status.servo.armed) {
-    event.preventDefault();
-    action("/api/servo/center");
-  }
-  if (event.key === "ArrowLeft" && status.servo.armed) sendPosition(Number(slider.value) - 11);
-  if (event.key === "ArrowRight" && status.servo.armed) sendPosition(Number(slider.value) + 11);
+  if (event.key === "Escape") stopMotors();
 });
+
+async function keepMotorsAlive() {
+  if (!status?.servo?.armed || stopping || keepaliveSending) return;
+  keepaliveSending = true;
+  try {
+    await request("/api/servo/keepalive", { method: "POST" });
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    keepaliveSending = false;
+  }
+}
+setInterval(keepMotorsAlive, 700);
 
 async function poll() {
   if (polling) return;
