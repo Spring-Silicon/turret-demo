@@ -184,7 +184,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_requested_asymmetric_limits_and_rearm_gate(self):
         axes = self.config["servo"]["axes"]
-        axes["x"].update(min_degrees=-110, max_degrees=110)
+        axes["x"].update(min_degrees=-90, max_degrees=90)
         axes["y"].update(min_degrees=30, max_degrees=90)
         servo.validate_config(self.config["servo"])
         self.controller._poll_locked()
@@ -197,11 +197,11 @@ class ControllerTests(unittest.TestCase):
         self.controller._poll_locked()
         self.assertTrue(self.controller.status()["ready"])
         self.controller.arm()
-        for name, degrees in (("x", -110), ("x", 110), ("y", 30), ("y", 90)):
+        for name, degrees in (("x", -90), ("x", 90), ("y", 30), ("y", 90)):
             self.controller.move(name, degrees)
             self.assertEqual(self.packet.registers[axes[name]["id"]][116], servo.to_position(axes[name], degrees))
         previous = self.packet.writes.copy()
-        for name, degrees in (("x", -110.01), ("x", 110.01), ("y", 29.99), ("y", 90.01), ("y", 0)):
+        for name, degrees in (("x", -90.01), ("x", 90.01), ("y", 29.99), ("y", 90.01), ("y", 0)):
             with self.assertRaises(ValueError): self.controller.move(name, degrees)
         self.assertEqual(previous, self.packet.writes)
 

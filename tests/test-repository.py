@@ -35,7 +35,7 @@ def main() -> None:
     assert servo["axes"]["y"]["id"] == 1
     for axis in servo["axes"].values():
         assert axis["center_position"] == 2048
-    assert [servo["axes"]["x"][key] for key in ("min_degrees", "max_degrees")] == [-110, 110]
+    assert [servo["axes"]["x"][key] for key in ("min_degrees", "max_degrees")] == [-90, 90]
     assert [servo["axes"]["y"][key] for key in ("min_degrees", "max_degrees")] == [30, 90]
     assert config["camera"]["device"] == "/dev/spring-turret-camera"
     assert servo["device"] == "/dev/spring-turret-servo"

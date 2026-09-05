@@ -47,7 +47,7 @@ Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
 and update to return to the raw feed. Detection never arms, aims, or moves either servo.
 
-Configured command limits are **X: −110° to +110°** and **Y: 30° to 90°**.
+Configured command limits are **X: −90° to +90°** and **Y: 30° to 90°**.
 They are enforced in the API as well as the sliders. Changing limits never
 commands motion. If an axis is outside its new range, Start stays unavailable
 until it is repositioned with torque off. The calibrated zero remains unchanged
@@ -215,11 +215,10 @@ With torque off, place the camera straight ahead and level. Read each present
 position modulo 4096 into its axis's `center_position`; set `direction` to 1
 or -1 for the mount's orientation. Use slow profiles and set `calibrated: true`
 after confirming neutral and clearance. The sample reflects the operator's
-requested X ±110° / Y 30–90° limits, not a qualified full-travel envelope.
+requested X ±90° / Y 30–90° limits, not a qualified full-travel envelope.
 The [reference CAD](https://github.com/AnthonyZJiang/dynamixal-pan-tilt-camera-cad)
 specifies ±90° maximum travel, but mounting and cable clearance must be checked
-on each assembly. The requested X range exceeds that reference; no extended
-travel sweep was performed when applying these limits.
+on each assembly. No full-travel sweep was performed when applying these limits.
 
 Extended position mode is intentional: this assembly's neutral tilt is near
 encoder rollover. A bounded tilt can therefore cross 4095/0. The controller
