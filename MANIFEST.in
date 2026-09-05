@@ -1,0 +1,2 @@
+include requirements-sam31.in requirements-sam31.txt
+recursive-include config *.json

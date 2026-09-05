@@ -31,18 +31,28 @@ main {
   margin: 0 auto;
   padding: 24px;
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
 
 .feed { position: relative; aspect-ratio: 16 / 9; overflow: hidden; background: #000; border: 1px solid var(--line); }
 .feed img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.vision { min-width: 0; }
+#detection-form, #prompt-rows { display: grid; gap: 8px; }
+.prompt-row { display: flex; gap: 8px; }
+.detection-prompt { flex: 1; min-width: 0; border: 1px solid var(--line); border-left: 3px solid var(--prompt-color, var(--accent)); background: #151919; color: inherit; padding: 10px; font: inherit; }
+.prompt-row button { flex: 0 0 40px; display: grid; place-items: center; }
+.prompt-count { flex: 0 0 40px; display: grid; place-items: center; color: var(--prompt-color, var(--accent)); font-size: 18px; font-variant-numeric: tabular-nums; }
+.prompt-count.unavailable { color: var(--muted); }
+.prompt-actions { display: flex; justify-content: space-between; gap: 8px; }
+#add-prompt { width: 40px; font-size: 22px; }
+.remove-prompt svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#update-prompts { justify-self: end; padding: 0 16px; }
+.detection-prompt:focus { outline: 1px solid var(--accent); }
+#detection-status { min-height: 18px; margin: 10px 0; color: var(--muted); font-size: 12px; }
+#detection-status.error { color: var(--error); }
 .feed p { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; background: #000; color: var(--muted); }
-.crosshair { position: absolute; top: 50%; left: 50%; width: 32px; height: 32px; transform: translate(-50%, -50%); border: 1px solid rgba(85,232,206,.7); border-radius: 50%; }
-.crosshair::before, .crosshair::after { content: ""; position: absolute; background: var(--accent); }
-.crosshair::before { width: 44px; height: 1px; top: 15px; left: -7px; }
-.crosshair::after { width: 1px; height: 44px; top: -7px; left: 15px; }
 
 .controls { padding: 20px; border: 1px solid var(--line); }
 .position { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 16px; }
