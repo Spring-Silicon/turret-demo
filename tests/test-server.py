@@ -575,6 +575,29 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.controller.cached_pose["sampled_at"], 11.0)
         self.assertEqual(self.controller.cached_pose["read_completed_at"], 11.05)
 
+    def test_pose_history_uses_completed_read_before_frame_and_clears_on_stop(self):
+        self.controller.arm()
+        with patch("time.monotonic", side_effect=[10.0, 10.03]):
+            self.controller._poll_locked()
+        self.packet.registers[2][132] = 2100
+        with patch("time.monotonic", side_effect=[10.04, 10.07]):
+            self.controller._poll_locked()
+        with patch("time.monotonic", return_value=10.08):
+            self.assertEqual(self.controller.sample_pose()["sampled_at"], 10.04)
+            old = self.controller.sample_pose(10.05)
+            self.assertEqual(old["sampled_at"], 10.0)
+            self.assertEqual(old["axes"]["x"]["degrees"], 0)
+            old["axes"]["x"]["degrees"] = 999
+            self.assertEqual(self.controller.sample_pose(10.05)["axes"]["x"]["degrees"], 0)
+            self.assertIsNone(self.controller.sample_pose(10.02))
+            self.assertIsNone(self.controller.sample_pose(10.09))  # Future frame.
+        with patch("time.monotonic", return_value=10.2):
+            self.assertIsNone(self.controller.sample_pose(10.05))  # Stale frame.
+            self.assertIsNone(self.controller.sample_pose())  # Stale encoders.
+        self.assertEqual(self.controller.pose_history.maxlen, 16)
+        self.controller.disable()
+        self.assertEqual(len(self.controller.pose_history), 0)
+
     def test_camera_sample_pairs_timestamp_and_waits_until_after_pose_read(self):
         camera = server.CameraStream(self.config["camera"])
         camera.latest_sequence, camera.latest_frame, camera.latest_monotonic = 1, b"old", 10.0

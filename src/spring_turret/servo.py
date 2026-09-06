@@ -6,6 +6,7 @@ import logging
 import math
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +99,7 @@ class ServoController:
         self.lock = threading.Lock()
         self.pose_lock = threading.Lock()
         self.cached_pose: dict | None = None
+        self.pose_history: deque[dict] = deque(maxlen=16)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._monitor, name="servo", daemon=True)
         self.port: Any = None
@@ -161,6 +163,7 @@ class ServoController:
         self.armed = False
         with self.pose_lock:
             self.cached_pose = None
+            self.pose_history.clear()
         errors = []
         for name, state in self.axes.items():
             self._recovery_boundary[name] = None
@@ -200,6 +203,7 @@ class ServoController:
         if not self.armed:
             with self.pose_lock:
                 self.cached_pose = None
+                self.pose_history.clear()
         if self.packet is None:
             errors = self._disable_all_locked()
             if errors:
@@ -227,6 +231,7 @@ class ServoController:
                         "degrees": to_degrees(self._axis_config(name), state["position"]),
                         "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
                     } for name, state in self.axes.items()}}
+                self.pose_history.append(self.cached_pose)
 
     def _axis_config(self, name: str) -> dict:
         return {**self.config["axes"][name], "center_position": self.axes[name]["origin"]}
@@ -388,17 +393,23 @@ class ServoController:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error
 
-    def sample_pose(self) -> dict[str, Any] | None:
+    def sample_pose(self, captured_at: float | None = None) -> dict[str, Any] | None:
         """Nonblocking checked encoder snapshot; never performs serial I/O.
 
         The monitor/command paths still check both axes and all faults. Pairing
         rejects snapshots over 100 ms old, including time spent reading the bus.
+        For a camera frame, choose the newest fully completed read BEFORE its
+        receipt time, not a newer pose that would force waiting for another frame.
         """
         with self.pose_lock:
-            pose = self.cached_pose
-            if not self.armed or pose is None or not 0 <= time.monotonic() - pose["sampled_at"] <= 0.1:
+            now = time.monotonic()
+            at = now if captured_at is None else captured_at
+            if not self.armed or not 0 <= now - at <= 0.1:
                 return None
-            return {**pose, "axes": {name: dict(axis) for name, axis in pose["axes"].items()}}
+            for pose in reversed(self.pose_history):
+                if pose["read_completed_at"] <= at and 0 <= at - pose["sampled_at"] <= 0.1:
+                    return {**pose, "axes": {name: dict(axis) for name, axis in pose["axes"].items()}}
+            return None
 
     def point(self, degrees: dict[str, float]) -> dict[str, Any]:
         """Command an absolute camera pointing pose, with only angle clamping."""

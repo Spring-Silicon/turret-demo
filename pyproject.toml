@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spring-turret-demo"
-version = "0.15.0"
+version = "0.15.1"
 description = "Minimal camera and fail-closed servo control service for Spring Edge"
 requires-python = ">=3.12"
 dependencies = [

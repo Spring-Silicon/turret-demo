@@ -345,7 +345,7 @@ class DetectionTests(unittest.TestCase):
         c, worker = self.controller()
         pose = {"sampled_at": time.monotonic(), "axes": {
             "x": {"degrees": 10, "goal_degrees": 40}, "y": {"degrees": 5, "goal_degrees": 5}}}
-        c.pose_provider = lambda: pose
+        c.pose_provider = lambda captured_at: pose
         c.set_prompt("cup")
         self.assertTrue(worker.entered.wait(1))
         # The capture pose is a snapshot. Inference must not replace it with a
@@ -358,7 +358,35 @@ class DetectionTests(unittest.TestCase):
 
     def test_old_pose_is_not_paired_with_a_later_camera_frame(self):
         c, worker = self.controller()
-        c.pose_provider = lambda: {"sampled_at": time.monotonic() - 1}
+        c.pose_provider = lambda captured_at: {"sampled_at": time.monotonic() - 1}
+        c.set_prompt("cup")
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertIsNone(c.status()["frame_pose"])
+
+    def test_latest_camera_frame_does_not_wait_for_a_newer_pose(self):
+        c, worker = self.controller()
+        frame_time = time.monotonic() - .01
+        def sample(previous, timeout, after=0):
+            self.assertEqual(after, 0)
+            return 1, b"latest-jpeg", frame_time
+        c.camera.wait_for_sample = sample
+        calls = []
+        def pose(at):
+            calls.append(at)
+            return {"sampled_at": at-.03, "read_completed_at": at-.01, "axes": {}}
+        c.pose_provider = pose
+        c.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertEqual(calls, [frame_time])
+        self.assertEqual(worker.requests[0][1], b"latest-jpeg")
+        self.assertEqual(c.status()["frame_pose"]["read_completed_at"], frame_time-.01)
+
+    def test_pose_read_that_completed_after_frame_is_rejected(self):
+        c, worker = self.controller()
+        c.pose_provider = lambda at: {"sampled_at": at-.03, "read_completed_at": at+.001}
         c.set_prompt("cup")
         worker.release.set()
         eventually(lambda: c.status()["state"] == "running")

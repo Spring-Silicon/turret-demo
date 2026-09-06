@@ -46,7 +46,9 @@ Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
 their respective axes while running; requests are coalesced during a drag.
 Errors appear only when needed.
 
-The status line shows **detection FPS** beside model latency. FPS is measured
+The status line shows **detection FPS**, **model** time and full processing
+**loop** time (capture wait, pose lookup, worker and result publication; not
+network/browser display time). FPS is measured
 from completed-frame sequence changes over a rolling two-second browser-time
 window, including frames completed between polls. It includes pipeline overhead
 and is not `1000 / model_ms`, the camera's capture rate, or browser rendering FPS.
@@ -149,7 +151,9 @@ for another camera rather than copying these blindly. `deadband` and
 `max_frame_age_seconds` also remain configurable. The old `x_gain`, `y_gain`,
 `max_step_degrees` and `settle_seconds` settings have been removed.
 
-Inference takes a cached X/Y snapshot from the independent hardware monitor;
+Inference matches the latest camera frame to a bounded 16-snapshot X/Y history
+from the independent hardware monitor, using the newest read completed before
+that frame's receipt timestamp;
 it does not block on the serial bus. Every published snapshot has passed the
 same position, torque and hardware-fault checks for both axes. A JPEG must arrive
 after those reads complete and within 100 ms of their start, including bus time.
@@ -157,8 +161,20 @@ The snapshot is carried through the model. Missing or stale
 pose pairing holds motion rather than guessing from the current motor position.
 JPEG receipt time is not a hardware exposure timestamp: bus/camera buffering,
 model latency and physical travel still matter. At high speed this pose is an
-estimate, with subsequent frames providing feedback. Pairing can wait up to one
-camera frame in the normal 30 FPS pipeline; there is no added motion-settling wait.
+estimate, with subsequent frames providing feedback. A newer encoder poll no
+longer forces the detector to discard a fresh frame and wait for the next one.
+It waits for capture only when no unprocessed camera frame is available; no
+added motion-settling wait or relaxed pose-age/fault gate is introduced.
+
+SAM's Torch/W8A8 path keeps the original PIL decode and torchvision uint8
+antialiased resize, then uploads bytes and performs float32 normalization with
+a compiled GPU lookup table and SYCL replay. This avoids CPU float32 passes and
+the four-times-larger float32 upload. All 256 input values map to the original
+CPU float32 bits; first-frame exact parity is a hard gate, independent of the
+W8A8 development accuracy opt-in. `preprocess_validation` reports that check.
+The separate dense native runner retains its CPU-input path. Run
+`tests/qualify-sam31-preprocess.py --jpeg /path/to/camera.jpg` in the inference
+venv with an idle XPU for exhaustive byte-value and changed-frame parity tests.
 
 ### Pattern-free fisheye calibration
 

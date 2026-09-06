@@ -384,11 +384,10 @@ class DetectionController:
                 if not prompts:
                     continue
                 cycle_started = time.monotonic()
-                pose = self.pose_provider() if self.pose_provider else None
-                sampled_at = time.monotonic()
                 sequence, jpeg, captured_at = self.camera.wait_for_sample(
-                    last_camera_sequence, 1, after=pose.get("read_completed_at", pose["sampled_at"]) if pose else 0.0
+                    last_camera_sequence, 1
                 )
+                camera_ready = time.monotonic()
                 if (
                     jpeg is None
                     or sequence == last_camera_sequence
@@ -398,10 +397,14 @@ class DetectionController:
                     self.stop_event.wait(0.1)
                     continue
                 last_camera_sequence = sequence
+                # Use bounded encoder history to match this latest frame. Do not
+                # discard it just because a newer encoder poll has completed.
+                pose = self.pose_provider(captured_at) if self.pose_provider else None
                 started = time.monotonic()
                 # This is a receipt-time pose estimate, not a hardware exposure
                 # timestamp. Never associate a delayed camera frame with an old pose.
-                if pose and not 0 <= captured_at - pose["sampled_at"] <= 0.1:
+                if pose and (not 0 <= captured_at - pose["sampled_at"] <= 0.1
+                             or pose.get("read_completed_at", pose["sampled_at"]) > captured_at):
                     pose = None
                 try:
                     if self.worker is None:
@@ -448,8 +451,8 @@ class DetectionController:
                             "captured_at": captured_at,
                             "frame_pose": pose,
                             "pipeline_timing": {
-                                "pose_ms": round((sampled_at-cycle_started)*1000, 2),
-                                "capture_wait_ms": round((started-sampled_at)*1000, 2),
+                                "pose_ms": round((started-camera_ready)*1000, 2),
+                                "capture_wait_ms": round((camera_ready-cycle_started)*1000, 2),
                                 "worker_roundtrip_ms": round((worker_done-started)*1000, 2),
                                 "cycle_ms": round((time.monotonic()-cycle_started)*1000, 2),
                             },

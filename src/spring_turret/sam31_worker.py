@@ -28,11 +28,13 @@ if __package__:
     from .sam31_graph import CompiledStage
     from .sam31_native import NativeImageStage
     from .sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
+    from .sam31_preprocess import ExactImagePreprocessor
 else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
     from sam31_native import NativeImageStage
     from sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
+    from sam31_preprocess import ExactImagePreprocessor
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -528,11 +530,15 @@ class Sam31Engine:
                 v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             ]
         )
+        self.preprocessor = (None if getattr(self.image_stage, "accepts_cpu", False)
+                             else ExactImagePreprocessor(torch, self.device, self._progress))
 
     def _inputs(self, jpeg: bytes, prompt: str) -> tuple[Any, Any]:
         return self._pixels(jpeg), self._tokens(prompt)
 
     def _pixels(self, jpeg: bytes) -> Any:
+        if self.preprocessor is not None:
+            return self.preprocessor(jpeg)
         image = self.Image.open(io.BytesIO(jpeg)).convert("RGB")
         pixels = self.transform(image).unsqueeze(0)
         return pixels if getattr(self.image_stage, "accepts_cpu", False) else pixels.to(self.device)
@@ -658,6 +664,7 @@ class Sam31Engine:
             "image_backend": getattr(self.image_stage, "backend", "torch.compile"),
             "native_image_validation": getattr(self.image_stage, "proof", None),
             "accuracy_policy": "report-only-development" if getattr(self, "allow_unqualified_w8a8", False) else "enforced",
+            "preprocess_validation": getattr(getattr(self, "preprocessor", None), "validation", None),
             "sycl_graph": self.graph_active,
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,

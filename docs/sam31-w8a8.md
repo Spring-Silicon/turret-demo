@@ -81,3 +81,35 @@ with the original error and `accuracy_policy=report-only-development` in results
 The UI always labels this image as accuracy-unqualified. Shape/dtype mismatches,
 nonfinite outputs, file hash mismatches, native errors and graph qualification
 failures still abort. Servo bounds, lease, calibration and fault checks are unchanged.
+
+## Demo overhead follow-up (2026-09-06, release 0.15.1)
+
+On spring-edge-2's B580, one `chair` prompt, same W8A8 bundle, 1280x720 MJPEG
+at 30 Hz, uncapped inference, a local paired-JPEG SSE receiver measured:
+
+| Run | Motors | Delivered FPS | Preprocess median | Model image + heads | Loop median |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0.15.0, 20 s | Armed, no tracking target | 8.27 | 15.58 ms | 88.98 ms | 121.40 ms |
+| 0.15.0, 12 s | Off | 9.12 | 18.10 ms | 88.67 ms | 110.76 ms |
+| 0.15.1, 25 s | Off | 9.82 | 9.17 ms | 88.98 ms | 102.37 ms |
+
+The original armed run spent a median 13.08 ms (p95 27.67 ms) waiting for
+capture after the newest encoder read. The updated controller chooses the
+newest completed encoder read before the latest frame from bounded history,
+with the same 100 ms age limit. No physical movement was commanded to benchmark
+the new version; its historical-pose, future/stale rejection and fault/stop
+invalidation paths were unit-tested. Do not treat the armed/off rows as an
+isolated preprocessing A/B test.
+
+The GPU normalization lookup was bitwise-equal to original CPU pixels on ten
+changed-image/reverse replays (camera, varied sizes, grayscale) plus exhaustive
+all-256-byte-value replays. An alternating standalone CPU-vs-GPU preprocessing
+comparison measured 14.245 vs 8.732 ms medians (25 measured iterations each).
+Live input parity and W8A8 direct/replay checks passed. Quantized-model accuracy
+qualification is unchanged: still a development candidate.
+
+The 0.15.1 live worker median was 98.65 ms, loop p95 103.14 ms; receipt-to-result
+frame age was median 122 ms, p95 138 ms, including age of the latest 30 Hz frame.
+These are not exposure-to-browser-display measurements. No frame queue or
+model simplification was introduced. The ~89 ms model still bounds serial
+throughput to roughly 11.2 FPS even if all remaining overhead disappeared.

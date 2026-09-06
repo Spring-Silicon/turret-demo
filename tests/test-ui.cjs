@@ -342,8 +342,11 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(get("message").hidden, true);
   console.log("validated client overlays and out-of-order status without losing motor updates");
   run(`render({...status, detection: {...status.detection, state: "running", frame_age_ms: 10, latency_ms: 100,
-    boxes: [], image_backend: "israel-w8a8-development"}});`);
+    pipeline_timing: {cycle_ms: 121.4}, boxes: [], image_backend: "israel-w8a8-development"}});`);
   assert.match(get("detection-status").textContent, /W8A8 dev \(accuracy unqualified\)/);
+  assert.match(get("detection-status").textContent, /100 ms model · 121 ms loop/);
+  run('render({...status, detection: {...status.detection, pipeline_timing: undefined}});');
+  assert.doesNotMatch(get("detection-status").textContent, /ms loop|NaN/);
   run('status.detection.image_backend = "torch.compile";');
   run(`loadingDetection = null; feedSource = "";
     detectionEvents.onopen();
