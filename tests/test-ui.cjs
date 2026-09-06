@@ -55,6 +55,7 @@ const context = vm.createContext({
   performance: {now: () => 1000},
   fetch: () => new Promise(() => {}),
   AbortSignal,
+  EventSource: class {constructor(url) {this.url = url;}},
   window: {confirm: () => false},
   setTimeout() { return 1; },
   setInterval() {},
@@ -216,6 +217,10 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(get("box-targets").children.length, 2);
   assert.equal(get("box-targets").hidden, false);
   const clickBox = get("box-targets").children[0];
+  run('frameDetection.client_overlay = true; renderBoxTargets();');
+  assert.equal(clickBox.children[0].textContent, "cup 90%");
+  run('frameDetection.client_overlay = false; renderBoxTargets();');
+  assert.equal(clickBox.children[0].textContent, ""); // No duplicate labels on baked overlays.
   clickBox.events.pointerdown();
   run('status.detection = {...status.detection, frame_sequence: 12};');
   await clickBox.events.click();
@@ -289,4 +294,33 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   await get("recalibrate").events.click();
   assert.equal(run('zeroRequests.length'), 1);
   console.log("validated zero calibration confirmation, no auto-arm and pending-request exclusion");
+  run(`cameraFeed.parentElement = {style: {}};
+    status.camera = {online: true, width: 1280, height: 720};
+    status.detection = {...status.detection, frame_sequence: 200, revision: 20};
+    render({...status, servo: {...status.servo, armed: false},
+      detection: {...status.detection, frame_sequence: 199}});`);
+  assert.equal(run('status.detection.frame_sequence'), 200);
+  assert.equal(run('status.servo.armed'), false);
+  run(`render({...status, detection: {...status.detection, revision: 19, frame_sequence: 999}});`);
+  assert.equal(run('status.detection.revision'), 20);
+  console.log("validated client overlays and out-of-order status without losing motor updates");
+  run(`loadingDetection = null; feedSource = "";
+    detectionEvents.onopen();
+    detectionEvents.onmessage({data: JSON.stringify({...status.detection, state: "running",
+      frame_age_ms: 10, latency_ms: 9, frame_url: "/api/detection/frame/20-201.jpg",
+      frame_sequence: 201, boxes: [], jpeg: "YWJj"})});`);
+  assert.equal(get("camera-feed").src, "data:image/jpeg;base64,YWJj");
+  assert.equal(run('status.detection.jpeg'), undefined);
+  run(`detectionEvents.onmessage({data: JSON.stringify({...status.detection,
+    frame_sequence: 202, frame_url: "/api/detection/frame/20-202.jpg", jpeg: "ZGVm"})});`);
+  assert.equal(get("camera-feed").src, "data:image/jpeg;base64,YWJj"); // Decode one at a time.
+  get("camera-feed").events.load();
+  assert.equal(run('frameDetection.frame_sequence'), 201); // Boxes remain on the displayed image.
+  assert.equal(run('loadingDetection.frame_sequence'), 202);
+  assert.equal(get("camera-feed").src, "data:image/jpeg;base64,ZGVm");
+  get("camera-feed").events.load();
+  assert.equal(run('frameDetection.frame_sequence'), 202);
+  run('detectionEvents.onerror();');
+  assert.equal(run('detectionStreamOpen'), false);
+  console.log("validated paired image streaming, bounded decode queue and reconnect fallback");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -508,6 +508,7 @@ class ControllerTests(unittest.TestCase):
                     self.packet.registers[sid][132] = round(current + .7 * (goal - 17 - current))
                     angles[name] = servo.to_degrees(self.config["servo"]["axes"][name], self.packet.registers[sid][132])
                 cx, cy = .5 + (20 - angles["x"]) / 160, .5 - (15 - angles["y"]) / 90
+                self.controller._tick_locked()  # Simulate the independent encoder monitor.
                 data.update(frame_sequence=index + 1, frame_age_ms=0, captured_at=now[0],
                             frame_pose=self.controller.sample_pose(), boxes=[{"prompt": "cup", "score": .9,
                             "xyxy": [cx - .03, cy - .03, cx + .03, cy + .03]}])
@@ -537,14 +538,42 @@ class ControllerTests(unittest.TestCase):
         self.controller.arm()
         lease = self.controller.last_keepalive
         self.packet.registers[2][132] = 2100
-        pose = self.controller.sample_pose()
+        self.controller._tick_locked()
+        # Inference can sample while another thread owns the serial bus.
+        with self.controller.lock, patch.object(self.controller, "_read", side_effect=AssertionError("serial I/O")):
+            pose = self.controller.sample_pose()
         self.assertAlmostEqual(pose["axes"]["x"]["degrees"], 4.57)
         self.assertEqual(pose["axes"]["x"]["goal_degrees"], 0)
         self.assertEqual(self.controller.last_keepalive, lease)
+        pose["axes"]["x"]["degrees"] = 999
+        self.assertAlmostEqual(self.controller.sample_pose()["axes"]["x"]["degrees"], 4.57)
         self.packet.registers[1][70] = 4
+        with self.assertRaises(servo.DeviceUnavailable):
+            self.controller.point({"x": 1, "y": 1})
         self.assertIsNone(self.controller.sample_pose())
         self.assertFalse(self.controller.armed)
         self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_cached_pose_expires_and_stop_invalidates_it(self):
+        self.controller.arm()
+        self.controller._tick_locked()
+        pose = self.controller.sample_pose()
+        self.assertIsNotNone(pose)
+        with patch("time.monotonic", return_value=pose["sampled_at"] + .101):
+            self.assertIsNone(self.controller.sample_pose())
+        self.controller.disable()
+        self.assertIsNone(self.controller.cached_pose)
+        self.assertIsNone(self.controller.sample_pose())
+
+    def test_pose_includes_bus_read_duration_and_rejects_slow_reads(self):
+        self.controller.arm()
+        with patch("time.monotonic", side_effect=[10.0, 10.101]):
+            self.controller._poll_locked()
+        self.assertIsNone(self.controller.cached_pose)
+        with patch("time.monotonic", side_effect=[11.0, 11.05]):
+            self.controller._poll_locked()
+        self.assertEqual(self.controller.cached_pose["sampled_at"], 11.0)
+        self.assertEqual(self.controller.cached_pose["read_completed_at"], 11.05)
 
     def test_camera_sample_pairs_timestamp_and_waits_until_after_pose_read(self):
         camera = server.CameraStream(self.config["camera"])

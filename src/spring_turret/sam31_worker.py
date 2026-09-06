@@ -577,7 +577,7 @@ class Sam31Engine:
     def detect(self, jpeg: bytes, prompt: str) -> dict[str, Any]:
         return self.detect_many(jpeg, [prompt])
 
-    def detect_many(self, jpeg: bytes, prompts: list[str]) -> dict[str, Any]:
+    def detect_many(self, jpeg: bytes, prompts: list[str], *, client_overlay=False) -> dict[str, Any]:
         prompts = normalize_prompts(prompts)
         if not prompts:
             raise ValueError("at least one nonempty prompt is required")
@@ -644,7 +644,9 @@ class Sam31Engine:
         native_ms = getattr(self.image_stage, "last_execution_ms", None)
         if native_ms is not None:
             result["timing"]["native_image_replay_ms"] = round(native_ms, 2)
-        result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
+        result["client_overlay"] = client_overlay
+        if not client_overlay:
+            result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
         result["timing"]["annotation_ms"] = round(
             (time.perf_counter() - annotation_started) * 1000, 2
         )
@@ -750,7 +752,7 @@ def main() -> None:
                 request_id = int(request["id"])
                 prompts = normalize_prompts(request["prompts"])
                 jpeg = base64.b64decode(request["jpeg"], validate=True)
-                result = engine.detect_many(jpeg, prompts)
+                result = engine.detect_many(jpeg, prompts, client_overlay=request.get("client_overlay") is True)
                 _emit({"type": "result", "id": request_id, **result})
             except Exception as error:
                 _emit(

@@ -141,8 +141,11 @@ for another camera rather than copying these blindly. `deadband` and
 `max_frame_age_seconds` also remain configurable. The old `x_gain`, `y_gain`,
 `max_step_degrees` and `settle_seconds` settings have been removed.
 
-Inference pairs each JPEG with fresh X/Y encoder readback just before its receipt
-(at most 100 ms apart), and carries that pose through the model. Missing or stale
+Inference takes a cached X/Y snapshot from the independent hardware monitor;
+it does not block on the serial bus. Every published snapshot has passed the
+same position, torque and hardware-fault checks for both axes. A JPEG must arrive
+after those reads complete and within 100 ms of their start, including bus time.
+The snapshot is carried through the model. Missing or stale
 pose pairing holds motion rather than guessing from the current motor position.
 JPEG receipt time is not a hardware exposure timestamp: bus/camera buffering,
 model latency and physical travel still matter. At high speed this pose is an
@@ -326,7 +329,10 @@ Implementation:
   can differ with mixed precision. Graph replay is additionally compared to
   uncaptured compiled raw outputs at `atol=rtol=0.001`.
 - The inference subprocess consumes only the latest available camera frame;
-  there is no frame backlog. Boxes are drawn into their exact source JPEG. A
+  there is no frame backlog. The browser draws boxes over their exact source
+  JPEG only after that image loads (`client_overlay: true`), avoiding another
+  JPEG decode/encode and base64 return trip in the worker. Standalone engine
+  calls still return annotated JPEGs by default. A
   prompt change/clear invalidates prior results immediately. Stale output is
   replaced by the raw feed. Submitting an empty list stops new inference; the
   model remains loaded for the next prompt. An in-flight compilation/inference
@@ -338,6 +344,17 @@ Implementation:
   each stage and `worker_total_ms`, which includes those worker-side overheads
   (including cold compile/validation when applicable). HTTP delivery, camera
   buffering and browser display remain outside the worker timing.
+- `pipeline_timing` measures pose lookup, camera wait, worker round-trip and the
+  complete detection cycle. A persistent event stream delivers detection metadata
+  and its original JPEG together, independently of the 200 ms hardware-status
+  refresh. This avoids two network round-trips per frame. Slow clients skip to
+  latest on the server, and the browser holds only one pending image while
+  decoding; JPEGs and boxes remain frame-matched. Stream disconnects reconnect
+  automatically, with metadata long-polling and individual JPEGs as fallback.
+- The connected Arducam advertises at most 30 FPS, including at smaller sizes.
+  A 15 ms forward pass alone does not imply 60 distinct camera detections/second;
+  capture, preprocessing, IPC and delivery also contribute. Do not count repeats
+  of the same camera sample as additional detections.
 
 Opt-in GPU validation (never controls the servo):
 
@@ -367,12 +384,17 @@ JPEG with two detected people; preprocessing/annotation excluded):
 Batch-one is the deployment default. The image stage is about 124 ms/frame;
 each grounding replay about 13 ms. Three-category worker time including JPEG
 preprocessing and annotation was about 188 ms, versus the old implementation's
-432 ms **inference alone**. Browser/network overhead and the 5 FPS cap are unchanged.
+432 ms **inference alone**. These are historical measurements; the later native
+image backend and frame-driven delivery are separate improvements.
 
 ## API
 
 - `GET /stream.mjpg`
 - `GET /api/status`
+- `GET /api/detection/events` streams JSON events with metadata and base64 `jpeg`
+  together for each new frame; idle/progress heartbeats omit the image.
+- `GET /api/detection/status?revision=1&sequence=25` waits up to one second for
+  newer detection metadata, without acquiring hardware-status locks.
 - `POST /api/servo/arm`
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` at least once a second while running

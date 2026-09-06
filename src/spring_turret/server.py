@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import signal
@@ -14,7 +15,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from spring_turret.detection import (
     DetectionController,
@@ -269,7 +270,7 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
             self.send_header("X-Frame-Options", "DENY")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; img-src 'self'; script-src 'self'; "
+                "default-src 'self'; img-src 'self' data:; script-src 'self'; "
                 "style-src 'self'; connect-src 'self'; frame-ancestors 'none'",
             )
 
@@ -306,6 +307,22 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                 self._static("app.js", "application/javascript; charset=utf-8")
             elif path == "/api/status":
                 self._json(HTTPStatus.OK, application.status())
+            elif path == "/api/detection/events":
+                self._detection_events()
+            elif path == "/api/detection/status":
+                # A frame-driven channel must not wait on the servo bus/status
+                # lock. At most one second, with latest-frame-only backpressure.
+                try:
+                    query = parse_qs(urlsplit(self.path).query)
+                    revision = int(query.get("revision", ["-1"])[0])
+                    sequence = int(query.get("sequence", ["-1"])[0])
+                    if revision < -1 or sequence < -1:
+                        raise ValueError("invalid frame cursor")
+                except ValueError:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid frame cursor"})
+                    return
+                application.detection.wait_for_update((revision, None if sequence == -1 else sequence), 1)
+                self._json(HTTPStatus.OK, application.detection.status())
             elif path == "/stream.mjpg":
                 self._stream()
             elif path.startswith("/api/detection/frame/") and path.endswith(".jpg"):
@@ -322,6 +339,32 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                 self.wfile.write(frame)
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
+
+        def _detection_events(self) -> None:
+            # One connection carries exact JPEG+metadata pairs, avoiding two
+            # network round-trips per frame. Backpressure skips to latest.
+            self.connection.settimeout(5)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("X-Accel-Buffering", "no")
+            self._security_headers()
+            self.end_headers()
+            previous = (-1, None)
+            detector = application.detection
+            try:
+                while not detector.stop_event.is_set():
+                    detector.wait_for_update(previous, 1)
+                    with detector.condition:
+                        metadata = detector.status()
+                        current = (metadata["revision"], metadata.get("frame_sequence"))
+                        frame = detector.frames.get(f"{current[0]}-{current[1]}") if current != previous else None
+                    if frame is not None:
+                        metadata["jpeg"] = base64.b64encode(frame).decode()
+                    self.wfile.write(b"data: " + json.dumps(metadata, separators=(",", ":")).encode() + b"\n\n")
+                    self.wfile.flush()
+                    previous = current
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                return
 
         def _stream(self) -> None:
             sequence, frame = application.camera.wait_for_frame(0, 10)

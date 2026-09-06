@@ -156,6 +156,7 @@ class WorkerClient:
             "id": request_id,
             "jpeg": base64.b64encode(jpeg).decode(),
             "prompts": prompts,
+            "client_overlay": True,
         }
         self.process.stdin.write(json.dumps(body).encode() + b"\n")
         self.process.stdin.flush()
@@ -351,9 +352,11 @@ class DetectionController:
                         self.worker, self.worker_model = None, None
                 if not prompts:
                     continue
+                cycle_started = time.monotonic()
                 pose = self.pose_provider() if self.pose_provider else None
+                sampled_at = time.monotonic()
                 sequence, jpeg, captured_at = self.camera.wait_for_sample(
-                    last_camera_sequence, 1, after=pose["sampled_at"] if pose else 0.0
+                    last_camera_sequence, 1, after=pose.get("read_completed_at", pose["sampled_at"]) if pose else 0.0
                 )
                 if (
                     jpeg is None
@@ -397,7 +400,8 @@ class DetectionController:
                         raise RuntimeError(
                             "Model worker did not verify compiled SYCL graph execution"
                         )
-                    annotated = base64.b64decode(result.pop("jpeg"), validate=True)
+                    worker_done = time.monotonic()
+                    annotated = jpeg if result.get("client_overlay") is True else base64.b64decode(result.pop("jpeg"), validate=True)
                     result.pop("type", None)
                     result.pop("id", None)
                     key = f"{revision}-{self.sequence}"
@@ -416,6 +420,12 @@ class DetectionController:
                             "frame_url": f"/api/detection/frame/{key}.jpg",
                             "captured_at": captured_at,
                             "frame_pose": pose,
+                            "pipeline_timing": {
+                                "pose_ms": round((sampled_at-cycle_started)*1000, 2),
+                                "capture_wait_ms": round((started-sampled_at)*1000, 2),
+                                "worker_roundtrip_ms": round((worker_done-started)*1000, 2),
+                                "cycle_ms": round((time.monotonic()-cycle_started)*1000, 2),
+                            },
                         }
                         self.completed_at = captured_at
                         self.state = "running"

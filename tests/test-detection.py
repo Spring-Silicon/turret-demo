@@ -210,6 +210,12 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(result["boxes"][0]["color"], result["boxes"][1]["color"])
         self.assertNotEqual(result["boxes"][0]["color"], result["boxes"][2]["color"])
         draw.assert_called_once_with(b"original", result["boxes"])
+        with patch("spring_turret.sam31_worker.annotate") as draw:
+            overlay = engine.detect_many(b"original", ["person", "cup", "chair"], client_overlay=True)
+        draw.assert_not_called()
+        self.assertTrue(overlay["client_overlay"])
+        self.assertNotIn("jpeg", overlay)
+        self.assertEqual(overlay["boxes"], result["boxes"])
 
     def test_text_cache_is_owned_bounded_and_reused_across_reordering(self):
         class Tensor:
@@ -338,6 +344,24 @@ class DetectionTests(unittest.TestCase):
         eventually(lambda: c.status()["state"] == "running")
         self.assertIsNone(c.status()["frame_pose"])
 
+    def test_client_overlay_serves_exact_input_jpeg_and_pipeline_timings(self):
+        c, worker = self.controller()
+        original_detect = worker.detect
+        def detect(*args):
+            result = original_detect(*args)
+            result.pop("jpeg")
+            return {**result, "client_overlay": True}
+        worker.detect = detect
+        c.set_prompt("cup")
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        result = c.status()
+        self.assertTrue(result["client_overlay"])
+        self.assertEqual(c.frame(result["frame_url"].split("/")[-1][:-4]), b"camera-jpeg")
+        self.assertEqual(set(result["pipeline_timing"]),
+                         {"pose_ms", "capture_wait_ms", "worker_roundtrip_ms", "cycle_ms"})
+        self.assertTrue(all(value >= 0 for value in result["pipeline_timing"].values()))
+
     def test_config(self):
         validate_config({})
         base = {
@@ -455,6 +479,29 @@ class DetectionTests(unittest.TestCase):
         response = connection.getresponse()
         self.assertEqual(response.status, 200)
         self.assertEqual(response.read(), b"chair")
+        with patch.object(app, "status", side_effect=AssertionError("hardware status lock")):
+            connection.request("GET", "/api/detection/status?revision=-1&sequence=-1")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            metadata = json.loads(response.read())
+            self.assertEqual(metadata["prompts"], ["chair"])
+            self.assertNotIn("servo", metadata)
+            events = HTTPConnection(*server.server_address)
+            self.addCleanup(events.close)
+            events.request("GET", "/api/detection/events")
+            stream = events.getresponse()
+            self.assertEqual(stream.status, 200)
+            self.assertEqual(stream.getheader("Content-Type"), "text/event-stream")
+            event = json.loads(stream.readline().removeprefix(b"data: "))
+            self.assertEqual(event["prompts"], ["chair"])
+            self.assertEqual(base64.b64decode(event["jpeg"]), b"chair")
+            stream.close()
+            events.close()
+        for query in ("revision=bad", "sequence=-2"):
+            connection.request("GET", "/api/detection/status?" + query)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
         c.set_prompt("")
         connection.request("GET", frame_url)
         response = connection.getresponse()

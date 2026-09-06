@@ -34,6 +34,8 @@ const boxTargets = document.getElementById("box-targets");
 const boxButtons = new Map();
 let frameDetection = null;
 let loadingDetection = null;
+let streamFrame = null;
+let detectionStreamOpen = false;
 let fpsRevision = null;
 let fpsSamples = [];
 
@@ -93,6 +95,9 @@ function renderBoxTargets() {
       button = document.createElement("button");
       button.type = "button";
       button.className = "box-target";
+      const label = document.createElement("span");
+      label.className = "box-label";
+      button.append(label);
       let pressedSelection = null;
       const selection = () => ({revision: frameDetection.revision,
         frame_sequence: frameDetection.frame_sequence, instance_id: id});
@@ -116,6 +121,10 @@ function renderBoxTargets() {
     button.setAttribute("aria-label", `Track ${box.prompt} object ${id}`);
     button.setAttribute("aria-pressed", String(status?.tracking?.instance_id === id));
     button.title = `Track this ${box.prompt}`;
+    button.classList.toggle("client-overlay", frameDetection.client_overlay === true);
+    button.style.setProperty("--box-color", box.color || "#55e8ce");
+    button.children[0].textContent = frameDetection.client_overlay === true
+      ? `${box.prompt.slice(0, 48)} ${Math.round(box.score * 100)}%` : "";
   }
   for (const [id, button] of boxButtons) if (!ids.has(id)) {
     button.remove();
@@ -129,6 +138,8 @@ cameraFeed.addEventListener("load", () => {
   frameDetection = loadingDetection;
   loadingDetection = null;
   renderTracking();
+  // If a newer pair arrived during JPEG decoding, load it immediately.
+  if (detectionStreamOpen && streamFrame && status?.camera) renderDetection(status.detection);
 });
 cameraFeed.addEventListener("error", () => {
   loadingDetection = frameDetection = null;
@@ -324,11 +335,15 @@ function renderDetection(detection) {
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";
+  const streamed = streamFrame?.frame_url === source && streamFrame?.revision === detection?.revision;
+  // Full hardware polls may be ahead of the stream. Wait for the paired JPEG
+  // instead of downloading it again; disconnected streams retain HTTP fallback.
+  if (fresh && detectionStreamOpen && !streamed) return;
   if (source !== feedSource && (!loadingDetection || !fresh)) {
     feedSource = source;
     loadingDetection = fresh ? {...detection, receivedAt: performance.now()} : null;
     if (!fresh) frameDetection = null;
-    cameraFeed.src = source;
+    cameraFeed.src = streamed ? streamFrame.dataUrl : source;
   }
 }
 
@@ -372,7 +387,12 @@ function showMessage(text, error = false) {
 }
 
 function render(next) {
-  if (status?.detection && next.detection?.revision < status.detection.revision) return;
+  if (status?.detection && next.detection && (
+      next.detection.revision < status.detection.revision ||
+      (next.detection.revision === status.detection.revision &&
+       next.detection.frame_sequence < status.detection.frame_sequence))) {
+    next = {...next, detection: status.detection};
+  }
   status = next;
   renderDetection(next.detection);
   const { camera, servo } = next;
@@ -541,6 +561,35 @@ async function setPrompts() {
     updatePromptControls();
   }
 }
+async function pollDetection() {
+  try {
+    const current = status?.detection;
+    if (current?.enabled && !detectionStreamOpen) {
+      const response = await fetch(`/api/detection/status?revision=${current.revision}&sequence=${current.frame_sequence ?? -1}`, {
+        cache: "no-store", signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error("Detection stream unavailable");
+      const detection = await response.json();
+      render({...status, detection});
+    }
+    setTimeout(pollDetection, current?.enabled && !detectionStreamOpen ? 0 : 250);
+  } catch (_) {
+    // The normal status poll reports failures and keeps controls responsive.
+    setTimeout(pollDetection, 1000);
+  }
+}
+const detectionEvents = new EventSource("/api/detection/events");
+detectionEvents.onopen = () => { detectionStreamOpen = true; };
+detectionEvents.onerror = () => { detectionStreamOpen = false; }; // Automatic reconnect; HTTP fallback meanwhile.
+detectionEvents.onmessage = (event) => {
+  const detection = JSON.parse(event.data);
+  if (detection.jpeg) {
+    streamFrame = {frame_url: detection.frame_url, revision: detection.revision,
+      dataUrl: `data:image/jpeg;base64,${detection.jpeg}`};
+    delete detection.jpeg;
+  }
+  if (status) render({...status, detection});
+};
 function readPromptRows() {
   return [...promptRows.querySelectorAll(".detection-prompt")].map(input => input.value.trim());
 }
@@ -583,3 +632,4 @@ addPromptButton.addEventListener("click", () => {
 setPromptRows([]);
 poll();
 setInterval(poll, 200);
+pollDetection();

@@ -96,6 +96,8 @@ class ServoController:
         self.config = config
         load_zeros(config)
         self.lock = threading.Lock()
+        self.pose_lock = threading.Lock()
+        self.cached_pose: dict | None = None
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._monitor, name="servo", daemon=True)
         self.port: Any = None
@@ -157,6 +159,8 @@ class ServoController:
     def _disable_all_locked(self) -> list[str]:
         """Never let a failed first motor prevent attempting to stop the second."""
         self.armed = False
+        with self.pose_lock:
+            self.cached_pose = None
         errors = []
         for name, state in self.axes.items():
             self._recovery_boundary[name] = None
@@ -192,6 +196,10 @@ class ServoController:
         self._disconnect_locked()
 
     def _poll_locked(self) -> None:
+        sampled_at = time.monotonic()
+        if not self.armed:
+            with self.pose_lock:
+                self.cached_pose = None
         if self.packet is None:
             errors = self._disable_all_locked()
             if errors:
@@ -209,6 +217,14 @@ class ServoController:
             if state["torque"] != self.armed:
                 raise DeviceUnavailable(f"{name.upper()}: unexpected torque state")
             state["online"] = True
+        completed_at = time.monotonic()
+        if self.armed and completed_at - sampled_at <= 0.1:
+            with self.pose_lock:
+                self.cached_pose = {"sampled_at": sampled_at, "read_completed_at": completed_at,
+                    "axes": {name: {
+                        "degrees": to_degrees(self._axis_config(name), state["position"]),
+                        "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
+                    } for name, state in self.axes.items()}}
 
     def _axis_config(self, name: str) -> dict:
         return {**self.config["axes"][name], "center_position": self.axes[name]["origin"]}
@@ -254,7 +270,7 @@ class ServoController:
                     self.error = ""
                 except Exception as error:
                     self._fault_locked(error)
-            self.stop_event.wait(0.2 if self.packet is not None else 2)
+            self.stop_event.wait((0.01 if self.armed else 0.2) if self.packet is not None else 2)
 
     def arm(self) -> None:
         with self.lock:
@@ -371,19 +387,16 @@ class ServoController:
                 raise DeviceUnavailable(self.error) from error
 
     def sample_pose(self) -> dict[str, Any] | None:
-        """Read the encoders for a camera sample; never arm or renew the lease."""
-        with self.lock:
-            if not self.armed:
+        """Nonblocking checked encoder snapshot; never performs serial I/O.
+
+        The monitor/command paths still check both axes and all faults. Pairing
+        rejects snapshots over 100 ms old, including time spent reading the bus.
+        """
+        with self.pose_lock:
+            pose = self.cached_pose
+            if not self.armed or pose is None or not 0 <= time.monotonic() - pose["sampled_at"] <= 0.1:
                 return None
-            try:
-                self._tick_locked()
-                return {"sampled_at": time.monotonic(), "axes": {
-                    name: {"degrees": to_degrees(self._axis_config(name), state["position"]),
-                           "goal_degrees": to_degrees(self._axis_config(name), state["goal"])}
-                    for name, state in self.axes.items()}}
-            except Exception as error:
-                self._fault_locked(error)
-                return None
+            return {**pose, "axes": {name: dict(axis) for name, axis in pose["axes"].items()}}
 
     def point(self, degrees: dict[str, float]) -> dict[str, Any]:
         """Command an absolute camera pointing pose, with only angle clamping."""
