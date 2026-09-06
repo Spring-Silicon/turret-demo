@@ -55,6 +55,7 @@ const context = vm.createContext({
   performance: {now: () => 1000},
   fetch: () => new Promise(() => {}),
   AbortSignal,
+  window: {confirm: () => false},
   setTimeout() { return 1; },
   setInterval() {},
 });
@@ -249,4 +250,25 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   get("detection-form").events.keydown({key: "Enter", target: {tagName: "SELECT"}, preventDefault() {}});
   assert.equal(run("submissions"), 1);
   console.log("validated model selection, fixed class choices, independent drafts and Enter submission");
+  run(`globalThis.zeroRequests = [];
+    status.servo.can_recalibrate = true; status.servo.ready = false;
+    status.servo.armed = false; renderMotors();
+    request = async (path, options) => {zeroRequests.push([path, options]); return status;};`);
+  assert.equal(get("recalibrate").disabled, false); // Outside range is precisely why zeros may need resetting.
+  await get("recalibrate").events.click();
+  assert.equal(run('zeroRequests.length'), 0); // Cancel leaves calibration untouched.
+  run('window.confirm = () => true;');
+  await get("recalibrate").events.click();
+  assert.equal(run('JSON.stringify(zeroRequests)'), '[["/api/servo/recalibrate",{"method":"POST","body":"{}"}]]');
+  assert.equal(run('status.servo.armed'), false);
+  run('status.servo.can_recalibrate = false; renderMotors();');
+  assert.equal(get("recalibrate").disabled, true);
+  await get("recalibrate").events.click();
+  assert.equal(run('zeroRequests.length'), 1);
+  run('status.servo.can_recalibrate = true; recalibrating = true; renderMotors();');
+  assert.equal(get("recalibrate").disabled, true);
+  assert.equal(get("motor-toggle").disabled, true);
+  await get("recalibrate").events.click();
+  assert.equal(run('zeroRequests.length'), 1);
+  console.log("validated zero calibration confirmation, no auto-arm and pending-request exclusion");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -2,6 +2,7 @@
 
 const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };
 const motorToggle = document.getElementById("motor-toggle");
+const recalibrateButton = document.getElementById("recalibrate");
 const message = document.getElementById("message");
 const editingAxes = new Set();
 const pendingAngles = new Map();
@@ -9,6 +10,7 @@ let movingAxis = null;
 let moveTimer = null;
 let arming = false;
 let stopping = false;
+let recalibrating = false;
 let keepaliveSending = false;
 let status = null;
 let detectionSending = false;
@@ -322,7 +324,9 @@ function renderMotors() {
     }
   }
   const stop = servo.armed || Object.values(servo.axes).some(axis => axis.torque !== false);
-  motorToggle.disabled = arming || stopping || (!stop && !servo.ready);
+  motorToggle.disabled = arming || stopping || (!stop && (recalibrating || !servo.ready));
+  recalibrateButton.disabled = arming || stopping || recalibrating || !servo.can_recalibrate;
+  recalibrateButton.textContent = recalibrating ? "Saving zeros…" : "Recalibrate zeros";
   motorToggle.setAttribute("aria-label", stop ? "Stop motors" : "Start motors");
   motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors";
   motorToggle.classList.toggle("stopping", stop);
@@ -372,7 +376,7 @@ async function request(path, options = {}) {
 }
 
 async function startMotors() {
-  if (arming || stopping || !status?.servo?.ready) return;
+  if (arming || stopping || recalibrating || !status?.servo?.ready) return;
   arming = true;
   renderMotors();
   try {
@@ -384,6 +388,24 @@ async function startMotors() {
     renderMotors();
   }
 }
+
+async function recalibrateZeros() {
+  if (arming || stopping || recalibrating || !status?.servo?.can_recalibrate) return;
+  if (!window.confirm("Set the current X and Y positions as 0°? Position the camera at your intended zero first. Motors stay off; angle limits remain relative to the new zero.")) return;
+  recalibrating = true;
+  pendingAngles.clear();
+  editingAxes.clear();
+  renderMotors();
+  try {
+    await request("/api/servo/recalibrate", {method: "POST", body: "{}"});
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    recalibrating = false;
+    renderMotors();
+  }
+}
+recalibrateButton.addEventListener("click", recalibrateZeros);
 
 async function stopMotors() {
   if (stopping) return;

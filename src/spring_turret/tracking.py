@@ -172,6 +172,16 @@ class TrackingController:
             self.goal_degrees = None
             self.servo.disable()
 
+    def recalibrate(self) -> None:
+        with self.lock:
+            self.servo.recalibrate()
+            self.target = self.instance_id = None
+            self.moving = False
+            self._pause("off")
+            self.last_frame = None
+            self.ignore_before = time.monotonic()
+            self.error = None
+
     def manual_move(self, axis: str, degrees: float) -> None:
         with self.lock:
             self.servo.move(axis, degrees)

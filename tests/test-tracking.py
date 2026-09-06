@@ -48,6 +48,9 @@ class Servo:
                              "axes": {a: {"goal_degrees": v} for a, v in self.goals.items()}}
     def arm(self): self.armed = True
     def disable(self): self.armed = False
+    def recalibrate(self):
+        if self.armed: raise ServoDisarmed("Stop first")
+        self.goals = {"x": 0, "y": 0}
     def track(self, offsets):
         if not self.armed: raise ServoDisarmed("stopped")
         self.calls.append(dict(offsets))
@@ -57,6 +60,23 @@ class Servo:
 
 
 class TrackingTests(unittest.TestCase):
+    def test_recalibration_clears_old_coordinate_tracking_without_moving(self):
+        self.start()
+        self.frame([box()])
+        self.tracker.instance_id = 42
+        with self.assertRaises(ServoDisarmed): self.tracker.recalibrate()
+        self.assertEqual(self.tracker.target, "cup")
+        self.servo.armed = False
+        before = self.servo.calls.copy()
+        self.tracker.recalibrate()
+        self.assertEqual(self.servo.calls, before)
+        self.assertIsNone(self.tracker.target)
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertIsNone(self.tracker.previous_pose)
+        self.assertIsNone(self.tracker.last_frame)
+        self.assertEqual(self.tracker.state, "off")
+        self.assertFalse(self.servo.armed)
+
     def test_model_change_clears_tracking_and_holds_without_arming(self):
         self.start()
         self.frame([box()])

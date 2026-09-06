@@ -42,7 +42,26 @@ tilt axis can fall under gravity; support the camera before disconnecting power.
 Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
 **triangle/square Start/Stop** button, and a **Y degree slider**. Sliders move
 their respective axes while running; requests are coalesced during a drag.
-Errors appear only when needed. Enter
+Errors appear only when needed.
+
+**Recalibrate zeros** saves the current pan and tilt encoder positions as X=0°,
+Y=0°. Stop the motors, support the camera and position it at the intended zero,
+then click and confirm. No motion or EEPROM writes occur. Both fresh readings
+must be stationary and torque-off; an active motor, missing axis or failed save
+rejects the operation. Tracking selection is cleared and Start remains manual.
+The numeric angle limits, axis directions and motor settings are unchanged;
+the allowed physical travel is now relative to the new zero.
+
+For persistent zeros, set `servo.calibration_file` to a writable state path,
+for example `/var/lib/spring-turret-demo/servo-zeros.json`. A systemd service can
+provide this directory with `StateDirectory=spring-turret-demo` and
+`StateDirectoryMode=0750`. Both zeros are atomically saved in that file and
+loaded on restart; no write access to `/etc` is needed. Existing commissioned
+zeros remain the fallback until the first save. Invalid saved data or changed
+axis IDs/directions fail closed; the button does not replace initial hardware
+commissioning (`servo.calibrated` must already be true).
+
+Enter
 one object category per row (for example `person`, `cup`, `keyboard`). Each row
 shows its detected instance count and a trash button. The single **+** below
 the list adds another row. Counts show `—` while unavailable or for unapplied

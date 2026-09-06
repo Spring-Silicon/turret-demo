@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from spring_turret.calibration import load_zeros, save_zeros
+
 LOGGER = logging.getLogger("spring-turret.servo")
 XL330_PROTOCOL_VERSION = 2.0
 XL330_TORQUE_ENABLE = 64
@@ -43,6 +45,11 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("unsupported XL330 baudrate")
     if type(config.get("calibrated")) is not bool:
         raise ValueError("servo.calibrated must be a boolean")
+    if "calibration_file" in config and (
+        not isinstance(config["calibration_file"], str)
+        or not Path(config["calibration_file"]).is_absolute()
+    ):
+        raise ValueError("servo.calibration_file must be an absolute path")
     axes = config.get("axes", {})
     if set(axes) != {"x", "y"}:
         raise ValueError("servo.axes must contain x and y")
@@ -87,6 +94,7 @@ def nearest_center(axis: dict, position: int) -> int:
 class ServoController:
     def __init__(self, config: dict[str, Any]):
         self.config = config
+        load_zeros(config)
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._monitor, name="servo", daemon=True)
@@ -296,6 +304,46 @@ class ServoController:
             for state in self.axes.values():
                 state["goal"] = None
 
+    def recalibrate(self) -> None:
+        """Save both current encoders as zero, torque-off and without motion."""
+        with self.lock:
+            if self.armed:
+                raise ServoDisarmed("Stop motors before recalibrating servo zeros")
+            if not self.config["calibrated"]:
+                raise DeviceUnavailable("Commission the servo IDs and modes before setting zeros")
+            if not self.config.get("calibration_file"):
+                raise DeviceUnavailable("Persistent servo calibration storage is not configured")
+            try:
+                # Reconnect read-only: do not let the monitor's normal initial
+                # torque-off sequence conceal an unexpectedly enabled motor.
+                self._open_locked()
+                for name in self.axes:
+                    self._ping(name)
+                    if self._read(name, XL330_TORQUE_ENABLE, 1) != 0:
+                        raise DeviceUnavailable(f"{name.upper()}: stop motors before setting zeros")
+                self._poll_locked()  # Both readings must be fresh and torque-off.
+                positions = {name: state["position"] for name, state in self.axes.items()}
+                for name in self.axes:
+                    self._ping(name)
+                    for address, size, expected in ((11, 1, 4), (10, 1, 0), (12, 1, 255), (20, 4, 0)):
+                        if self._read(name, address, size) != expected:
+                            raise DeviceUnavailable(f"{name.upper()}: register {address} needs commissioning")
+                time.sleep(0.05)
+                self._poll_locked()
+                if any(abs(self.axes[name]["position"] - value) > 2 for name, value in positions.items()):
+                    raise DeviceUnavailable("Hold both axes still while setting servo zeros")
+                positions = {name: state["position"] for name, state in self.axes.items()}
+                # Commit both zeros together before changing either in memory.
+                save_zeros(self.config, positions)
+                for name, position in positions.items():
+                    self.config["axes"][name]["center_position"] = position % 4096
+                    self.axes[name].update(origin=position, goal=None)
+                    self._recovery_boundary[name] = None
+                self.error = ""
+            except Exception as error:
+                self._fault_locked(error)
+                raise DeviceUnavailable(self.error) from error
+
     def keepalive(self) -> None:
         with self.lock:
             if self.armed:
@@ -399,6 +447,8 @@ class ServoController:
                            if outside and not self.armed else None)
             return {
                 "online": online, "ready": online and self.config["calibrated"] and (self.armed or not outside),
+                "can_recalibrate": bool(self.config.get("calibration_file")) and self.config["calibrated"]
+                    and online and not self.armed and all(state["torque"] is False for state in self.axes.values()),
                 "device": self.config["device"], "protocol": "dynamixel-2.0",
                 "baudrate": self.config["baudrate"], "armed": self.armed,
                 "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),

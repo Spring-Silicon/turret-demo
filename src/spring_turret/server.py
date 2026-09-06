@@ -391,6 +391,10 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
                     application.tracking.arm()
                 elif path == "/api/servo/disable":
                     application.tracking.disable()
+                elif path == "/api/servo/recalibrate":
+                    if self._request_json() != {}:
+                        raise ValueError("recalibrate body must be empty; zeros are read from the servos")
+                    application.tracking.recalibrate()
                 elif path == "/api/servo/keepalive":
                     application.servo.keepalive()
                 elif path == "/api/servo/position":
