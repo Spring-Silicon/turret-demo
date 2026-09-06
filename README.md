@@ -102,6 +102,11 @@ detections it holds, then reacquires automatically when that class returns; it
 does not remain stuck on an expired ID. Updating prompts clears a pending
 retarget. The server validates a click against the exact displayed
 JPEG's cached detections and rejects stale frames or fabricated object IDs.
+Click metadata is kept independently of the eight-JPEG cache for the full 750 ms
+freshness window. Pointer presses stay attached to the stable overlay if a box
+changes ID before release. Ambiguous old IDs are retired, so one crossing cannot
+cause continuous ID churn after objects separate. Rejected-click errors remain
+visible for five seconds rather than disappearing on the next video frame.
 
 Selecting a class never starts stopped motors. Stop/Escape still releases both
 motors; a manual slider move cancels automatic tracking. Editing/removing the

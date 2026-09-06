@@ -79,6 +79,12 @@ class InstanceAssociator:
             # identity to an arbitrary neighboring box during a crossing.
             if reverse[0][1] == identity and unambiguous(candidates) and unambiguous(reverse):
                 matches[index] = identity
+        # Retire identities that competed for a visible detection but lost or
+        # became ambiguous. Keeping those alongside replacement IDs makes every
+        # later frame ambiguous too, even once the objects stop moving/apart.
+        # Truly absent tracks (no viable candidate) can still bridge a dropout.
+        matched = set(matches.values())
+        self.tracks = {i: t for i, t in self.tracks.items() if i in matched or i not in by_track}
         for index, box in enumerate(boxes):
             identity = matches.get(index)
             if identity is None:

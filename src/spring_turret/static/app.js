@@ -38,6 +38,8 @@ let streamFrame = null;
 let detectionStreamOpen = false;
 let fpsRevision = null;
 let fpsSamples = [];
+let pressedBox = null;
+let messageExpiresAt = 0;
 
 function detectionFps(detection, now = performance.now()) {
   if (!isDetectionFresh(detection) || !Number.isInteger(detection.frame_sequence)) {
@@ -82,6 +84,24 @@ async function selectInstance(selection) {
   }
 }
 
+// Capture on the stable overlay, not an individual box: IDs and buttons may
+// change between pointerdown/up at camera rate. Keep the exact down-frame.
+boxTargets.addEventListener("pointerup", (event) => {
+  if (!pressedBox || pressedBox.pointerId !== event.pointerId) return;
+  const picked = pressedBox;
+  pressedBox = null;
+  boxTargets.releasePointerCapture(event.pointerId);
+  if (Math.hypot(event.clientX - picked.x, event.clientY - picked.y) > 12) return;
+  if (!clickableFrame() || picked.selection.revision !== frameDetection.revision ||
+      performance.now() > picked.expiresAt) {
+    showMessage("That camera frame is stale; click a box in a fresh frame", true);
+    return;
+  }
+  return selectInstance(picked.selection);
+});
+boxTargets.addEventListener("pointercancel", () => { pressedBox = null; });
+boxTargets.addEventListener("lostpointercapture", () => { pressedBox = null; });
+
 function renderBoxTargets() {
   boxTargets.hidden = !clickableFrame();
   if (boxTargets.hidden) return;
@@ -98,17 +118,19 @@ function renderBoxTargets() {
       const label = document.createElement("span");
       label.className = "box-label";
       button.append(label);
-      let pressedSelection = null;
       const selection = () => ({revision: frameDetection.revision,
         frame_sequence: frameDetection.frame_sequence, instance_id: id});
-      button.addEventListener("pointerdown", () => { pressedSelection = clickableFrame() ? selection() : null; });
-      button.addEventListener("pointercancel", () => { pressedSelection = null; });
-      button.addEventListener("keydown", () => { pressedSelection = null; });
-      button.addEventListener("click", () => {
-        if (!clickableFrame() || button.disabled) { pressedSelection = null; return; }
-        const picked = pressedSelection || selection();
-        pressedSelection = null;
-        return selectInstance(picked);
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || !event.isPrimary || button.disabled || !clickableFrame()) return;
+        pressedBox = {selection: selection(), pointerId: event.pointerId,
+          x: event.clientX, y: event.clientY,
+          expiresAt: frameDetection.receivedAt + 750 - frameDetection.frame_age_ms};
+        boxTargets.setPointerCapture(event.pointerId);
+      });
+      button.addEventListener("click", (event) => {
+        // Pointer activation was handled above. Retain keyboard/assistive clicks.
+        if (event.detail !== 0 || !clickableFrame() || button.disabled) return;
+        return selectInstance(selection());
       });
       boxButtons.set(id, button);
       boxTargets.append(button);
@@ -384,6 +406,7 @@ function showMessage(text, error = false) {
   message.textContent = text;
   message.hidden = !text;
   message.classList.toggle("error", error);
+  messageExpiresAt = error && text ? performance.now() + 5000 : 0;
 }
 
 function render(next) {
@@ -403,7 +426,9 @@ function render(next) {
   if (!servo.armed) pendingAngles.clear();
   renderMotors();
   renderTracking();
-  showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
+  // A 30 FPS detection update must not erase a rejected click's error instantly.
+  if (servo.error || camera.error || performance.now() >= messageExpiresAt)
+    showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
 }
 
 async function request(path, options = {}) {

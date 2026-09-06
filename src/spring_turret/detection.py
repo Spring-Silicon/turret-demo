@@ -297,6 +297,19 @@ class DetectionController:
         with self.condition:
             return self.frames.get(key)
 
+    def _cache_frame(self, key: str, jpeg: bytes, boxes: list, captured_at: float) -> None:
+        """Called under condition; retain click metadata for the full freshness window."""
+        self.frames[key] = jpeg
+        self.frame_selections[key] = {"boxes": boxes, "captured_at": captured_at}
+        while len(self.frames) > 8:
+            self.frames.popitem(last=False)
+        # JPEG eviction must not invalidate a fresh displayed frame at 30+ FPS.
+        # Metadata is tiny; its independent hard cap also bounds memory usage.
+        now = time.monotonic()
+        while self.frame_selections and (len(self.frame_selections) > 128 or
+                now - next(iter(self.frame_selections.values()))["captured_at"] > .75):
+            self.frame_selections.popitem(last=False)
+
     def selection(self, revision: int, sequence: int, instance_id: int) -> dict:
         if any(type(v) is not int or v < 0 for v in (revision, sequence, instance_id)):
             raise ValueError("selection requires integer revision, frame_sequence and instance_id")
@@ -408,12 +421,8 @@ class DetectionController:
                     with self.condition:
                         if revision != self.revision:
                             continue  # Never display boxes from an obsolete prompt.
-                        self.frames[key] = annotated
                         result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
-                        self.frame_selections[key] = {"boxes": result["boxes"], "captured_at": captured_at}
-                        while len(self.frames) > 8:
-                            removed, _ = self.frames.popitem(last=False)
-                            self.frame_selections.pop(removed, None)
+                        self._cache_frame(key, annotated, result["boxes"], captured_at)
                         self.result = {
                             **result,
                             "frame_sequence": self.sequence,

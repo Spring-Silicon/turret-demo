@@ -28,6 +28,8 @@ class Element {
   append(child) { child.parent = this; this.children.push(child); }
   replaceChildren() { this.children = []; }
   focus() {}
+  setPointerCapture(id) { this.capturedPointer = id; }
+  releasePointerCapture(id) { if (this.capturedPointer === id) this.capturedPointer = null; }
   remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
   querySelector(selector) {
     if (this.fields) return this.fields[selector === ".detection-prompt" ? "input" : selector];
@@ -221,17 +223,48 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(clickBox.children[0].textContent, "cup 90%");
   run('frameDetection.client_overlay = false; renderBoxTargets();');
   assert.equal(clickBox.children[0].textContent, ""); // No duplicate labels on baked overlays.
-  clickBox.events.pointerdown();
+  const pointer = {button: 0, isPrimary: true, pointerId: 1, clientX: 100, clientY: 200};
+  clickBox.events.pointerdown(pointer);
   run('status.detection = {...status.detection, frame_sequence: 12};');
-  await clickBox.events.click();
+  await get("box-targets").events.pointerup(pointer);
   assert.equal(run('JSON.stringify(targetRequests.at(-1))'),
     '["/api/tracking/instance",{"revision":4,"frame_sequence":11,"instance_id":7}]');
   assert.equal(run('status.servo.armed'), false);
-  await get("box-targets").children[1].events.click();
+  await get("box-targets").children[1].events.click({detail: 0});
   assert.equal(run('status.tracking.instance_id'), 8);
+  const beforeGesture = run('targetRequests.length');
+  await clickBox.events.click({detail: 1}); // No duplicate after pointerup.
+  clickBox.events.pointerdown({...pointer, button: 2});
+  await get("box-targets").events.pointerup(pointer);
+  clickBox.events.pointerdown(pointer);
+  get("box-targets").events.pointercancel(pointer);
+  await get("box-targets").events.pointerup(pointer);
+  clickBox.events.pointerdown(pointer);
+  await get("box-targets").events.pointerup({...pointer, clientX: 150}); // Drag, not click.
+  assert.equal(run('targetRequests.length'), beforeGesture);
+  clickBox.events.pointerdown(pointer);
+  run(`frameDetection = {...frameDetection, frame_sequence: 13,
+    boxes: frameDetection.boxes.map(b => ({...b, instance_id: b.instance_id + 10}))}; renderBoxTargets();`);
+  assert.equal(get("box-targets").children.includes(clickBox), false);
+  assert.equal(get("box-targets").capturedPointer, 1); // Stable overlay survives button replacement.
+  await get("box-targets").events.pointerup(pointer);
+  assert.equal(run('JSON.stringify(targetRequests.at(-1))'),
+    '["/api/tracking/instance",{"revision":4,"frame_sequence":11,"instance_id":7}]');
+  assert.equal(get("box-targets").capturedPointer, null);
+  const freshBox = get("box-targets").children[0];
+  freshBox.events.pointerdown(pointer);
+  run('pressedBox.expiresAt = 999;');
+  await get("box-targets").events.pointerup(pointer);
+  assert.match(get("message").textContent, /stale/);
+  assert.equal(run('targetRequests.length'), beforeGesture + 1);
+  freshBox.events.pointerdown(pointer);
+  run('frameDetection = {...frameDetection, revision: 5}; status.detection.revision = 5;');
+  await get("box-targets").events.pointerup(pointer);
+  assert.equal(run('targetRequests.length'), beforeGesture + 1); // Prompt revision changed mid-press.
+  run('frameDetection.revision = 4; status.detection.revision = 4;');
   const before = run('targetRequests.length');
   run('frameDetection.receivedAt = 0; renderTracking();');
-  await clickBox.events.click();
+  await clickBox.events.click({detail: 0});
   assert.equal(run('targetRequests.length'), before);
   assert.equal(get("box-targets").hidden, true);
   run(`loadingDetection = {...status.detection, frame_sequence: 12, receivedAt: 1000};
@@ -241,7 +274,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run('loadingDetection'), null);
   get("camera-feed").events.error();
   assert.equal(get("box-targets").hidden, true);
-  console.log("validated clickable instances, exact displayed-frame selection, stale clicks and no auto-start");
+  console.log("validated clickable instances, 30 FPS button replacement, keyboard/cancel/drag, exact frame and no auto-start");
   run(`displayedDetection = null; activeModel = null; draftInitialized = false;
     status.detection = {enabled: true, model: "sam3.1", revision: 10, state: "idle", prompts: ["face"]};
     renderDetection(status.detection);`);
@@ -303,6 +336,10 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run('status.servo.armed'), false);
   run(`render({...status, detection: {...status.detection, revision: 19, frame_sequence: 999}});`);
   assert.equal(run('status.detection.revision'), 20);
+  run('showMessage("That camera frame is stale", true); render(status);');
+  assert.equal(get("message").textContent, "That camera frame is stale");
+  run('messageExpiresAt = 999; render(status);');
+  assert.equal(get("message").hidden, true);
   console.log("validated client overlays and out-of-order status without losing motor updates");
   run(`loadingDetection = null; feedSource = "";
     detectionEvents.onopen();

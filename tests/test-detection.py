@@ -86,6 +86,26 @@ class Worker:
 
 
 class DetectionTests(unittest.TestCase):
+    def test_click_history_survives_jpeg_eviction_at_30fps_but_expires(self):
+        c = DetectionController({"enabled": True}, Camera())
+        c.state = "running"
+        box = {"prompt": "cup", "instance_id": 42, "xyxy": [.1, .2, .3, .4]}
+        with patch("spring_turret.detection.time.monotonic") as clock:
+            for i in range(21):
+                clock.return_value = 10 + i / 30
+                c._cache_frame(f"{c.revision}-{i}", b"jpeg", [box], clock.return_value)
+            self.assertEqual(len(c.frames), 8)
+            self.assertIsNone(c.frame(f"{c.revision}-0"))
+            self.assertEqual(c.selection(c.revision, 0, 42), box)  # 667 ms, still fresh.
+            clock.return_value = 10.8
+            c._cache_frame(f"{c.revision}-24", b"jpeg", [box], clock.return_value)
+            with self.assertRaisesRegex(ValueError, "stale"):
+                c.selection(c.revision, 0, 42)
+            self.assertNotIn(f"{c.revision}-0", c.frame_selections)
+            for i in range(300):
+                c._cache_frame(f"{c.revision}-{100+i}", b"jpeg", [box], clock.return_value)
+            self.assertEqual(len(c.frame_selections), 128)
+
     def test_model_switch_serializes_workers_preserves_lists_and_discards_old_frames(self):
         workers = []
         def factory(config):
@@ -602,6 +622,26 @@ class InstanceTests(unittest.TestCase):
         first = tracker.update([self.box(.48), self.box(.52)], None, 1)
         next_frame = tracker.update([self.box(.495), self.box(.505)], None, 1.2)
         self.assertTrue({b["instance_id"] for b in first}.isdisjoint(b["instance_id"] for b in next_frame))
+
+    def test_ambiguity_recovers_instead_of_poisoning_every_future_frame(self):
+        tracker = InstanceAssociator({})
+        first = tracker.update([self.box(.48), self.box(.52)], None, 1)
+        crossing = tracker.update([self.box(.495), self.box(.505)], None, 1.03)
+        survivor = tracker.update([self.box(.5)], None, 1.06)[0]
+        self.assertNotIn(survivor["instance_id"], [b["instance_id"] for b in first + crossing])
+        for i in range(1, 61):
+            current = tracker.update([self.box(.5)], None, 1.06+i/30)[0]
+            self.assertEqual(current["instance_id"], survivor["instance_id"])
+            self.assertEqual(len(tracker.tracks), 1)
+
+    def test_nearby_objects_recover_stable_ids_after_separating(self):
+        tracker = InstanceAssociator({})
+        tracker.update([self.box(.48), self.box(.52)], None, 1)
+        tracker.update([self.box(.495), self.box(.505)], None, 1.03)
+        separated = tracker.update([self.box(.47), self.box(.53)], None, 1.06)
+        for i in range(1, 31):
+            current = tracker.update([self.box(.47), self.box(.53)], None, 1.06+i/30)
+            self.assertEqual([b["instance_id"] for b in current], [b["instance_id"] for b in separated])
 
     def test_expired_lost_or_different_class_does_not_reuse_identity(self):
         tracker = InstanceAssociator({})
