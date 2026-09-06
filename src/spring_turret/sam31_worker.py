@@ -27,10 +27,12 @@ if __package__:
     from .prompts import COLORS, normalize_prompts
     from .sam31_graph import CompiledStage
     from .sam31_native import NativeImageStage
+    from .sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
 else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
     from sam31_native import NativeImageStage
+    from sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -392,6 +394,23 @@ def validate_detections(
     }
 
 
+def check_detection_candidate(torch, reference, actual, confidence, *, report_only=False):
+    """Report numerical failures only with explicit W8A8 development opt-in.
+
+    The reference and tolerances are unchanged. Shape/dtype errors, NaNs,
+    native faults and graph qualification failures are never waived.
+    """
+    if report_only and (len(reference) != len(actual) or any(
+            a.shape != b.shape or a.dtype != b.dtype for a, b in zip(reference, actual))):
+        raise RuntimeError("SAM detection output shape/dtype changed")
+    try:
+        return {"passed": True, **validate_detections(torch, reference, actual, confidence)}
+    except AssertionError as error:
+        if not report_only:
+            raise
+        return {"passed": False, "policy": "report-only-development", "error": str(error)}
+
+
 class Sam31Engine:
     def __init__(
         self,
@@ -402,7 +421,18 @@ class Sam31Engine:
         use_sycl_graph: bool,
         grounding_batch_size: int = 1,
         native_bundle: Path | None = None,
+        w8a8_development_bundle: Path | None = None,
+        allow_unqualified_w8a8: bool = False,
     ) -> None:
+        if type(allow_unqualified_w8a8) is not bool or (allow_unqualified_w8a8 and w8a8_development_bundle is None):
+            raise ValueError("Unqualified execution requires an explicit W8A8 development bundle")
+        self.allow_unqualified_w8a8 = allow_unqualified_w8a8
+        if native_bundle is not None and w8a8_development_bundle is not None:
+            raise ValueError("Select only one SAM image bundle")
+        if w8a8_development_bundle is not None:
+            if precision != "float16":
+                raise ValueError("W8A8 requires FP16 autocast with FP32 masters")
+            configure_w8a8_source(w8a8_development_bundle, checkpoint)
         import torch
         from PIL import Image
         from sam3.model.data_misc import FindStage
@@ -479,6 +509,8 @@ class Sam31Engine:
         self.wrapper = wrapper_type(model).to(self.device).eval()
         image_type, text_type, head_type = _shared_wrappers(torch, FindStage, Prompt)
         self.image_stage = (
+            W8A8ImageStage(torch, image_type(model).eval(), w8a8_development_bundle, self.device, self._progress)
+            if w8a8_development_bundle is not None else
             NativeImageStage(torch, native_bundle, checkpoint, self.device, self._progress)
             if native_bundle is not None else
             CompiledStage(torch, image_type(model).eval(), "image", self._progress)
@@ -564,11 +596,12 @@ class Sam31Engine:
             self._progress("validating", "shared features versus full passes")
             for index, prompt in enumerate(prompts):
                 expected = self.wrapper(pixels.to(self.device), self._tokens(prompt))
-                self.validation[prompt] = validate_detections(
+                self.validation[prompt] = check_detection_candidate(
                     self.torch,
                     expected,
                     tuple(value[index : index + 1] for value in actual),
                     self.confidence,
+                    report_only=getattr(self, "allow_unqualified_w8a8", False),
                 )
             self.validated_batches.update(batches)
         self.graph_active = True
@@ -624,6 +657,7 @@ class Sam31Engine:
             "torch_compile": True,
             "image_backend": getattr(self.image_stage, "backend", "torch.compile"),
             "native_image_validation": getattr(self.image_stage, "proof", None),
+            "accuracy_policy": "report-only-development" if getattr(self, "allow_unqualified_w8a8", False) else "enforced",
             "sycl_graph": self.graph_active,
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
@@ -717,6 +751,8 @@ def main() -> None:
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--no-sycl-graph", action="store_true")
     parser.add_argument("--native-bundle", type=Path)
+    parser.add_argument("--w8a8-development-bundle", type=Path)
+    parser.add_argument("--allow-unqualified-w8a8", action="store_true")
     args = parser.parse_args()
     if not args.checkpoint.is_file():
         raise SystemExit(f"checkpoint not found: {args.checkpoint}")
@@ -736,11 +772,14 @@ def main() -> None:
             confidence=args.confidence,
             use_sycl_graph=not args.no_sycl_graph,
             native_bundle=args.native_bundle,
+            w8a8_development_bundle=args.w8a8_development_bundle,
+            allow_unqualified_w8a8=args.allow_unqualified_w8a8,
         )
         _emit(
             {
                 "type": "ready",
-                "engine": "sam3.1/native-image+inductor-xpu" if args.native_bundle else "sam3.1/torch.compile/inductor-xpu",
+                "engine": "sam3.1/israel-w8a8-development" if args.w8a8_development_bundle else
+                          "sam3.1/native-image+inductor-xpu" if args.native_bundle else "sam3.1/torch.compile/inductor-xpu",
                 "torch_compile": False,
                 "sycl_graph_requested": not args.no_sycl_graph,
             }
@@ -766,7 +805,7 @@ def main() -> None:
         _emit({"type": "fatal", "error": str(error)})
         raise
     finally:
-        if engine is not None and isinstance(engine.image_stage, NativeImageStage):
+        if engine is not None and isinstance(engine.image_stage, (NativeImageStage, W8A8ImageStage)):
             engine.image_stage.close()
 
 

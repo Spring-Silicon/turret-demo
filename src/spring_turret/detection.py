@@ -44,11 +44,18 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
-    if "sam31_native_bundle" in config:
-        if not isinstance(config["sam31_native_bundle"], str) or not Path(config["sam31_native_bundle"]).is_absolute():
-            raise ValueError("inference.sam31_native_bundle must be an absolute path")
-        if config.get("precision", "float16") != "float16":
-            raise ValueError("native SAM requires inference.precision=float16")
+    if "sam31_native_bundle" in config and "sam31_w8a8_development_bundle" in config:
+        raise ValueError("Select only one SAM image bundle")
+    if type(config.get("sam31_allow_unqualified_w8a8", False)) is not bool:
+        raise ValueError("inference.sam31_allow_unqualified_w8a8 must be a boolean")
+    if config.get("sam31_allow_unqualified_w8a8") and not config.get("sam31_w8a8_development_bundle"):
+        raise ValueError("Unqualified execution requires a W8A8 development bundle")
+    for key in ("sam31_native_bundle", "sam31_w8a8_development_bundle"):
+        if key in config:
+            if not isinstance(config[key], str) or not Path(config[key]).is_absolute():
+                raise ValueError(f"inference.{key} must be an absolute path")
+            if config.get("precision", "float16") != "float16":
+                raise ValueError("native SAM requires inference.precision=float16")
     if isinstance(config.get("device", 0), bool) or int(config.get("device", 0)) < 0:
         raise ValueError("inference.device must be a nonnegative integer")
 
@@ -65,6 +72,8 @@ class WorkerClient:
         cache = Path(self.config["cache_dir"])
         if self.config.get("model") == "yolo26x":
             cache /= "yolo26x"
+        elif self.config.get("sam31_w8a8_development_bundle"):
+            cache /= "sam31-israel-w8a8"
         elif self.config.get("sam31_native_bundle"):
             cache /= "sam31-native"
         cache.mkdir(parents=True, exist_ok=True)
@@ -80,6 +89,10 @@ class WorkerClient:
             "YOLO_AUTOINSTALL": "false",
             "YOLO_OFFLINE": "true",
         }
+        if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_w8a8_development_bundle"):
+            # Custom ops use Torch's SYCL ABI, not the dense graphs runner's
+            # isolated oneAPI runtime. No system-wide library changes.
+            env["LD_LIBRARY_PATH"] = str(Path(self.config["python"]).parent.parent / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
         if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_native_bundle"):
             # Parent-owned so an interrupted/killed compile cannot leak shared
             # buffers in /dev/shm. Each worker gets an isolated directory.
@@ -101,6 +114,11 @@ class WorkerClient:
                 *(["--native-bundle", self.config["sam31_native_bundle"]]
                   if self.config.get("model", "sam3.1") == "sam3.1"
                   and self.config.get("sam31_native_bundle") else []),
+                *(["--w8a8-development-bundle", self.config["sam31_w8a8_development_bundle"]]
+                  if self.config.get("model", "sam3.1") == "sam3.1"
+                  and self.config.get("sam31_w8a8_development_bundle") else []),
+                *(["--allow-unqualified-w8a8"] if self.config.get("model", "sam3.1") == "sam3.1"
+                  and self.config.get("sam31_allow_unqualified_w8a8") else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

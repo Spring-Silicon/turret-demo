@@ -6,6 +6,8 @@ X/Y camera framing.
 Optional qualified native SAM image execution from `sleepy-joe` is documented
 in [the native image setup](docs/sam31-native.md). Text/grounding and the default
 compiled image path remain available; activation is an explicit device setting.
+The faster, **accuracy-unqualified** Israel W8A8 candidate has a separate
+explicit [development setup](docs/sam31-w8a8.md); dense-reference gates remain unchanged.
 
 ## Current hardware status
 

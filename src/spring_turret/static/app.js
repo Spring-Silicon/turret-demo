@@ -352,8 +352,11 @@ function renderDetection(detection) {
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
   const fps = detectionFps(detection);
+  const imageMode = detection?.image_backend === "israel-w8a8-development"
+    ? "W8A8 dev (accuracy unqualified) · torch.compile"
+    : detection?.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile";
   detectionMessage.textContent = promptError || detection?.error || (fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms · ${detection.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile"} + SYCL graphs`
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms · ${imageMode} + SYCL graphs`
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";

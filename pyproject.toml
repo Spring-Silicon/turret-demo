@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spring-turret-demo"
-version = "0.14.1"
+version = "0.15.0"
 description = "Minimal camera and fail-closed servo control service for Spring Edge"
 requires-python = ">=3.12"
 dependencies = [
@@ -18,4 +18,4 @@ spring-turret = "spring_turret.server:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-spring_turret = ["static/*"]
+spring_turret = ["static/*", "w8a8_manifest.json"]
