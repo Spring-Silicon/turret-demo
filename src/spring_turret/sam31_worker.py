@@ -30,6 +30,7 @@ if __package__:
     from .sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
     from .sam31_preprocess import ExactImagePreprocessor
     from .worker_protocol import JPEG_BYTES, iter_requests
+    from .prefetch import LatestPreparation, RequestInbox
 else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
@@ -37,6 +38,7 @@ else:
     from sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
     from sam31_preprocess import ExactImagePreprocessor
     from worker_protocol import JPEG_BYTES, iter_requests
+    from prefetch import LatestPreparation, RequestInbox
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -618,13 +620,15 @@ class Sam31Engine:
     def detect(self, jpeg: bytes, prompt: str) -> dict[str, Any]:
         return self.detect_many(jpeg, [prompt])
 
-    def detect_many(self, jpeg: bytes, prompts: list[str], *, client_overlay=False) -> dict[str, Any]:
+    def detect_many(self, jpeg: bytes, prompts: list[str], *, client_overlay=False,
+                    prepared_pixels=None) -> dict[str, Any]:
         prompts = normalize_prompts(prompts)
         if not prompts:
             raise ValueError("at least one nonempty prompt is required")
         torch = self.torch
         worker_started = time.perf_counter()
-        pixels = self._pixels(jpeg)
+        pixels = (self._pixels(jpeg) if prepared_pixels is None
+                  else self.preprocessor(jpeg, prepared=prepared_pixels))
         torch.xpu.synchronize()
         preprocess_ms = (time.perf_counter() - worker_started) * 1000
         detections = []
@@ -667,6 +671,7 @@ class Sam31Engine:
             "native_image_validation": getattr(self.image_stage, "proof", None),
             "accuracy_policy": "report-only-development" if getattr(self, "allow_unqualified_w8a8", False) else "enforced",
             "preprocess_validation": getattr(getattr(self, "preprocessor", None), "validation", None),
+            "preprocess_prefetched": prepared_pixels is not None,
             "sycl_graph": self.graph_active,
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
@@ -675,6 +680,7 @@ class Sam31Engine:
             "grounding_batch_size": self.grounding_batch_size,
             "timing": {
                 "preprocess_ms": round(preprocess_ms, 2),
+                "cpu_prepare_ms": round(getattr(getattr(self, "preprocessor", None), "last_cpu_ms", 0), 2),
                 "prompt_setup_ms": round(prompt_setup_ms, 2),
                 "image_encoder_ms": round((image_done - started) * 1000, 2),
                 "grounding_ms": round((grounding_done - image_done) * 1000, 2),
@@ -768,7 +774,7 @@ def main() -> None:
     if not 0 < args.confidence < 1:
         raise SystemExit("confidence must be between zero and one")
 
-    engine = None
+    engine = preparation = None
     # A normal model switch/stop must reap the resident native runner as well.
     def terminate(signum, frame):
         raise SystemExit(0)
@@ -792,14 +798,22 @@ def main() -> None:
                 "torch_compile": False,
                 "sycl_graph_requested": not args.no_sycl_graph,
                 "request_transport": JPEG_BYTES,
+                "cpu_prefetch": engine.preprocessor is not None,
             }
         )
-        for request in iter_requests(sys.stdin.buffer):
+        if engine.preprocessor is not None:
+            preparation = LatestPreparation(engine.preprocessor.prepare_cpu)
+            requests = RequestInbox(sys.stdin.buffer, preparation)
+        else:
+            requests = iter_requests(sys.stdin.buffer)
+        for request in requests:
             try:
                 request_id = int(request["id"])
                 prompts = normalize_prompts(request["prompts"])
                 jpeg = request["jpeg"]
-                result = engine.detect_many(jpeg, prompts, client_overlay=request.get("client_overlay") is True)
+                prepared = preparation.take(request.get("prepared_token"), jpeg) if preparation else None
+                result = engine.detect_many(jpeg, prompts, client_overlay=request.get("client_overlay") is True,
+                                            prepared_pixels=prepared)
                 _emit({"type": "result", "id": request_id, **result})
             except Exception as error:
                 _emit(
@@ -813,6 +827,8 @@ def main() -> None:
         _emit({"type": "fatal", "error": str(error)})
         raise
     finally:
+        if preparation is not None:
+            preparation.close()
         if engine is not None and isinstance(engine.image_stage, (NativeImageStage, W8A8ImageStage)):
             engine.image_stage.close()
 

@@ -5,6 +5,7 @@ import json
 import statistics
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import torch
@@ -41,6 +42,14 @@ with torch.inference_mode():
         torch.xpu.synchronize()
         assert torch.equal(actual.cpu(), expected), 'Changed-frame pixel mismatch'
         assert actual.stride() == expected.stride(), (actual.stride(), expected.stride())
+    # Preparation owns its CPU storage, runs without an XPU context on another
+    # thread, and is not overwritten by preparing a subsequent changed image.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        prepared = [executor.submit(pre.prepare_cpu, jpeg).result() for jpeg in frames]
+    for jpeg, cpu in zip(frames, prepared, strict=True):
+        expected = pre.reference(Image.open(io.BytesIO(jpeg)).convert('RGB')).unsqueeze(0)
+        actual = pre(jpeg, prepared=cpu)
+        assert torch.equal(actual.cpu(), expected), 'Prepared CPU buffer mismatch'
     # Cover ALL 256 byte values in the exact captured input shape, on changed
     # replays, without JPEG quantization obscuring the exhaustive table check.
     values = torch.arange(1008*1008*3).remainder(256).to(torch.uint8).reshape(1008, 1008, 3)
@@ -64,5 +73,6 @@ with torch.inference_mode():
             start = time.perf_counter(); output = fn(); torch.xpu.synchronize()
             if i >= 5: timings[name].append((time.perf_counter()-start)*1000)
 print(json.dumps({'bitwise_pixel_parity': True, 'changed_image_cases': 2*len(frames),
+                  'threaded_prepared_cases': len(frames),
                   'all_256_values_replayed': True,
                   **{k: round(statistics.median(v), 3) for k,v in timings.items()}}, indent=2))

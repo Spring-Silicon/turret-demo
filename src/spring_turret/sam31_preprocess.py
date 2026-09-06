@@ -1,6 +1,7 @@
 """Exact uint8 resize plus compiled GPU normalization, without FP32 host copies."""
 
 import io
+import time
 
 if __package__:
     from .sam31_graph import CompiledStage
@@ -45,8 +46,11 @@ class ExactImagePreprocessor:
         self.stage = CompiledStage(torch, normalization_module(torch).to(device),
                                    "image-normalization", progress)
         self.validation = None
+        self.last_cpu_ms = 0.0
 
-    def __call__(self, jpeg):
+    def prepare_cpu(self, jpeg):
+        """Owned uint8 CPU buffer only; safe on the preparation thread."""
+        started = time.perf_counter()
         torch = self.torch
         image = self.Image.open(io.BytesIO(jpeg))  # Header only on the fast path.
         if image.format == "JPEG" and image.mode in ("RGB", "L"):
@@ -58,6 +62,11 @@ class ExactImagePreprocessor:
             # Preserve existing semantics for CMYK/non-JPEG diagnostic inputs.
             resized = self.resize(image.convert("RGB"))
         resized = resized.permute(1, 2, 0).contiguous()
+        return resized, (time.perf_counter() - started) * 1000
+
+    def __call__(self, jpeg, *, prepared=None):
+        torch = self.torch
+        resized, self.last_cpu_ms = self.prepare_cpu(jpeg) if prepared is None else prepared
         # Once captured, copy uint8 straight to the graph's owned input buffer;
         # avoid allocating an intermediate GPU image and copying it again.
         if self.stage.graph is None:
@@ -65,6 +74,7 @@ class ExactImagePreprocessor:
         with torch.inference_mode():
             pixels, = self.stage(resized)
             if self.validation is None:
+                image = self.Image.open(io.BytesIO(jpeg))
                 reference = self.reference(image.convert("RGB")).unsqueeze(0)
                 if not torch.equal(pixels.cpu(), reference):
                     raise RuntimeError("GPU preprocessing differs from original CPU pixels")

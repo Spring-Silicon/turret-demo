@@ -45,6 +45,8 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
+    if type(config.get("sam31_cpu_prefetch", True)) is not bool:
+        raise ValueError("inference.sam31_cpu_prefetch must be a boolean")
     if "sam31_native_bundle" in config and "sam31_w8a8_development_bundle" in config:
         raise ValueError("Select only one SAM image bundle")
     if type(config.get("sam31_allow_unqualified_w8a8", False)) is not bool:
@@ -69,6 +71,8 @@ class WorkerClient:
         self.cancelled = threading.Event()
         self.native_temp: Any = None
         self.request_transport = "json-base64"
+        self.prefetch_supported = False
+        self.previous_prompts = None
 
     def launch(self) -> None:
         cache = Path(self.config["cache_dir"])
@@ -140,7 +144,7 @@ class WorkerClient:
             except ProcessLookupError:
                 pass
 
-    def receive(self, timeout: float, progress: Any = None) -> dict[str, Any]:
+    def receive(self, timeout: float, progress: Any = None, tick: Any = None) -> dict[str, Any]:
         assert self.process and self.process.stdout
         deadline = time.monotonic() + timeout
         with selectors.DefaultSelector() as selector:
@@ -158,12 +162,18 @@ class WorkerClient:
                     if message.get("type") == "ready":
                         self.request_transport = (JPEG_BYTES if message.get("request_transport") == JPEG_BYTES
                                                   else "json-base64")
+                        self.prefetch_supported = (self.request_transport == JPEG_BYTES
+                            and message.get("cpu_prefetch") is True and self.config.get("sam31_cpu_prefetch", True))
                     return message
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not selector.select(remaining):
+                if remaining <= 0:
                     raise TimeoutError(
                         "Model worker timed out; submit the prompt to retry"
                     )
+                if not selector.select(min(remaining, .005) if tick else remaining):
+                    if tick:
+                        tick()
+                    continue
                 chunk = os.read(self.process.stdout.fileno(), 65536)
                 if not chunk:
                     raise RuntimeError("Model worker exited; check the service log")
@@ -172,20 +182,47 @@ class WorkerClient:
                     raise RuntimeError("Model worker response exceeded 4 MiB")
 
     def detect(
-        self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any
+        self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any,
+        *, prepared_token=None, prepare_next=None,
     ) -> dict[str, Any]:
         assert self.process and self.process.stdin
         body = {
             "id": request_id,
             "prompts": prompts,
             "client_overlay": True,
+            "prepared_token": prepared_token,
         }
         self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
         self.process.stdin.flush()
-        result = self.receive(900, progress)
+        sent = 0
+        last_token = None
+        prepared_sent_at = None
+        def prefetch():
+            nonlocal sent, prepared_sent_at, last_token
+            if self.cancelled.is_set():
+                return
+            candidate = prepare_next()
+            if candidate is not None and candidate["token"] != last_token:
+                self.process.stdin.write(encode_request({"kind":"prepare", "token":candidate["token"]},
+                                                         candidate["jpeg"], self.request_transport))
+                self.process.stdin.flush()
+                prepared_sent_at = time.monotonic()
+                last_token = candidate["token"]
+                sent += 1
+        # Only steady, validated prompt batches: no background Torch operations
+        # during initial compilation/capture or a changed prompt batch's setup.
+        tick = (prefetch if self.prefetch_supported and prepare_next is not None
+                and self.previous_prompts == tuple(prompts) else None)
+        result = self.receive(900, progress, tick)
         if result.get("type") != "result" or result.get("id") != request_id:
             raise RuntimeError("Model worker returned an unexpected response")
+        self.previous_prompts = tuple(prompts)
         result["request_transport"] = self.request_transport
+        result["prefetch_candidate_matched"] = prepared_token is not None
+        result["prefetch_sent"] = bool(sent)
+        result["prefetch_frames_sent"] = sent
+        result["prefetch_window_ms"] = (round((time.monotonic() - prepared_sent_at) * 1000, 2)
+                                         if prepared_sent_at is not None else None)
         return result
 
     def stop(self) -> None:
@@ -369,6 +406,7 @@ class DetectionController:
     def _run(self) -> None:
         failed_revision = -1
         last_camera_sequence = 0
+        prefetched = None
         try:
             while not self.stop_event.is_set():
                 with self.condition:
@@ -386,6 +424,7 @@ class DetectionController:
                     self.worker.stop()  # Exit/reap the old process before allocating the new model.
                     with self.condition:
                         self.worker, self.worker_model = None, None
+                        prefetched = None
                 if not prompts:
                     continue
                 cycle_started = time.monotonic()
@@ -429,11 +468,34 @@ class DetectionController:
                         if revision != self.revision:
                             continue
                     self.sequence += 1
+                    prepared_token = None
+                    if (prefetched is not None and prefetched["revision"] == revision
+                            and prefetched["id"] == self.sequence and prefetched["camera_sequence"] == sequence
+                            and prefetched["jpeg"] == jpeg and 0 <= time.monotonic() - captured_at <= .1):
+                        prepared_token = prefetched["token"]
+                    prefetched = None
+                    def prepare_next():
+                        nonlocal prefetched
+                        with self.condition:
+                            if self.stop_event.is_set() or revision != self.revision:
+                                return None
+                            next_sequence, next_jpeg, next_at = self.camera.wait_for_sample(sequence, 0)
+                            if next_sequence == sequence or next_jpeg is None or not 0 <= time.monotonic() - next_at <= .1:
+                                return None
+                            if prefetched is not None and prefetched["camera_sequence"] == next_sequence:
+                                return None
+                            prefetched = {"revision":revision, "id":self.sequence+1,
+                                "camera_sequence":next_sequence, "jpeg":next_jpeg,
+                                "token":f"{revision}:{self.sequence+1}:{next_sequence}"}
+                            return prefetched
+                    extra = ({"prepared_token":prepared_token, "prepare_next":prepare_next}
+                             if getattr(self.worker, "prefetch_supported", False) else {})
                     result = self.worker.detect(
                         self.sequence,
                         jpeg,
                         prompts,
                         lambda stage: self._progress(revision, stage),
+                        **extra,
                     )
                     if not result.get("torch_compile") or not result.get("sycl_graph"):
                         raise RuntimeError(
@@ -475,6 +537,7 @@ class DetectionController:
                             self.frame_selections.clear()
                             self.instances.clear()
                         worker, self.worker = self.worker, None
+                        prefetched = None
                     if worker:
                         worker.stop()
                     failed_revision = revision

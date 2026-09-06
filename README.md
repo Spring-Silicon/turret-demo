@@ -183,7 +183,21 @@ with `jpeg_length`, followed by exactly that many unmodified JPEG bytes.
 Responses stay JSON lines, and legacy base64 JSON requests remain accepted.
 YOLO/older workers retain the base64 path unless they advertise the capability.
 This removes base64 encoding/decoding and its 33% payload expansion from SAM's
-local input pipe; it adds neither frame buffering nor asynchronous reordering.
+local input pipe; it does not reorder inference requests/results.
+
+The Torch/W8A8 worker overlaps CPU JPEG decode/resize with GPU inference. During
+steady, validated prompt batches the parent checks for a new camera frame every
+5 ms while awaiting the GPU result, sends each candidate only once, and keeps a
+bounded, latest-only preparation buffer, not a FIFO of inference frames. Cold
+compilation and changed-prompt setup do not start new background preparation.
+On the next pass the controller still chooses the newest camera frame;
+reuse requires matching revision, request/sequence, JPEG bytes and the existing
+100 ms freshness bound. A newer frame, changed prompt or late preparation falls
+back immediately to preparing the actual latest frame. GPU operations remain
+on the inference thread; pose pairing, angle limits and motor stop behavior are
+unchanged. Set `inference.sam31_cpu_prefetch: false` to disable this optimization.
+`preprocess_prefetched` reports reuse; `timing.cpu_prepare_ms` measures CPU work
+even when overlapped, so it must not be added again to `worker_total_ms`.
 
 ### Pattern-free fisheye calibration
 

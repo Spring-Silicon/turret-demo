@@ -146,3 +146,66 @@ CPU float32 pixels and strides exactly. Alternating preprocessing medians were
 8.509 ms (0.15.1 path) versus 5.671 ms (new path), 25 measured iterations each.
 The live worker also passed exact first-frame pixels and W8A8 direct/replay
 checks. The development model's unqualified accuracy status is unchanged.
+
+### Latest-only CPU/GPU overlap (release 0.15.3)
+
+CPU decode/resize can run while the GPU processes the preceding frame. During
+steady validated batches, the parent checks for a new camera frame every 5 ms
+while awaiting the result and submits each new candidate once. The worker keeps
+only a bounded active/pending/ready preparation, not a queue of inference frames.
+Next inference still selects the actual newest camera frame. Reuse requires the
+same revision, request, camera sequence and JPEG bytes within 100 ms; late or
+superseded preparation falls back without waiting. No model, weights, precision,
+resolution, threshold, pose mapping or servo behavior was changed. The trade-off
+is more CPU preparation work on camera frames the GPU may never need.
+
+Same host, W8A8 bundle, `person with white shirt` prompt, 1280x720 at 30 Hz and
+motors off: local paired-JPEG SSE samples were 55 s for the candidate (585
+results), followed by a 20 s rollback baseline (210 results):
+
+| Metric | 0.15.2 baseline | 0.15.3 |
+| --- | ---: | ---: |
+| Delivered FPS | 10.44 | 10.61 |
+| Exposed preprocessing, mean | 6.01 ms | 4.05 ms |
+| Image encoder, mean | 74.96 ms | 75.00 ms |
+| Grounding, mean | 14.10 ms | 14.13 ms |
+| Worker total, mean | 95.60 ms | 93.74 ms |
+| Full processing loop, mean | 96.08 ms | 94.28 ms |
+| Receipt-to-result frame age, median / p95 | 114 / 129 ms | 108 / 125 ms |
+
+This is a modest **1.6% measured FPS gain**, not an additional model speedup.
+Non-model critical-path time (loop minus image, grounding and postprocessing)
+fell from approximately 6.6 to 4.7 ms. The candidate reused preparation on 40.7%
+of frames; reused preprocessing was 0.94 ms median. Median loop time barely
+changed (96.05 to 95.98 ms) because most frames still used the normal path; mean
+loop time and delivered FPS capture the benefit. These are local receipt/result
+measurements, not hardware exposure-to-browser-display latency.
+
+An initial late-only preparation window was rejected in favor of latest-only
+preparation throughout GPU execution. It produced only 19–38% reuse and little
+throughput gain. Neither version substituted an old prepared frame for a newer
+camera frame.
+
+Accuracy-preservation qualification is **strict**, separate from the W8A8
+development model's pre-existing accuracy limitations:
+
+- 44 changed-image forward/reverse cases, 22 background-prepared buffers and
+  exhaustive byte-value replay matched the original CPU normalized pixels.
+- `tests/qualify-sam31-overlap.py` compared the installed 0.15.2 preprocessor
+  with the new path on six actual camera images, using one and four prompts.
+  During optimized inference, other changed frames were prepared concurrently.
+  All **30,030 raw logits/box/presence values were bitwise identical** across
+  12 comparisons. All published boxes, confidence scores and class counts also
+  matched, including 32 detected boxes in total. No tolerance or report-only
+  waiver was used for this comparison. See [the qualification result](sam31-overlap-qualification.json).
+- Repository validation passed 124 Python tests plus UI/JavaScript contracts,
+  including latest-generation ownership, late-preparation fallback, prompt
+  changes, duplicate suppression and real subprocess pipe integration.
+
+The tested deployment wheel SHA-256 was
+`c078977075c556a325d60eb4278ceb7f1a8dfb2d6233855de5d89751e3d556c8`.
+`inference.sam31_cpu_prefetch: false` disables overlap. Runtime metadata exposes
+`preprocess_prefetched`, `prefetch_candidate_matched`, `prefetch_frames_sent` and
+`prefetch_window_ms` (time from last candidate send to result receipt).
+`timing.cpu_prepare_ms` includes overlapped CPU work; do not add it to worker
+total. W8A8-versus-dense accuracy remains unqualified as before.

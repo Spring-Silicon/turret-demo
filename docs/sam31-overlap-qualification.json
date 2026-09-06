@@ -1,0 +1,93 @@
+{
+  "passed": true,
+  "comparison": "same W8A8 model, 0.15.2 vs overlapped preprocessing",
+  "raw_logits_boxes_presence_bitwise_equal": true,
+  "published_boxes_scores_counts_equal": true,
+  "pairs": [
+    {
+      "image": 0,
+      "prompts": 1,
+      "bitwise_raw_equal": true,
+      "raw_values": 1001,
+      "detected_boxes": 1
+    },
+    {
+      "image": 1,
+      "prompts": 1,
+      "bitwise_raw_equal": true,
+      "raw_values": 1001,
+      "detected_boxes": 1
+    },
+    {
+      "image": 2,
+      "prompts": 1,
+      "bitwise_raw_equal": true,
+      "raw_values": 1001,
+      "detected_boxes": 3
+    },
+    {
+      "image": 3,
+      "prompts": 1,
+      "bitwise_raw_equal": true,
+      "raw_values": 1001,
+      "detected_boxes": 2
+    },
+    {
+      "image": 4,
+      "prompts": 1,
+      "bitwise_raw_equal": true,
+      "raw_values": 1001,
+      "detected_boxes": 1
+    },
+    {
+      "image": 5,
+      "prompts": 1,
+      "bitwise_raw_equal": true,
+      "raw_values": 1001,
+      "detected_boxes": 0
+    },
+    {
+      "image": 0,
+      "prompts": 4,
+      "bitwise_raw_equal": true,
+      "raw_values": 4004,
+      "detected_boxes": 4
+    },
+    {
+      "image": 1,
+      "prompts": 4,
+      "bitwise_raw_equal": true,
+      "raw_values": 4004,
+      "detected_boxes": 4
+    },
+    {
+      "image": 2,
+      "prompts": 4,
+      "bitwise_raw_equal": true,
+      "raw_values": 4004,
+      "detected_boxes": 3
+    },
+    {
+      "image": 3,
+      "prompts": 4,
+      "bitwise_raw_equal": true,
+      "raw_values": 4004,
+      "detected_boxes": 6
+    },
+    {
+      "image": 4,
+      "prompts": 4,
+      "bitwise_raw_equal": true,
+      "raw_values": 4004,
+      "detected_boxes": 4
+    },
+    {
+      "image": 5,
+      "prompts": 4,
+      "bitwise_raw_equal": true,
+      "raw_values": 4004,
+      "detected_boxes": 3
+    }
+  ],
+  "model_accuracy_qualification_changed": false
+}
