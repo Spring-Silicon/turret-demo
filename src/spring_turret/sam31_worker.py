@@ -2,8 +2,8 @@
 """SAM 3.1 text-grounding worker for Intel XPU.
 
 The HTTP and hardware process deliberately keeps the multi-gigabyte model in a
-separate process.  Requests and responses are newline-delimited JSON on stdin
-and stdout; model diagnostics go to stderr.
+separate process. Requests use a JSON header plus raw JPEG bytes (legacy base64
+JSON is also accepted); responses are JSON lines and diagnostics go to stderr.
 """
 
 from __future__ import annotations
@@ -29,12 +29,14 @@ if __package__:
     from .sam31_native import NativeImageStage
     from .sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
     from .sam31_preprocess import ExactImagePreprocessor
+    from .worker_protocol import JPEG_BYTES, iter_requests
 else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
     from sam31_native import NativeImageStage
     from sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
     from sam31_preprocess import ExactImagePreprocessor
+    from worker_protocol import JPEG_BYTES, iter_requests
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -789,15 +791,14 @@ def main() -> None:
                           "sam3.1/native-image+inductor-xpu" if args.native_bundle else "sam3.1/torch.compile/inductor-xpu",
                 "torch_compile": False,
                 "sycl_graph_requested": not args.no_sycl_graph,
+                "request_transport": JPEG_BYTES,
             }
         )
-        for line in sys.stdin:
-            request: dict[str, Any] = {}
+        for request in iter_requests(sys.stdin.buffer):
             try:
-                request = json.loads(line)
                 request_id = int(request["id"])
                 prompts = normalize_prompts(request["prompts"])
-                jpeg = base64.b64decode(request["jpeg"], validate=True)
+                jpeg = request["jpeg"]
                 result = engine.detect_many(jpeg, prompts, client_overlay=request.get("client_overlay") is True)
                 _emit({"type": "result", "id": request_id, **result})
             except Exception as error:

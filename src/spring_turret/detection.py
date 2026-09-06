@@ -19,6 +19,7 @@ from typing import Any
 from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
 from spring_turret.models import MODELS, model_prompts
+from spring_turret.worker_protocol import JPEG_BYTES, encode_request
 
 
 def validate_config(config: dict[str, Any]) -> None:
@@ -67,6 +68,7 @@ class WorkerClient:
         self.pending = b""
         self.cancelled = threading.Event()
         self.native_temp: Any = None
+        self.request_transport = "json-base64"
 
     def launch(self) -> None:
         cache = Path(self.config["cache_dir"])
@@ -153,6 +155,9 @@ class WorkerClient:
                         continue
                     if message.get("type") in ("fatal", "error"):
                         raise RuntimeError(message.get("error", "Model worker failed"))
+                    if message.get("type") == "ready":
+                        self.request_transport = (JPEG_BYTES if message.get("request_transport") == JPEG_BYTES
+                                                  else "json-base64")
                     return message
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not selector.select(remaining):
@@ -172,15 +177,15 @@ class WorkerClient:
         assert self.process and self.process.stdin
         body = {
             "id": request_id,
-            "jpeg": base64.b64encode(jpeg).decode(),
             "prompts": prompts,
             "client_overlay": True,
         }
-        self.process.stdin.write(json.dumps(body).encode() + b"\n")
+        self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
         self.process.stdin.flush()
         result = self.receive(900, progress)
         if result.get("type") != "result" or result.get("id") != request_id:
             raise RuntimeError("Model worker returned an unexpected response")
+        result["request_transport"] = self.request_transport
         return result
 
     def stop(self) -> None:

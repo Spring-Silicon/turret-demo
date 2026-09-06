@@ -29,8 +29,11 @@ class ExactImagePreprocessor:
     def __init__(self, torch, device, progress):
         from PIL import Image
         from torchvision.transforms import v2
+        from torchvision.io import decode_jpeg, ImageReadMode
 
         self.torch, self.device, self.Image = torch, device, Image
+        self.decode_jpeg, self.rgb_mode = decode_jpeg, ImageReadMode.RGB
+        self.tensor_resize = v2.Resize(size=(1008, 1008))
         self.resize = v2.Compose([
             v2.ToImage(), v2.ToDtype(torch.uint8, scale=True),
             v2.Resize(size=(1008, 1008)),
@@ -45,15 +48,24 @@ class ExactImagePreprocessor:
 
     def __call__(self, jpeg):
         torch = self.torch
-        image = self.Image.open(io.BytesIO(jpeg)).convert("RGB")
-        # Keep the existing PIL decode and torchvision uint8 antialiased resize.
-        # Upload 3 MiB uint8 rather than materializing/uploading 12 MiB float32.
-        # HWC lookup retains the original channels-last CHW input strides.
-        resized = self.resize(image).permute(1, 2, 0).contiguous().to(self.device)
+        image = self.Image.open(io.BytesIO(jpeg))  # Header only on the fast path.
+        if image.format == "JPEG" and image.mode in ("RGB", "L"):
+            encoded = torch.frombuffer(bytearray(jpeg), dtype=torch.uint8)
+            decoded = self.decode_jpeg(encoded, mode=self.rgb_mode)
+            decoded = decoded.permute(1, 2, 0).contiguous().permute(2, 0, 1)
+            resized = self.tensor_resize(decoded)
+        else:
+            # Preserve existing semantics for CMYK/non-JPEG diagnostic inputs.
+            resized = self.resize(image.convert("RGB"))
+        resized = resized.permute(1, 2, 0).contiguous()
+        # Once captured, copy uint8 straight to the graph's owned input buffer;
+        # avoid allocating an intermediate GPU image and copying it again.
+        if self.stage.graph is None:
+            resized = resized.to(self.device)
         with torch.inference_mode():
             pixels, = self.stage(resized)
             if self.validation is None:
-                reference = self.reference(image).unsqueeze(0)
+                reference = self.reference(image.convert("RGB")).unsqueeze(0)
                 if not torch.equal(pixels.cpu(), reference):
                     raise RuntimeError("GPU preprocessing differs from original CPU pixels")
                 self.validation = {"bitwise_equal": True, "backend": "compiled-uint8-lut"}

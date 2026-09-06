@@ -113,3 +113,36 @@ frame age was median 122 ms, p95 138 ms, including age of the latest 30 Hz frame
 These are not exposure-to-browser-display measurements. No frame queue or
 model simplification was introduced. The ~89 ms model still bounds serial
 throughput to roughly 11.2 FPS even if all remaining overhead disappeared.
+
+### Further overhead reduction (release 0.15.2)
+
+Same host/model/prompt, motors off in both runs, with a fresh 15-second baseline
+and 30-second upgraded paired-JPEG SSE measurement:
+
+| Metric (median unless FPS) | 0.15.1 baseline | 0.15.2 |
+| --- | ---: | ---: |
+| Delivered FPS | 9.83 | 10.42 |
+| Preprocessing | 9.24 ms | 5.89 ms |
+| Image encoder | 75.12 ms | 74.96 ms |
+| Grounding | 14.09 ms | 14.07 ms |
+| Worker total | 98.97 ms | 95.50 ms |
+| Worker round trip | 102.51 ms | 95.94 ms |
+| Full processing loop | 102.63 ms | 96.06 ms |
+| Receipt-to-result frame age | 123 ms | 114 ms |
+
+The update decodes JPEG directly into a tensor, preserves the original uint8
+resize, and copies directly to the normalization graph input. A negotiated raw
+JPEG protocol removes base64 from the local SAM input pipe; YOLO retains its
+existing transport. No pipeline queue, frame reordering, tracking change or
+model modification was added. Non-model overhead (loop minus model including
+postprocessing) is approximately 13.0 to 6.6 ms; GPU model time is unchanged.
+Loop/frame-age p95 after the update were 96.94/130 ms, respectively. These remain
+local receiver measurements, not exposure-to-browser-display measurements.
+
+Pixel qualification covered 44 forward/reverse image cases including camera,
+varied dimensions, grayscale, progressive JPEG/chroma subsampling and CMYK/PNG
+fallbacks, plus exhaustive all-256-value graph replays. All matched the original
+CPU float32 pixels and strides exactly. Alternating preprocessing medians were
+8.509 ms (0.15.1 path) versus 5.671 ms (new path), 25 measured iterations each.
+The live worker also passed exact first-frame pixels and W8A8 direct/replay
+checks. The development model's unqualified accuracy status is unchanged.

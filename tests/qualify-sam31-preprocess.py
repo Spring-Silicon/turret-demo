@@ -27,6 +27,12 @@ for width, height, mode in [(1280, 720, 'RGB'), (720, 1280, 'RGB'), (321, 157, '
     data = torch.randint(0, 256, shape, dtype=torch.uint8, generator=generator).numpy()
     image = Image.fromarray(data)
     buf = io.BytesIO(); image.save(buf, format='JPEG'); frames.append(buf.getvalue())
+    if mode == 'RGB':
+        for subsampling in (0, 1, 2):
+            buf = io.BytesIO(); image.save(buf, format='JPEG', progressive=True, subsampling=subsampling)
+            frames.append(buf.getvalue())
+    for fmt, converted in [('PNG', image), ('JPEG', image.convert('CMYK'))]:
+        buf = io.BytesIO(); converted.save(buf, format=fmt); frames.append(buf.getvalue())
 
 with torch.inference_mode():
     for jpeg in frames + frames[::-1]:
@@ -46,13 +52,17 @@ with torch.inference_mode():
     def original():
         image = Image.open(io.BytesIO(camera)).convert('RGB')
         return pre.reference(image).unsqueeze(0).to(pre.device)
-    timings = {'original_ms': [], 'optimized_ms': []}
+    def previous_lut():
+        image = Image.open(io.BytesIO(camera)).convert('RGB')
+        resized = pre.resize(image).permute(1, 2, 0).contiguous().to(pre.device)
+        return pre.stage(resized)
+    timings = {'original_ms': [], 'previous_lut_ms': [], 'optimized_ms': []}
     for i in range(30):
-        items = [('original_ms', original), ('optimized_ms', lambda: pre(camera))]
+        items = [('original_ms', original), ('previous_lut_ms', previous_lut), ('optimized_ms', lambda: pre(camera))]
         if i % 2: items.reverse()
         for name, fn in items:
             start = time.perf_counter(); output = fn(); torch.xpu.synchronize()
             if i >= 5: timings[name].append((time.perf_counter()-start)*1000)
-print(json.dumps({'bitwise_pixel_parity': True, 'changed_image_cases': 10,
+print(json.dumps({'bitwise_pixel_parity': True, 'changed_image_cases': 2*len(frames),
                   'all_256_values_replayed': True,
                   **{k: round(statistics.median(v), 3) for k,v in timings.items()}}, indent=2))

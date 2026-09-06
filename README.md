@@ -166,8 +166,10 @@ longer forces the detector to discard a fresh frame and wait for the next one.
 It waits for capture only when no unprocessed camera frame is available; no
 added motion-settling wait or relaxed pose-age/fault gate is introduced.
 
-SAM's Torch/W8A8 path keeps the original PIL decode and torchvision uint8
-antialiased resize, then uploads bytes and performs float32 normalization with
+SAM's Torch/W8A8 path decodes RGB/grayscale JPEG directly into a tensor, with
+pixel parity against the original PIL reference (CMYK/non-JPEG diagnostics
+retain PIL). It keeps torchvision's uint8 antialiased resize, then uploads
+bytes directly into the graph input and performs float32 normalization with
 a compiled GPU lookup table and SYCL replay. This avoids CPU float32 passes and
 the four-times-larger float32 upload. All 256 input values map to the original
 CPU float32 bits; first-frame exact parity is a hard gate, independent of the
@@ -175,6 +177,13 @@ W8A8 development accuracy opt-in. `preprocess_validation` reports that check.
 The separate dense native runner retains its CPU-input path. Run
 `tests/qualify-sam31-preprocess.py --jpeg /path/to/camera.jpg` in the inference
 venv with an idle XPU for exhaustive byte-value and changed-frame parity tests.
+
+SAM advertises `jpeg-bytes-v1` in its worker handshake: a bounded JSON header
+with `jpeg_length`, followed by exactly that many unmodified JPEG bytes.
+Responses stay JSON lines, and legacy base64 JSON requests remain accepted.
+YOLO/older workers retain the base64 path unless they advertise the capability.
+This removes base64 encoding/decoding and its 33% payload expansion from SAM's
+local input pipe; it adds neither frame buffering nor asynchronous reordering.
 
 ### Pattern-free fisheye calibration
 
