@@ -7,7 +7,9 @@ import json
 import math
 import os
 import selectors
+import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -42,6 +44,11 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
+    if "sam31_native_bundle" in config:
+        if not isinstance(config["sam31_native_bundle"], str) or not Path(config["sam31_native_bundle"]).is_absolute():
+            raise ValueError("inference.sam31_native_bundle must be an absolute path")
+        if config.get("precision", "float16") != "float16":
+            raise ValueError("native SAM requires inference.precision=float16")
     if isinstance(config.get("device", 0), bool) or int(config.get("device", 0)) < 0:
         raise ValueError("inference.device must be a nonnegative integer")
 
@@ -52,11 +59,14 @@ class WorkerClient:
         self.process: subprocess.Popen | None = None
         self.pending = b""
         self.cancelled = threading.Event()
+        self.native_temp: Any = None
 
     def launch(self) -> None:
         cache = Path(self.config["cache_dir"])
         if self.config.get("model") == "yolo26x":
             cache /= "yolo26x"
+        elif self.config.get("sam31_native_bundle"):
+            cache /= "sam31-native"
         cache.mkdir(parents=True, exist_ok=True)
         (cache / "ultralytics").mkdir(exist_ok=True)
         env = {
@@ -70,6 +80,11 @@ class WorkerClient:
             "YOLO_AUTOINSTALL": "false",
             "YOLO_OFFLINE": "true",
         }
+        if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_native_bundle"):
+            # Parent-owned so an interrupted/killed compile cannot leak shared
+            # buffers in /dev/shm. Each worker gets an isolated directory.
+            self.native_temp = tempfile.TemporaryDirectory(prefix="turret-native-", dir="/dev/shm")
+            env["SPRING_NATIVE_IPC_DIR"] = self.native_temp.name
         self.process = subprocess.Popen(
             [
                 self.config["python"],
@@ -83,10 +98,14 @@ class WorkerClient:
                 self.config.get("precision", "float16"),
                 "--confidence",
                 str(self.config.get("confidence", 0.5)),
+                *(["--native-bundle", self.config["sam31_native_bundle"]]
+                  if self.config.get("model", "sam3.1") == "sam3.1"
+                  and self.config.get("sam31_native_bundle") else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             env=env,
+            start_new_session=True,
         )
         if self.cancelled.is_set():
             self.cancel()
@@ -97,7 +116,7 @@ class WorkerClient:
         process = self.process
         if process and process.poll() is None:
             try:
-                process.terminate()
+                os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
 
@@ -149,15 +168,26 @@ class WorkerClient:
         process = self.process
         if process is not None:
             if process.poll() is None:
-                process.terminate()
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=3)
+            # Reap surviving descendants even if the worker itself exited early.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             for stream in (process.stdin, process.stdout):
                 if stream:
                     stream.close()
+        if self.native_temp is not None:
+            self.native_temp.cleanup()
+            self.native_temp = None
 
 
 class DetectionController:

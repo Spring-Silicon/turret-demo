@@ -15,6 +15,7 @@ import gc
 import io
 import json
 import os
+import signal
 import sys
 import time
 import types
@@ -25,9 +26,11 @@ from typing import Any
 if __package__:
     from .prompts import COLORS, normalize_prompts
     from .sam31_graph import CompiledStage
+    from .sam31_native import NativeImageStage
 else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
+    from sam31_native import NativeImageStage
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -398,6 +401,7 @@ class Sam31Engine:
         confidence: float,
         use_sycl_graph: bool,
         grounding_batch_size: int = 1,
+        native_bundle: Path | None = None,
     ) -> None:
         import torch
         from PIL import Image
@@ -413,6 +417,8 @@ class Sam31Engine:
         self.Image = Image
         self.device = torch.device(f"xpu:{device_index}")
         self.dtype = torch.float16 if precision == "float16" else torch.bfloat16
+        if native_bundle is not None and precision != "float16":
+            raise ValueError("native SAM requires float16 autocast with FP32 master weights")
         self.confidence = confidence
         if not use_sycl_graph:
             raise ValueError("shared-feature inference requires SYCL graphs")
@@ -472,8 +478,10 @@ class Sam31Engine:
         # Independent full-pass reference used only during correctness checks.
         self.wrapper = wrapper_type(model).to(self.device).eval()
         image_type, text_type, head_type = _shared_wrappers(torch, FindStage, Prompt)
-        self.image_stage = CompiledStage(
-            torch, image_type(model).eval(), "image", self._progress
+        self.image_stage = (
+            NativeImageStage(torch, native_bundle, checkpoint, self.device, self._progress)
+            if native_bundle is not None else
+            CompiledStage(torch, image_type(model).eval(), "image", self._progress)
         )
         self.text_stage = CompiledStage(
             torch, text_type(model).eval(), "text", self._progress
@@ -494,7 +502,8 @@ class Sam31Engine:
 
     def _pixels(self, jpeg: bytes) -> Any:
         image = self.Image.open(io.BytesIO(jpeg)).convert("RGB")
-        return self.transform(image).unsqueeze(0).to(self.device)
+        pixels = self.transform(image).unsqueeze(0)
+        return pixels if getattr(self.image_stage, "accepts_cpu", False) else pixels.to(self.device)
 
     def _tokens(self, prompt: str) -> Any:
         return self.tokenizer([prompt], context_length=32).to(self.device)
@@ -554,7 +563,7 @@ class Sam31Engine:
             actual = self._run_heads(self.image_stage(pixels), embeddings)
             self._progress("validating", "shared features versus full passes")
             for index, prompt in enumerate(prompts):
-                expected = self.wrapper(pixels, self._tokens(prompt))
+                expected = self.wrapper(pixels.to(self.device), self._tokens(prompt))
                 self.validation[prompt] = validate_detections(
                     self.torch,
                     expected,
@@ -613,6 +622,8 @@ class Sam31Engine:
             "torch": torch.__version__,
             "device": torch.xpu.get_device_name(self.device),
             "torch_compile": True,
+            "image_backend": getattr(self.image_stage, "backend", "torch.compile"),
+            "native_image_validation": getattr(self.image_stage, "proof", None),
             "sycl_graph": self.graph_active,
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
@@ -630,6 +641,9 @@ class Sam31Engine:
             },
         }
         annotation_started = time.perf_counter()
+        native_ms = getattr(self.image_stage, "last_execution_ms", None)
+        if native_ms is not None:
+            result["timing"]["native_image_replay_ms"] = round(native_ms, 2)
         result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
         result["timing"]["annotation_ms"] = round(
             (time.perf_counter() - annotation_started) * 1000, 2
@@ -700,12 +714,18 @@ def main() -> None:
     )
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--no-sycl-graph", action="store_true")
+    parser.add_argument("--native-bundle", type=Path)
     args = parser.parse_args()
     if not args.checkpoint.is_file():
         raise SystemExit(f"checkpoint not found: {args.checkpoint}")
     if not 0 < args.confidence < 1:
         raise SystemExit("confidence must be between zero and one")
 
+    engine = None
+    # A normal model switch/stop must reap the resident native runner as well.
+    def terminate(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, terminate)
     try:
         engine = Sam31Engine(
             checkpoint=args.checkpoint,
@@ -713,11 +733,12 @@ def main() -> None:
             precision=args.precision,
             confidence=args.confidence,
             use_sycl_graph=not args.no_sycl_graph,
+            native_bundle=args.native_bundle,
         )
         _emit(
             {
                 "type": "ready",
-                "engine": "sam3.1/torch.compile/inductor-xpu",
+                "engine": "sam3.1/native-image+inductor-xpu" if args.native_bundle else "sam3.1/torch.compile/inductor-xpu",
                 "torch_compile": False,
                 "sycl_graph_requested": not args.no_sycl_graph,
             }
@@ -742,6 +763,9 @@ def main() -> None:
     except Exception as error:
         _emit({"type": "fatal", "error": str(error)})
         raise
+    finally:
+        if engine is not None and isinstance(engine.image_stage, NativeImageStage):
+            engine.image_stage.close()
 
 
 if __name__ == "__main__":

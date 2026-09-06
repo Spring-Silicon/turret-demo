@@ -294,7 +294,7 @@ function renderDetection(detection) {
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
   detectionMessage.textContent = promptError || detection?.error || (fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${detection.latency_ms} ms · torch.compile + SYCL graphs`
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${detection.latency_ms} ms · ${detection.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile"} + SYCL graphs`
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";

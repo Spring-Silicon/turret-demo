@@ -3,6 +3,10 @@
 Camera feed, switchable SAM 3.1 / YOLO26x bounding boxes, and manual or opt-in automatic
 X/Y camera framing.
 
+Optional qualified native SAM image execution from `sleepy-joe` is documented
+in [the native image setup](docs/sam31-native.md). Text/grounding and the default
+compiled image path remain available; activation is an explicit device setting.
+
 ## Current hardware status
 
 - Arducam 1080P Low Light (`0c45:0261`, serial `UC684`): 1280x720 MJPEG at
