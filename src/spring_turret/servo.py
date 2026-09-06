@@ -222,6 +222,8 @@ class ServoController:
             with self.pose_lock:
                 self.cached_pose = {"sampled_at": sampled_at, "read_completed_at": completed_at,
                     "axes": {name: {
+                        "origin": state["origin"], "id": self.config["axes"][name]["id"],
+                        "direction": self.config["axes"][name]["direction"],
                         "degrees": to_degrees(self._axis_config(name), state["position"]),
                         "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
                     } for name, state in self.axes.items()}}
@@ -466,6 +468,7 @@ class ServoController:
                 "baudrate": self.config["baudrate"], "armed": self.armed,
                 "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
                 "axes": {name: {**state, "id": self.config["axes"][name]["id"],
+                    "direction": self.config["axes"][name]["direction"],
                     "degrees": to_degrees(self._axis_config(name), state["position"]),
                     "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
                     "min_degrees": self.config["axes"][name]["min_degrees"],

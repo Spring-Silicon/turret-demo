@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+from spring_turret.geometry import usb_identity
 
 from spring_turret.detection import (
     DetectionController,
@@ -85,6 +86,7 @@ class CameraStream:
         self.latest_sequence = 0
         self.latest_monotonic = 0.0
         self.error = "camera has not started"
+        self.identity = None
         self.process: subprocess.Popen[bytes] | None = None
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="camera", daemon=True)
@@ -138,6 +140,7 @@ class CameraStream:
 
             process: subprocess.Popen[bytes] | None = None
             try:
+                self.identity = usb_identity(self.config["device"])
                 process = subprocess.Popen(
                     self._pipeline(),
                     stdout=subprocess.PIPE,
@@ -208,6 +211,7 @@ class CameraStream:
             return {
                 "online": age is not None and age < 3,
                 "device": self.config["device"],
+                "identity": self.identity,
                 "width": int(self.config["width"]),
                 "height": int(self.config["height"]),
                 "framerate": int(self.config["framerate"]),

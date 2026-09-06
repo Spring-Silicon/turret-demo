@@ -115,8 +115,9 @@ new inference result wakes the controller immediately, including frames captured
 during a preceding move. Absolute pointing goals are clamped only to the X/Y angle
 limits. `inference.max_fps: 0` (the default) runs inference as fast as the pipeline
 can process fresh camera frames, without an added FPS throttle. The controller
-estimates the full correction as normalized image error times the calibrated
-degrees-per-frame scale, then commands **sampled camera angle + correction**.
+uses qualified fisheye/servo geometry when `tracking.geometry_file` is configured;
+otherwise it estimates the full correction as normalized image error times the
+degrees-per-frame scale. Both command **sampled camera angle + correction**.
 It does not repeatedly add delayed image errors to the previous goal. Fresh
 frames refine that absolute destination; a stationary, unchanged goal allows
 learning the small load/stiction holding bias. The 1.2% centering deadband remains.
@@ -151,6 +152,54 @@ JPEG receipt time is not a hardware exposure timestamp: bus/camera buffering,
 model latency and physical travel still matter. At high speed this pose is an
 estimate, with subsequent frames providing feedback. Pairing can wait up to one
 camera frame in the normal 30 FPS pipeline; there is no added motion-settling wait.
+
+### Pattern-free fisheye calibration
+
+Version 0.14 supports a qualified equidistant fisheye model with two radial terms,
+unequal focal lengths, optical-center offset and a measured camera-to-tilt mount
+rotation. Pixel rays are transformed through the sampled pan/tilt pose, and both
+joint angles are solved together to place the target at the **image center**.
+This is not simply `atan(pixel_error/focal_length)` or advertised diagonal FOV
+divided by image width. Instance motion prediction uses the same camera model.
+
+Set `tracking.geometry_file` to an absolute path to a **device-specific qualified**
+JSON file. An invalid/unqualified file prevents startup. A camera serial,
+resolution, motor ID or direction mismatch holds tracking with a visible error;
+it does not silently revert to the linear mapping. The old linear path remains
+available when no geometry file is configured. The API reports `tracking.mapping`
+as `fisheye-kinematics` or `linear` and `camera.identity` as USB vendor:product:serial.
+Changing servo zeros preserves the physical mapping by translating angles back
+to the calibration's encoder-origin reference. Moving the camera mount, changing
+its lens/focus, or modifying mechanical axes requires new calibration.
+
+The tools below target the commissioned +X/right, +Y/up, positive-encoder pan/tilt
+assembly. They use **measured**, settled encoder angles, not requested angles.
+`capture-scene.py` and `check-scene-pointing.py` move motors: only run after an
+operator clears the mechanism and explicitly authorizes the small sweeps. They
+start with motors off, clear automatic tracking, restrict excursions to ±8° pan
+and ±6° tilt around the start, issue steps no larger than 3°, abort on Stop or goal
+changes, return home on success, then disable torque. On an abort they stop
+without overriding the operator with a return move. They do not change zeros,
+limits, EEPROM, model or prompts. Do not interact with sliders while they run.
+
+```bash
+# Service must be running on localhost:8080; output path must not exist.
+python3 tools/capture-scene.py --output /path/to/new-capture --allow-motion
+# Use the inference venv (OpenCV + numpy + scipy); this step never moves motors.
+python tools/fit-scene.py /path/to/new-capture --output /path/to/candidate.json
+# Only after fit passed, with operator clearance still valid:
+python tools/check-scene-pointing.py --geometry /path/to/candidate.json \
+  --output /path/to/new-pointing-check.json --allow-motion
+```
+
+Fitting uses spatially distributed, reciprocal SIFT matches from a static room.
+Eight poses train the model; six other poses test it. Median/p90 held-out feature
+prediction errors must improve on the old mapping and pass absolute pixel-error
+gates. Reject inconclusive calibration rather than relaxing the gates. This is
+a rotational approximation: camera/axis offsets create depth-dependent parallax,
+moving objects and backlash can add error, and small local sweeps do not establish
+accuracy throughout the full ±90° mechanical range. Keep visual feedback active.
+See [the measured qualification](docs/geometry-qualification.md).
 
 On spring-edge-2, version 0.8.1 passed separate 6° commanded-offset checks against
 a blue bag: first centered detection at 1.05 s (pan) and 0.86 s (tilt) after class

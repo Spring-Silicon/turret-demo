@@ -1,11 +1,13 @@
 """Short-lived spatial instance IDs; no appearance re-identification or GPU work."""
 
 import math
+from spring_turret.geometry import Geometry
 
 
 class InstanceAssociator:
     def __init__(self, config):
         self.config = config
+        self.geometry = Geometry.load(config["geometry_file"]) if config.get("geometry_file") else None
         self.tracks = {}
         self.next_id = 1
 
@@ -15,6 +17,15 @@ class InstanceAssociator:
     def _predicted(self, track, pose):
         coords = list(track["box"]["xyxy"])
         if pose and track["pose"]:
+            if self.geometry:
+                try:
+                    w,h=self.geometry.width,self.geometry.height
+                    points=[self.geometry.reproject(x*w,y*h,track["pose"],pose)
+                            for x,y in ((coords[0],coords[1]),(coords[2],coords[1]),(coords[0],coords[3]),(coords[2],coords[3]))]
+                    return [min(p[0] for p in points)/w,min(p[1] for p in points)/h,
+                            max(p[0] for p in points)/w,max(p[1] for p in points)/h]
+                except (KeyError,ValueError):
+                    return coords  # Missing pose or out-of-view; never invent a new identity.
             for axis, indices, default_scale, default_direction in (
                 ("x", (0, 2), 160, 1), ("y", (1, 3), 90, -1)
             ):

@@ -60,6 +60,29 @@ class Servo:
 
 
 class TrackingTests(unittest.TestCase):
+    def test_geometry_is_used_and_bad_camera_binding_holds(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location("geometry_test",Path(__file__).with_name("test-geometry.py"))
+        module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        self.tracker.geometry=module.Geometry(module.fixture())
+        old_status=self.servo.status
+        def servo_status():
+            s=old_status()
+            for k,v in module.fixture()["axes"].items(): s["axes"][k].update(v)
+            return s
+        self.servo.status=servo_status
+        self.camera.status=lambda:{"online":True,**module.fixture()["camera"]}
+        self.start()
+        self.frame([box(cx=.7,cy=.5)],x=10,y=35)
+        self.assertEqual(self.tracker.status()["mapping"],"fisheye-kinematics")
+        expected=self.tracker.geometry.goals(.7*1280,.5*720,self.detection.data["frame_pose"],self.servo.status())
+        for name in expected: self.assertAlmostEqual(self.servo.calls[-1][name],expected[name])
+        self.camera.status=lambda:{"online":True,**module.fixture()["camera"],"identity":"different"}
+        self.frame([box(cx=.8)])
+        self.assertEqual(self.tracker.state,"uncalibrated")
+        self.assertIn("identity",self.tracker.error)
+        self.assertEqual(self.servo.calls[-1],{"x":0,"y":0})
+
     def test_recalibration_clears_old_coordinate_tracking_without_moving(self):
         self.start()
         self.frame([box()])
