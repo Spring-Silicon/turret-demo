@@ -44,6 +44,12 @@ Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
 their respective axes while running; requests are coalesced during a drag.
 Errors appear only when needed.
 
+The status line shows **detection FPS** beside model latency. FPS is measured
+from completed-frame sequence changes over a rolling two-second browser-time
+window, including frames completed between polls. It includes pipeline overhead
+and is not `1000 / model_ms`, the camera's capture rate, or browser rendering FPS.
+It resets on model/prompt changes and shows `—` during startup/unavailable data.
+
 **Recalibrate zeros** saves the current pan and tilt encoder positions as X=0°,
 Y=0°. Stop the motors, support the camera and position it at the intended zero,
 then click and confirm. No motion or EEPROM writes occur. Both fresh readings

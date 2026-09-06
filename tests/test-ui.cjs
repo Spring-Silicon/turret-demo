@@ -96,6 +96,24 @@ assert.equal(rows().length, 7);
 assert.equal(get("add-prompt").disabled, false);
 console.log("validated per-category counts, draft/stale states and single add button");
 
+run(`globalThis.fpsDetection = {state: "running", model: "sam3.1", revision: 1,
+  frame_sequence: 100, latency_ms: 1, frame_age_ms: 100};`);
+assert.equal(run('detectionFps(fpsDetection, 0)'), null);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 102}, 200)'), null);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 106}, 600)'), 10);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 106}, 800)'), 7.5); // Duplicate poll, not a new frame.
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 106}, 3000)'), 0); // Stalled worker.
+assert.equal(run('detectionFps({...fpsDetection, revision: 2, frame_sequence: 107}, 3200)'), null);
+assert.equal(run('detectionFps({...fpsDetection, model: "yolo26x", revision: 3, frame_sequence: 108}, 3400)'), null);
+assert.equal(run('detectionFps({...fpsDetection, model: "yolo26x", revision: 3, frame_sequence: 118}, 4400)'), 10);
+assert.equal(run('detectionFps({...fpsDetection, state: "compiling"}, 4600)'), null);
+assert.equal(run('fpsSamples.length'), 0);
+assert.equal(run('detectionFps({...fpsDetection, frame_age_ms: 6000}, 4800)'), null);
+assert.equal(run('detectionFps(fpsDetection, 5000)'), null);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 99}, 5600)'), null); // Restarted sequence.
+run('detectionFps(null);');
+console.log("validated measured detection FPS, skipped/duplicate polls, stalls and model/prompt resets");
+
 run(`status.servo = {online: true, ready: true, armed: false, axes: {
   x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
   y: {degrees: -3, goal_degrees: null, min_degrees: -30, max_degrees: 30, torque: false}

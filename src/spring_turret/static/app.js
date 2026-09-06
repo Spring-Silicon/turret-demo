@@ -34,6 +34,29 @@ const boxTargets = document.getElementById("box-targets");
 const boxButtons = new Map();
 let frameDetection = null;
 let loadingDetection = null;
+let fpsRevision = null;
+let fpsSamples = [];
+
+function detectionFps(detection, now = performance.now()) {
+  if (!isDetectionFresh(detection) || !Number.isInteger(detection.frame_sequence)) {
+    fpsRevision = null;
+    fpsSamples = [];
+    return null;
+  }
+  const revision = `${detection.model}:${detection.revision}`;
+  const sequence = detection.frame_sequence;
+  if (revision !== fpsRevision || sequence < fpsSamples.at(-1)?.sequence) {
+    fpsRevision = revision;
+    fpsSamples = [];
+  }
+  // Count completed worker frames, including those between browser polls.
+  // Repeated responses add no frames; their elapsed time lets stalls reach 0.
+  fpsSamples.push({time: now, sequence});
+  while (fpsSamples.length > 1 && fpsSamples[1].time <= now - 2000) fpsSamples.shift();
+  const first = fpsSamples[0];
+  const elapsed = now - first.time;
+  return elapsed >= 500 ? 1000 * (sequence - first.sequence) / elapsed : null;
+}
 
 function clickableFrame() {
   return frameDetection?.state === "running" && status?.camera?.online &&
@@ -295,8 +318,9 @@ function renderDetection(detection) {
     compiling: `Compiling ${name}…`, validating: "Validating detector…", capturing: "Capturing SYCL graph…",
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
+  const fps = detectionFps(detection);
   detectionMessage.textContent = promptError || detection?.error || (fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${detection.latency_ms} ms · ${detection.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile"} + SYCL graphs`
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms · ${detection.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile"} + SYCL graphs`
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";
@@ -488,6 +512,9 @@ async function poll() {
   } catch (error) {
     showMessage(error.message, true);
     updatePromptCounts(null);
+    detectionFps(null);
+    detectionMessage.textContent = "Detector connection lost";
+    detectionMessage.classList.add("error");
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
     boxTargets.hidden = true;
   } finally {
