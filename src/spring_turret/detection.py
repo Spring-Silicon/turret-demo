@@ -75,11 +75,15 @@ class WorkerClient:
         self.previous_prompts = None
 
     def launch(self) -> None:
+        from .sam31_w8a8 import packed_profile, verify_graphics
+        sam_bundle = self.config.get("sam31_w8a8_development_bundle")
+        packed = (self.config.get("model", "sam3.1") == "sam3.1" and sam_bundle is not None
+                  and packed_profile(Path(sam_bundle)))
         cache = Path(self.config["cache_dir"])
         if self.config.get("model") == "yolo26x":
             cache /= "yolo26x"
         elif self.config.get("sam31_w8a8_development_bundle"):
-            cache /= "sam31-israel-w8a8"
+            cache /= "sam31-israel-w8a8-packed" if packed else "sam31-israel-w8a8"
         elif self.config.get("sam31_native_bundle"):
             cache /= "sam31-native"
         cache.mkdir(parents=True, exist_ok=True)
@@ -99,6 +103,8 @@ class WorkerClient:
             # Custom ops use Torch's SYCL ABI, not the dense graphs runner's
             # isolated oneAPI runtime. No system-wide library changes.
             env["LD_LIBRARY_PATH"] = str(Path(self.config["python"]).parent.parent / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
+            if packed:
+                env["LD_LIBRARY_PATH"] = str(verify_graphics(Path(sam_bundle))) + ":" + env["LD_LIBRARY_PATH"]
         if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_native_bundle"):
             # Parent-owned so an interrupted/killed compile cannot leak shared
             # buffers in /dev/shm. Each worker gets an isolated directory.

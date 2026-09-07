@@ -27,7 +27,7 @@ if __package__:
     from .prompts import COLORS, normalize_prompts
     from .sam31_graph import CompiledStage
     from .sam31_native import NativeImageStage
-    from .sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
+    from .sam31_w8a8 import W8A8ImageStage, PackedHeadStage, packed_profile, configure_source as configure_w8a8_source
     from .sam31_preprocess import ExactImagePreprocessor
     from .worker_protocol import JPEG_BYTES, iter_requests
     from .prefetch import LatestPreparation, RequestInbox
@@ -35,7 +35,7 @@ else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
     from sam31_native import NativeImageStage
-    from sam31_w8a8 import W8A8ImageStage, configure_source as configure_w8a8_source
+    from sam31_w8a8 import W8A8ImageStage, PackedHeadStage, packed_profile, configure_source as configure_w8a8_source
     from sam31_preprocess import ExactImagePreprocessor
     from worker_protocol import JPEG_BYTES, iter_requests
     from prefetch import LatestPreparation, RequestInbox
@@ -433,6 +433,10 @@ class Sam31Engine:
         if type(allow_unqualified_w8a8) is not bool or (allow_unqualified_w8a8 and w8a8_development_bundle is None):
             raise ValueError("Unqualified execution requires an explicit W8A8 development bundle")
         self.allow_unqualified_w8a8 = allow_unqualified_w8a8
+        self.packed_bundle = (w8a8_development_bundle if w8a8_development_bundle is not None
+                              and packed_profile(w8a8_development_bundle) else None)
+        if self.packed_bundle is not None and grounding_batch_size != 1:
+            raise ValueError("Retained packed heads require batch size 1; multiple prompts still share one image")
         if native_bundle is not None and w8a8_development_bundle is not None:
             raise ValueError("Select only one SAM image bundle")
         if w8a8_development_bundle is not None:
@@ -589,8 +593,11 @@ class Sam31Engine:
             memory = torch.cat([value[0] for value in group], dim=1)
             mask = torch.cat([value[1] for value in group], dim=0)
             if batch not in self.grounding_stages:
-                self.grounding_stages[batch] = CompiledStage(
-                    torch, self.head, f"grounding-{batch}", self._progress
+                packed = getattr(self, "packed_bundle", None)
+                self.grounding_stages[batch] = (
+                    PackedHeadStage(torch, self.head, f"packed-grounding-{batch}", self._progress, packed)
+                    if packed is not None else
+                    CompiledStage(torch, self.head, f"grounding-{batch}", self._progress)
                 )
             outputs = self.grounding_stages[batch](*features, memory, mask)
             # Later chunks reuse the same static graph outputs. Own the useful

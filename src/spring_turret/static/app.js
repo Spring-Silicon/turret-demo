@@ -352,7 +352,7 @@ function renderDetection(detection) {
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
   const fps = detectionFps(detection);
-  const imageMode = detection?.image_backend === "israel-w8a8-development"
+  const imageMode = ["israel-w8a8-development", "israel-w8a8-packed-development"].includes(detection?.image_backend)
     ? "W8A8 dev (accuracy unqualified) · torch.compile"
     : detection?.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile";
   const loopMs = detection?.pipeline_timing?.cycle_ms;

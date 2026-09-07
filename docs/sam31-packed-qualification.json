@@ -1,0 +1,2699 @@
+{
+  "copy_parity_passed": true,
+  "accuracy_qualified": false,
+  "frames": [
+    {
+      "frame": 0,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 1,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 2,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 3,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 4,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 5,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 6,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 7,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 8,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 9,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 10,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 11,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 12,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 13,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 14,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 15,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 16,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 17,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 18,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 19,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 20,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 21,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 22,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 23,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    },
+    {
+      "frame": 0,
+      "source_and_replay_exact": [
+        true,
+        true
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "frame": 0,
+      "prompt": "swan",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000672,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.6e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.004628,
+      "max_all_query_score_error": 0.040694,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 6.4e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 0,
+      "prompt": "bird",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000567,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 4e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.005543,
+      "max_all_query_score_error": 0.017124,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000117,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 0,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000198,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.003427,
+      "max_all_query_score_error": 0.050516,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000106,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 1,
+      "prompt": "swan",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000164,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 5e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000919,
+      "max_all_query_score_error": 0.024481,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 3.8e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 1,
+      "prompt": "bird",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000589,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 3e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001791,
+      "max_all_query_score_error": 0.03614,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 5.6e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 1,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000388,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.013649,
+      "max_all_query_score_error": 0.013649,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 5.8e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 2,
+      "prompt": "car",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00135,
+        "compared_boxes": 9,
+        "max_box_coordinate_error": 1.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.007245,
+      "max_all_query_score_error": 0.083271,
+      "compared_boxes": 9,
+      "max_box_coordinate_error": 0.000707,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 2,
+      "prompt": "vehicle",
+      "original_head_drift": {
+        "max_confidence_error": 0.000436,
+        "max_all_query_score_error": 0.002234,
+        "compared_boxes": 10,
+        "max_box_coordinate_error": 1.8e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.01118,
+      "max_all_query_score_error": 0.185438,
+      "compared_boxes": 10,
+      "max_box_coordinate_error": 0.000598,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 2,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.002252,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 1.7e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001838,
+      "max_all_query_score_error": 0.181377,
+      "compared_boxes": 3,
+      "max_box_coordinate_error": 0.000153,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 3,
+      "prompt": "car",
+      "original_head_drift": {
+        "max_confidence_error": 0.000375,
+        "max_all_query_score_error": 0.001336,
+        "compared_boxes": 5,
+        "max_box_coordinate_error": 1.6e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.012122,
+      "max_all_query_score_error": 0.143219,
+      "compared_boxes": 6,
+      "max_box_coordinate_error": 0.000375,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 3,
+      "prompt": "vehicle",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.006469,
+        "compared_boxes": 7,
+        "max_box_coordinate_error": 3.1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.013363,
+      "max_all_query_score_error": 0.223256,
+      "compared_boxes": 7,
+      "max_box_coordinate_error": 0.000375,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 3,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.003381,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.024806,
+      "max_all_query_score_error": 0.08467,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000298,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 4,
+      "prompt": "swan",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000694,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001728,
+      "max_all_query_score_error": 0.054185,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 8.6e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 4,
+      "prompt": "bird",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001287,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 5e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.003176,
+      "max_all_query_score_error": 0.134789,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000295,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 4,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000205,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.3e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.003628,
+      "max_all_query_score_error": 0.03423,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.00021,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 5,
+      "prompt": "swan",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000101,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 5e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.002761,
+      "max_all_query_score_error": 0.010441,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000161,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 5,
+      "prompt": "bird",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.002323,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001409,
+      "max_all_query_score_error": 0.0419,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000147,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 5,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000248,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.011559,
+      "max_all_query_score_error": 0.013724,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000175,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 6,
+      "prompt": "car",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000307,
+        "compared_boxes": 4,
+        "max_box_coordinate_error": 8e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000985,
+      "max_all_query_score_error": 0.078255,
+      "compared_boxes": 4,
+      "max_box_coordinate_error": 9.9e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 6,
+      "prompt": "vehicle",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00072,
+        "compared_boxes": 4,
+        "max_box_coordinate_error": 9e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.00192,
+      "max_all_query_score_error": 0.03679,
+      "compared_boxes": 4,
+      "max_box_coordinate_error": 0.000108,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 6,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.000469,
+        "max_all_query_score_error": 0.001038,
+        "compared_boxes": 6,
+        "max_box_coordinate_error": 1.7e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.003907,
+      "max_all_query_score_error": 0.067665,
+      "compared_boxes": 6,
+      "max_box_coordinate_error": 0.000127,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 7,
+      "prompt": "car",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000395,
+        "compared_boxes": 6,
+        "max_box_coordinate_error": 2.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001452,
+      "max_all_query_score_error": 0.022458,
+      "compared_boxes": 6,
+      "max_box_coordinate_error": 0.001589,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 7,
+      "prompt": "vehicle",
+      "original_head_drift": {
+        "max_confidence_error": 0.000402,
+        "max_all_query_score_error": 0.001339,
+        "compared_boxes": 12,
+        "max_box_coordinate_error": 0.000144
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.009156,
+      "max_all_query_score_error": 0.089694,
+      "compared_boxes": 12,
+      "max_box_coordinate_error": 0.001325,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 7,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.013284,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.019199,
+      "max_all_query_score_error": 0.275666,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 6.5e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 8,
+      "prompt": "camel",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00025,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.4e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000486,
+      "max_all_query_score_error": 0.033196,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 4.2e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 8,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00021,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 8e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.02802,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 6.8e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 8,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 5e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 9,
+      "prompt": "camel",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001197,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 9e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.352516,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.00013,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 9,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.019967,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.005557,
+      "max_all_query_score_error": 0.383839,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000125,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 9,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.000212,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 10,
+      "prompt": "goat",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000214,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.011166,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 9e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 10,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000129,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000923,
+      "max_all_query_score_error": 0.019666,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 8.2e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 10,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 3e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 11,
+      "prompt": "goat",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000143,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 6e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.00365,
+      "max_all_query_score_error": 0.006345,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000229,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 11,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000168,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001871,
+      "max_all_query_score_error": 0.064816,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000112,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 11,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 2e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 12,
+      "prompt": "horse",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000459,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001899,
+      "max_all_query_score_error": 0.048761,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.001836,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 12,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000467,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 5e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000939,
+      "max_all_query_score_error": 0.098642,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000242,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 12,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000268,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 8e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.016837,
+      "max_all_query_score_error": 0.044218,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.001436,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 13,
+      "prompt": "horse",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000862,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.6e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.030076,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000248,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 13,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00037,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.066146,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 8.6e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 13,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000674,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 5e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001672,
+      "max_all_query_score_error": 0.019922,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000345,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 14,
+      "prompt": "dog",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000112,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001847,
+      "max_all_query_score_error": 0.005245,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000206,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 14,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000161,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 8e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.017124,
+      "max_all_query_score_error": 0.017124,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000181,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 14,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 2e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 15,
+      "prompt": "dog",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000129,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 2.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.001839,
+      "max_all_query_score_error": 0.003001,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000104,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 15,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.000893,
+        "max_all_query_score_error": 0.000893,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 2e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000769,
+      "max_all_query_score_error": 0.010479,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000111,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 15,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 2e-06,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 6.5e-05,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 16,
+      "prompt": "cow",
+      "original_head_drift": {
+        "max_confidence_error": 0.000945,
+        "max_all_query_score_error": 0.000945,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 4e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.013596,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 9.8e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 16,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000369,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.004669,
+      "max_all_query_score_error": 0.007154,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 8.3e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 16,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 1e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 17,
+      "prompt": "cow",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000104,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.3e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000959,
+      "max_all_query_score_error": 0.00558,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000103,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 17,
+      "prompt": "animal",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000212,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000936,
+      "max_all_query_score_error": 0.010815,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000123,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 17,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 1e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 18,
+      "prompt": "car",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000593,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.006449,
+      "max_all_query_score_error": 0.050696,
+      "compared_boxes": 3,
+      "max_box_coordinate_error": 0.000326,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 18,
+      "prompt": "vehicle",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.002155,
+        "compared_boxes": 5,
+        "max_box_coordinate_error": 1.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.006066,
+      "max_all_query_score_error": 0.147966,
+      "compared_boxes": 5,
+      "max_box_coordinate_error": 0.000271,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 18,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001035,
+        "compared_boxes": 8,
+        "max_box_coordinate_error": 4.6e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.008953,
+      "max_all_query_score_error": 0.103786,
+      "compared_boxes": 8,
+      "max_box_coordinate_error": 0.000394,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 19,
+      "prompt": "car",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.007352,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 4e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.011648,
+      "max_all_query_score_error": 0.0761,
+      "compared_boxes": 2,
+      "max_box_coordinate_error": 0.000487,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 19,
+      "prompt": "vehicle",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001869,
+        "compared_boxes": 5,
+        "max_box_coordinate_error": 8e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.012374,
+      "max_all_query_score_error": 0.194069,
+      "compared_boxes": 5,
+      "max_box_coordinate_error": 0.000431,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 19,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00451,
+        "compared_boxes": 5,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.012503,
+      "max_all_query_score_error": 0.24461,
+      "compared_boxes": 5,
+      "max_box_coordinate_error": 0.000187,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 20,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000393,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 4e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000946,
+      "max_all_query_score_error": 0.026079,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 2.8e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 20,
+      "prompt": "man",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000201,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 2.6e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.000466,
+      "max_all_query_score_error": 0.009535,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 2.4e-05,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 20,
+      "prompt": "building",
+      "original_head_drift": {
+        "max_confidence_error": 0.00093,
+        "max_all_query_score_error": 0.001558,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 6e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.008722,
+      "max_all_query_score_error": 0.036275,
+      "compared_boxes": 2,
+      "max_box_coordinate_error": 0.000234,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 21,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.000518,
+        "max_all_query_score_error": 0.00261,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 0.000223
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.012102,
+      "max_all_query_score_error": 0.041694,
+      "compared_boxes": 2,
+      "max_box_coordinate_error": 0.00137,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 21,
+      "prompt": "man",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000839,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 3.7e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.003225,
+      "max_all_query_score_error": 0.012842,
+      "compared_boxes": 2,
+      "max_box_coordinate_error": 0.002189,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 21,
+      "prompt": "building",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000303,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 7e-06
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.004869,
+      "max_all_query_score_error": 0.017313,
+      "compared_boxes": 2,
+      "max_box_coordinate_error": 0.000142,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 22,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.000565,
+        "max_all_query_score_error": 0.003566,
+        "compared_boxes": 29,
+        "max_box_coordinate_error": 6.2e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "passed": false,
+      "error": "Tensor-likes are not close!\n\nMismatched elements: 2 / 30 (6.7%)\nGreatest absolute difference: 0.7541427612304688 at index (17,) (up to 0.03 allowed)\nGreatest relative difference: 13.31943130493164 at index (28,) (up to 0 allowed)",
+      "confidence_passed": false,
+      "boxes_passed": false
+    },
+    {
+      "frame": 22,
+      "prompt": "woman",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000793,
+        "compared_boxes": 13,
+        "max_box_coordinate_error": 1.7e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "passed": false,
+      "error": "Tensor-likes are not close!\n\nMismatched elements: 2 / 14 (14.3%)\nGreatest absolute difference: 0.7917168140411377 at index (6,) (up to 0.03 allowed)\nGreatest relative difference: 27.027315139770508 at index (6,) (up to 0 allowed)",
+      "confidence_passed": false,
+      "boxes_passed": false
+    },
+    {
+      "frame": 22,
+      "prompt": "dress",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00143,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.5e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "max_confidence_error": 0.01044,
+      "max_all_query_score_error": 0.303723,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000454,
+      "passed": true,
+      "confidence_passed": true,
+      "boxes_passed": true
+    },
+    {
+      "frame": 23,
+      "prompt": "person",
+      "original_head_drift": {
+        "max_confidence_error": 0.000443,
+        "max_all_query_score_error": 0.004094,
+        "compared_boxes": 44,
+        "max_box_coordinate_error": 4.4e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "passed": false,
+      "error": "Tensor-likes are not close!\n\nMismatched elements: 13 / 54 (24.1%)\nGreatest absolute difference: 0.6181607246398926 at index (47,) (up to 0.03 allowed)\nGreatest relative difference: 7.914896011352539 at index (47,) (up to 0 allowed)",
+      "confidence_passed": false,
+      "boxes_passed": false
+    },
+    {
+      "frame": 23,
+      "prompt": "woman",
+      "original_head_drift": {
+        "max_confidence_error": 0.000472,
+        "max_all_query_score_error": 0.002184,
+        "compared_boxes": 28,
+        "max_box_coordinate_error": 4.9e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "passed": false,
+      "error": "Tensor-likes are not close!\n\nMismatched elements: 2 / 30 (6.7%)\nGreatest absolute difference: 0.3681086301803589 at index (14,) (up to 0.03 allowed)\nGreatest relative difference: 2.371716260910034 at index (19,) (up to 0 allowed)",
+      "confidence_passed": false,
+      "boxes_passed": false
+    },
+    {
+      "frame": 23,
+      "prompt": "dress",
+      "original_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.0061,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.1e-05
+      },
+      "source_heads_exact": [
+        true,
+        true,
+        true
+      ],
+      "passed": false,
+      "error": "Tensor-likes are not close!\n\nMismatched elements: 1 / 1 (100.0%)\nGreatest absolute difference: 0.03150451183319092 at index (0,) (up to 0.03 allowed)\nGreatest relative difference: 0.05280136689543724 at index (0,) (up to 0 allowed)",
+      "confidence_passed": false,
+      "boxes_passed": true
+    }
+  ],
+  "failures": {
+    "confidence": 5,
+    "boxes": 4
+  },
+  "no_incremental_development_failures": true,
+  "packed_head_proof": true,
+  "image_replay_ms": 74.71553300047162,
+  "image_proof": {
+    "source": "israel",
+    "accuracy_qualified": false,
+    "source_confidence_failures": 5,
+    "source_box_failures": 4,
+    "report_sha256": "97f11d19c6afeba545833286c1ad6a505944931c80aeaea5f15e1e188eaa54ee",
+    "direct_replay_passed": true,
+    "retained_config_sha256": "c7985199c70ead9b4b6735b4c8ae9599135b1eeb597f759506b68b12a77e51b7",
+    "mlp": "cached-recip-vec16",
+    "heads": "packed512-rounded",
+    "graphics_runtime": "israel-26.27-igc-2.38.5"
+  },
+  "camera_checks": [
+    {
+      "image": "01.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0.000804,
+        "max_all_query_score_error": 0.002317,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.2e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.003121,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.9e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "01.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000375,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001637,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "01.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0.002239,
+        "max_all_query_score_error": 0.015896,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 5.9e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 3,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.000531,
+        "max_all_query_score_error": 0.032766,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 0.000115
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "01.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 2.2e-05,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.005241,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "02.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.000421,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.001567,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "02.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.004603,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.008381,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 3e-06
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "02.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001824,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 3.3e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 3,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.021925,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 1.6e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "02.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 2e-06,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 4e-06,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "03.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.017319,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 8e-06
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.018878,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 3e-06
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "03.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001234,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 0.000149
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 3,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.000511,
+        "max_all_query_score_error": 0.010542,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 0.000123
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "03.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 2.4e-05,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 6.4e-05,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "03.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.001465,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.001004,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "04.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0.000514,
+        "max_all_query_score_error": 0.002003,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 2.3e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 2,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.000514,
+        "max_all_query_score_error": 0.007618,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 1.8e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "04.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001529,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 3.3e-05
+      },
+      "original_dense_gates": [
+        false,
+        true
+      ],
+      "packed_dense_gates": [
+        false,
+        true
+      ],
+      "detection_count": 2,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00096,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 3.8e-05
+      },
+      "deployed_baseline_dense_gates": [
+        false,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        false,
+        true
+      ]
+    },
+    {
+      "image": "04.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000904,
+        "compared_boxes": 4,
+        "max_box_coordinate_error": 1.6e-05
+      },
+      "original_dense_gates": [
+        false,
+        true
+      ],
+      "packed_dense_gates": [
+        false,
+        true
+      ],
+      "detection_count": 4,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.007435,
+        "compared_boxes": 4,
+        "max_box_coordinate_error": 1.9e-05
+      },
+      "deployed_baseline_dense_gates": [
+        false,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        false,
+        true
+      ]
+    },
+    {
+      "image": "04.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.003487,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.00328,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "05.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.006391,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.2e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.020735,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 3e-06
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "05.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000495,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 7e-06
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.000853,
+        "max_all_query_score_error": 0.001492,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 8e-06
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "05.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.003941,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 1.6e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 3,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.000609,
+        "max_all_query_score_error": 0.035163,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 3.7e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "05.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.000176,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.001028,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "06.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 3e-06,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 5e-06,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "06.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.0001,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.000529,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "06.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001298,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 9e-06
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 3,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.005511,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 9e-06
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "06.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.000111,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.00128,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "07-current.jpg",
+      "prompt": "face",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.000643,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 3e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 2,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.00133,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 2.2e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "07-current.jpg",
+      "prompt": "person",
+      "old_head_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.001179,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 3.1e-05
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 3,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.0,
+        "max_all_query_score_error": 0.003838,
+        "compared_boxes": 3,
+        "max_box_coordinate_error": 5.8e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "07-current.jpg",
+      "prompt": "chair",
+      "old_head_drift": {
+        "max_confidence_error": 0.000133,
+        "max_all_query_score_error": 0.000614,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 6e-06
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 1,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0.000133,
+        "max_all_query_score_error": 0.00429,
+        "compared_boxes": 1,
+        "max_box_coordinate_error": 1.3e-05
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    },
+    {
+      "image": "07-current.jpg",
+      "prompt": "bottle",
+      "old_head_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.00037,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "original_dense_gates": [
+        true,
+        true
+      ],
+      "packed_dense_gates": [
+        true,
+        true
+      ],
+      "detection_count": 0,
+      "deployed_baseline_drift": {
+        "max_confidence_error": 0,
+        "max_all_query_score_error": 0.000806,
+        "compared_boxes": 0,
+        "max_box_coordinate_error": 0
+      },
+      "deployed_baseline_dense_gates": [
+        true,
+        true
+      ],
+      "candidate_vs_baseline_dense_gates": [
+        true,
+        true
+      ]
+    }
+  ],
+  "no_incremental_camera_failures": true,
+  "deployed_baseline_checked": true
+}

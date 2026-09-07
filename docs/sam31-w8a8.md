@@ -5,13 +5,15 @@ Israel's 24-frame/72-case development set still fails five confidence and four
 retained-box checks. Its 80% roofline target is unproven. The UI and API expose
 that status; no threshold, dense reference, or servo safety limit is changed.
 
-Only the shared image encoder changes. The image linears use SmoothQuant W8A8
+In the original profile, only the shared image encoder changes. The image linears use SmoothQuant W8A8
 (alpha .65, original activation maxima and retained bias correction), grouped
 native QKV/RoPE and queued native MLP kernels. Attention/convolutions remain
 dense. This is **not one whole-image megakernel**. Text is still cached and each
 class runs the unchanged compiled grounding heads. Everything executes in one
 Torch XPU process with explicit SYCL graphs; the prior dense native image's
-host IPC/upload/download boundary is absent.
+host IPC/upload/download boundary is absent. Release 0.15.4 also supports the
+retained packed-head profile described below; it does change the grounding
+implementation, while retaining the independent original dense reference.
 
 Source: `spring@israel:/home/spring/sam3_1`, SAM commit
 `660a5e9e1b8b4c02c0ad97229b88a09a6e4ff5b7`. Runtime code comes from the retained
@@ -30,6 +32,97 @@ Retained binaries:
 Source measurements: 74.02/74.49 ms image replay (GPU0/GPU1); GPU1 full worker
 107.50/122.30/151.30/209.59 ms for 1/2/4/8 prompts. These are Israel results,
 not guarantees for another host or browser/camera/servo end-to-end latency.
+
+## Current retained packed profile (0.15.4)
+
+Israel's retained recipe is `engine_only_retained_packed_config.json`, SHA-256
+`c7985199c70ead9b4b6735b4c8ae9599135b1eeb597f759506b68b12a77e51b7`.
+It adds cached-reciprocal vector-16 MLP execution and native split-512 decoder
+attention with compact positional bias. It retains the same checkpoint, image
+calibration, resolution, confidence threshold, text encoder and FP32 master
+weights. The six decoder layers use corrected explicit FP16 rounding in the
+axis MLP, not the rejected initial packed-mask prototype.
+
+```sh
+bash scripts/copy-sam31-w8a8.sh spring@israel spring@spring-edge-2-1 packed
+```
+
+The packed manifest extends (does not replace) the original manifest. All helper
+sources, libraries, build metadata and source parity evidence are hash-pinned.
+An original bundle without the retained config continues to select the old
+implementation for rollback. The packed profile requires grounding batch size 1;
+up to eight class prompts still share one image encoding, followed by a cached
+text embedding and one packed head pass per prompt. No prompts are dropped.
+
+New binaries:
+
+- `joint_mlp_cached_recip_vec16.so`: `bbb4c548e66b46dffbafed93f8bf01656d86ad0d5490f67a93e3039ab4aa360e`
+- `joint_head_attention_packed512.so`: `4c62c5864217e51918fa3d363def33949d0e980c521bd2fbeff596b10b8ac4db`
+
+**The user-space GPU compiler/runtime is part of this profile.** On spring-edge-2,
+the installed Intel 26.31 / IGC 2.40.13 runtime did not reproduce Israel's saved
+head outputs (the image features still matched). Copying Israel's Intel 26.27 /
+IGC 2.38.5 libraries restored bitwise head parity across all 72 source cases.
+The copy script includes these five hash-pinned libraries under
+`runtime/graphics`; `w8a8_graphics_manifest.json` records their identities.
+The parent sets `LD_LIBRARY_PATH` before launching **only the packed SAM worker**.
+No system package, installed driver, kernel, service-wide environment or YOLO
+runtime is changed. The worker rejects an incorrectly loaded Level Zero library.
+Packed SAM uses its own `sam31-israel-w8a8-packed` compiler cache.
+
+Israel measured 85.00/84.98 ms (GPU0/GPU1) for a **single resident graph** containing
+image, one cached-prompt head and device decode. Those numbers exclude input
+copies and CPU/camera/network work. The demo retains its separately measured
+image/head graphs and lossless latest-frame CPU overlap; use live measurements
+for the delivered FPS rather than substituting the source engine-only number.
+
+The new MLP preserves the old image features exactly. Native attention is **not
+bitwise-identical to the original Torch heads**. Source development checks retain
+the same 5 confidence and 4 box failure identities, with no changed detection
+keep masks or new failures across 72 cases. These reused development checks do
+not establish independent accuracy qualification or guarantee unseen-data parity.
+No tolerances are widened. Dense-reference execution is outside the native-head
+patch context; the context restores on success and failure and is not reentered
+for graph replay.
+
+Destination qualification additionally requires exact Israel image/head output
+parity, direct/replay checks, old-head drift gates, identical detection sets and
+unchanged failure identities. Pass `--images /path/to/camera-jpegs` to test old
+versus packed heads and both versus dense on additional camera frames, using
+`face`, `person`, `chair` and `bottle`. Any new gate or detection-set failure aborts
+this test; the service's development report-only flag cannot waive it.
+For packed-profile command-line tests, prepend
+`/absolute/copied-bundle/runtime/graphics` to `LD_LIBRARY_PATH` **before Python
+starts** and use a separate compiler cache. `tests/capture-sam31-reference.py`
+can first capture the installed release's original outputs, using its normal
+library path and installed package in `PYTHONPATH`. Pass that output with
+`--baseline` to compare against the actually deployed model/runtime, not merely
+the original head running under the candidate runtime.
+
+Destination result: [qualification report](sam31-packed-qualification.json).
+All 72 source head cases and 25 changed/return-to-first image replays matched
+source bits. Seven camera images times four prompts passed with identical
+detection sets (35 detections total), including comparison against captured
+0.15.3 outputs using the original installed graphics runtime. Maximum meaningful
+confidence drift was 0.000853; maximum normalized box-coordinate drift was
+0.000123 (less than 0.16 pixels at 1280px). All 28 camera cases passed both dense
+gates; the source set's pre-existing 5/4 failures and identities remain unchanged.
+
+Live `face` prompt, same boot/B580, 1280x720@30, motors off: the pre-update 15s
+sample delivered 10.58 FPS; the [30s packed sample](sam31-packed-throughput.json)
+delivered **10.98 FPS** (331 results), approximately 3.8% higher. Mean image time
+fell 75.26 to 74.07 ms, grounding 14.17 to 12.24 ms, and total processing loop
+94.75 to 91.15 ms. Model plus device postprocessing was approximately 86.8 ms.
+These are local paired-JPEG delivery measurements, not exposure-to-display
+latency; preprocessing overlap and camera/network overhead remain present.
+The live `face` startup dense-reference check also passed.
+
+Release 0.15.4 retains the prior release/config/bundle for rollback. Its final
+wheel (including the packed-backend accuracy label) has SHA-256
+`e51695d80d22f400ac6ce41182fc37e54f1b1326fc47f806ee761e19279a7780`.
+The UI-only final wheel's Python files were compared byte-for-byte with the
+qualified/deployed wheel. Repository validation passes 128 Python tests and the
+UI/JavaScript contracts. Independent full accuracy qualification remains pending.
 
 ## Copy and verify
 

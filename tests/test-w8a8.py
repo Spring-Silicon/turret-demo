@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """No GPU needed: W8A8 source identity, safe helper loading and isolated routing."""
 import ast
+from contextlib import contextmanager
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,75 @@ from spring_turret.sam31_worker import Sam31Engine, check_detection_candidate
 
 
 class W8A8Tests(unittest.TestCase):
+    def test_packed_patches_end_before_reference_and_are_not_reentered_for_replay(self):
+        events = []
+        @contextmanager
+        def context(library):
+            events.append("patched")
+            try:
+                yield {"invocations": [None] * 18}
+            finally:
+                events.append("restored")
+        value = SimpleNamespace(clone=lambda: value)
+        stage = w8.PackedHeadStage.__new__(w8.PackedHeadStage)
+        stage.library, stage.graph, stage.inputs = Path("/kernel"), None, (value,)
+        stage.torch = SimpleNamespace(equal=lambda a, b: True,
+                                     isfinite=lambda x: SimpleNamespace(all=lambda: True))
+        stage.compiled = lambda *args: (value,)
+        def run(*args):
+            stage.graph = object()
+            return (value,)
+        with patch.dict(sys.modules, {"packed_head_attention": SimpleNamespace(packed_heads=context)}), \
+                patch.object(w8.CompiledStage, "__call__", side_effect=run):
+            stage(value)
+            self.assertTrue(stage.direct_replay_passed)
+            self.assertEqual(events, ["patched", "restored"])
+            stage(value)
+            self.assertEqual(events, ["patched", "restored"])
+        stage.graph = None
+        with patch.dict(sys.modules, {"packed_head_attention": SimpleNamespace(packed_heads=context)}), \
+                patch.object(w8.CompiledStage, "__call__", side_effect=RuntimeError("compile failed")):
+            with self.assertRaises(RuntimeError):
+                stage(value)
+        self.assertEqual(events[-2:], ["patched", "restored"])
+
+    def test_packed_extension_is_pinned_without_breaking_original_bundle(self):
+        root, checkpoint = Path("/bundle"), Path("/checkpoint")
+        files = {**w8.PINNED_FILES, **w8.PACKED_FILES}
+        files.update({f"runtime/graphics/{name}": value for name, value in w8.GRAPHICS_FILES.items()})
+        def digest(path):
+            return w8.CHECKPOINT if path == checkpoint else files[str(path.relative_to(root))]
+        with patch.object(w8, "packed_profile", return_value=True), patch.object(w8, "digest", side_effect=digest):
+            w8.verify_bundle(root, checkpoint)
+        for name in {*w8.PACKED_FILES, *(f"runtime/graphics/{n}" for n in w8.GRAPHICS_FILES)}:
+            with self.subTest(name=name), patch.object(w8, "packed_profile", return_value=True), \
+                    patch.object(w8, "digest", side_effect=lambda p: "bad" if p == root/name else digest(p)):
+                with self.assertRaises(ValueError):
+                    w8.verify_bundle(root, checkpoint)
+
+    def test_packed_profile_rejects_unsupported_batch_before_loading_gpu(self):
+        with patch("spring_turret.sam31_worker.packed_profile", return_value=True):
+            for batch in (2, 4, 8):
+                with self.assertRaisesRegex(ValueError, "require batch size 1"):
+                    Sam31Engine(Path("/checkpoint"), 0, "float16", .5, True, batch,
+                                w8a8_development_bundle=Path("/bundle"))
+
+    def test_packed_graphics_are_pinned_only_for_sam_and_use_a_separate_cache(self):
+        with tempfile.TemporaryDirectory() as cache, \
+                patch.object(w8, "packed_profile", return_value=True), \
+                patch.object(w8, "verify_graphics", return_value=Path("/bundle/runtime/graphics")) as verify, \
+                patch("spring_turret.detection.subprocess.Popen") as launch:
+            config = {"enabled":True, "python":"/inference/venv/bin/python", "checkpoint":"/weights",
+                      "cache_dir":cache, "sam31_w8a8_development_bundle":"/bundle"}
+            WorkerClient(config).launch()
+            env = launch.call_args.kwargs["env"]
+            self.assertTrue(env["LD_LIBRARY_PATH"].startswith("/bundle/runtime/graphics:/inference/venv/lib:"))
+            self.assertIn("sam31-israel-w8a8-packed", env["TORCHINDUCTOR_CACHE_DIR"])
+            verify.assert_called_once_with(Path("/bundle"))
+            WorkerClient({**config,"model":"yolo26x"}).launch()
+            self.assertNotIn("/bundle/runtime/graphics", launch.call_args.kwargs["env"].get("LD_LIBRARY_PATH", ""))
+            verify.assert_called_once()
+
     def test_only_explicit_development_mode_can_report_accuracy_failures(self):
         values = [SimpleNamespace(shape=(1, 3), dtype="float32")] * 3
         with patch("spring_turret.sam31_worker.validate_detections", side_effect=AssertionError("confidence exceeded .03")):
