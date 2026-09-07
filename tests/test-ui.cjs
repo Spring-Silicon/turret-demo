@@ -351,6 +351,11 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   run('render({...status, detection: {...status.detection, pipeline_timing: undefined}});');
   assert.doesNotMatch(get("detection-status").textContent, /ms loop|NaN/);
   run('status.detection.image_backend = "torch.compile";');
+  run('render({...status, detection: {...status.detection, cuda_graph: true, sycl_graph: false}});');
+  assert.match(get("detection-status").textContent, /torch.compile \+ CUDA graphs/);
+  assert.doesNotMatch(get("detection-status").textContent, /SYCL/);
+  run('render({...status, detection: {...status.detection, cuda_graph: false, sycl_graph: true}});');
+  assert.match(get("detection-status").textContent, /SYCL graphs/);
   run(`loadingDetection = null; feedSource = "";
     detectionEvents.onopen();
     detectionEvents.onmessage({data: JSON.stringify({...status.detection, state: "running",

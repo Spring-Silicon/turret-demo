@@ -1,12 +1,17 @@
 """Synthetic known-ray checks, independent of the scene fitting optimizer."""
 import copy
 import math
+import os
 import random
+import stat
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
-from spring_turret.geometry import Geometry, body_ray, transform
+from spring_turret.geometry import Geometry, body_ray, transform, usb_identity
 from spring_turret.instances import InstanceAssociator
 
 def fixture():
@@ -24,6 +29,25 @@ def pose(x=0,y=0):
 
 class GeometryTests(unittest.TestCase):
     def setUp(self): self.g=Geometry(fixture())
+
+    def test_usb_identity_uses_device_number_not_container_alias_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = root / "usb"
+            device = usb / "interface"
+            device.mkdir(parents=True)
+            for key, value in {"idVendor":"0c45", "idProduct":"0261", "serial":"UC684"}.items():
+                (usb/key).write_text(value)
+            char = root/"char"/"81:2"
+            char.mkdir(parents=True)
+            (char/"device").symlink_to(device)
+            node = SimpleNamespace(stat=lambda:SimpleNamespace(st_mode=stat.S_IFCHR, st_rdev=os.makedev(81,2)))
+            def path(value):
+                return node if value == "/dev/camera-alias" else root/"char" if value == "/sys/dev/char" else Path(value)
+            with patch("spring_turret.geometry.Path", side_effect=path):
+                self.assertEqual(usb_identity("/dev/camera-alias"), "0c45:0261:UC684")
+            self.assertIsNone(usb_identity(str(usb/"serial")))
+            self.assertIsNone(usb_identity(str(root/"missing")))
 
     def test_pixel_ray_roundtrip_full_frame(self):
         for u in range(0,1281,80):

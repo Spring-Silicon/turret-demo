@@ -348,7 +348,7 @@ function renderDetection(detection) {
   updatePromptControls();
   const name = detection?.model === "yolo26x" ? "YOLO26x · 80 COCO classes" : "SAM 3.1";
   const labels = { disabled: "Inference not configured", idle: name, loading: `Loading ${name}…`,
-    compiling: `Compiling ${name}…`, validating: "Validating detector…", capturing: "Capturing SYCL graph…",
+    compiling: `Compiling ${name}…`, validating: "Validating detector…", capturing: "Capturing GPU graph…",
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
   const fps = detectionFps(detection);
@@ -358,7 +358,7 @@ function renderDetection(detection) {
   const loopMs = detection?.pipeline_timing?.cycle_ms;
   const loopTiming = Number.isFinite(loopMs) ? ` · ${Math.round(loopMs)} ms loop` : "";
   detectionMessage.textContent = promptError || detection?.error || (fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms model${loopTiming} · ${imageMode} + SYCL graphs`
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms model${loopTiming} · ${imageMode} + ${detection.cuda_graph ? "CUDA" : "SYCL"} graphs`
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";

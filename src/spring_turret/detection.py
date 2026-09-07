@@ -45,6 +45,13 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
+    if config.get("device_type", "xpu") not in ("xpu", "cuda"):
+        raise ValueError("inference.device_type must be xpu or cuda")
+    if config.get("device_type") == "cuda":
+        if config.get("sam31_native_bundle") or config.get("sam31_w8a8_development_bundle"):
+            raise ValueError("Intel native/W8A8 bundles require XPU")
+        if config.get("model") == "yolo26x" or config.get("yolo26x_checkpoint"):
+            raise ValueError("This CUDA deployment supports SAM 3.1 only")
     if type(config.get("sam31_cpu_prefetch", True)) is not bool:
         raise ValueError("inference.sam31_cpu_prefetch must be a boolean")
     if "sam31_native_bundle" in config and "sam31_w8a8_development_bundle" in config:
@@ -86,6 +93,8 @@ class WorkerClient:
             cache /= "sam31-israel-w8a8-packed" if packed else "sam31-israel-w8a8"
         elif self.config.get("sam31_native_bundle"):
             cache /= "sam31-native"
+        elif self.config.get("device_type") == "cuda":
+            cache /= "sam31-cuda"
         cache.mkdir(parents=True, exist_ok=True)
         (cache / "ultralytics").mkdir(exist_ok=True)
         env = {
@@ -119,6 +128,8 @@ class WorkerClient:
                 self.config["checkpoint"],
                 "--device",
                 str(self.config.get("device", 0)),
+                *(["--device-type", self.config.get("device_type", "xpu")]
+                  if self.config.get("model", "sam3.1") == "sam3.1" else []),
                 "--precision",
                 self.config.get("precision", "float16"),
                 "--confidence",
@@ -343,6 +354,7 @@ class DetectionController:
             )
             return {
                 "enabled": self.enabled,
+                "device_type": self.config.get("device_type", "xpu"),
                 "model": self.model,
                 "models": [{"id": key, "label": value["label"], "available": self.enabled and
                             (key == "sam3.1" or bool(self.config.get("yolo26x_checkpoint")))}
@@ -503,9 +515,10 @@ class DetectionController:
                         lambda stage: self._progress(revision, stage),
                         **extra,
                     )
-                    if not result.get("torch_compile") or not result.get("sycl_graph"):
+                    graph_key = "cuda_graph" if self.config.get("device_type") == "cuda" else "sycl_graph"
+                    if result.get("torch_compile") is not True or result.get(graph_key) is not True:
                         raise RuntimeError(
-                            "Model worker did not verify compiled SYCL graph execution"
+                            f"Model worker did not verify compiled {graph_key} execution"
                         )
                     worker_done = time.monotonic()
                     annotated = jpeg if result.get("client_overlay") is True else base64.b64decode(result.pop("jpeg"), validate=True)

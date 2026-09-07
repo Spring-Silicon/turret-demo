@@ -9,6 +9,9 @@ compiled image path remain available; activation is an explicit device setting.
 The faster, **accuracy-unqualified** Israel W8A8 candidate has a separate
 explicit [development setup](docs/sam31-w8a8.md); dense-reference gates remain unchanged.
 
+NVIDIA Thor uses [dense SAM 3.1 with CUDA compilation and graphs](docs/agxthor.md).
+The same camera/servo UI is retained; Intel binaries are not used on Thor.
+
 ## Current hardware status
 
 - Arducam 1080P Low Light (`0c45:0261`, serial `UC684`): 1280x720 MJPEG at

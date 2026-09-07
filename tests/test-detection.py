@@ -189,6 +189,8 @@ class DetectionTests(unittest.TestCase):
                 synchronize=lambda: None, get_device_name=lambda _: "test"
             ),
         )
+        engine.device_type = "xpu"
+        engine.runtime = engine.torch.xpu
         pixels = object()
         engine._pixels = lambda jpeg: pixels
         engine._prepare = lambda pixels, prompts: prompts
@@ -236,6 +238,13 @@ class DetectionTests(unittest.TestCase):
         self.assertTrue(overlay["client_overlay"])
         self.assertNotIn("jpeg", overlay)
         self.assertEqual(overlay["boxes"], result["boxes"])
+        self.assertTrue(result["sycl_graph"])
+        self.assertFalse(result["cuda_graph"])
+        engine.device_type = "cuda"
+        cuda = engine.detect_many(b"original", ["person"], client_overlay=True)
+        self.assertTrue(cuda["cuda_graph"])
+        self.assertFalse(cuda["sycl_graph"])
+        self.assertEqual(cuda["device_type"], "cuda")
 
     def test_text_cache_is_owned_bounded_and_reused_across_reordering(self):
         class Tensor:
@@ -324,6 +333,25 @@ class DetectionTests(unittest.TestCase):
         time.sleep(0.1)
         self.assertEqual(len(worker.requests), 1)
         self.assertTrue(worker.stopped)
+
+    def test_cuda_controller_requires_cuda_graph_and_compilation_proof(self):
+        for compiled, cuda in ((True, True), (True, False), (False, True)):
+            with self.subTest(compiled=compiled, cuda=cuda):
+                c, worker = self.controller()
+                c.config["device_type"] = "cuda"
+                original = worker.detect
+                def detect(*args, **kwargs):
+                    return {**original(*args, **kwargs), "torch_compile":compiled,
+                            "cuda_graph":cuda, "sycl_graph":not cuda}
+                worker.detect = detect
+                worker.release.set()
+                c.set_prompt("person")
+                expected = "running" if compiled and cuda else "error"
+                eventually(lambda: c.status()["state"] == expected)
+                if expected == "error":
+                    self.assertIn("compiled cuda_graph", c.status()["error"])
+                    self.assertNotIn("frame_url", c.status())
+                c.stop()
 
     def test_bad_prompts(self):
         c, _ = self.controller()

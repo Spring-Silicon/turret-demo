@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SAM 3.1 text-grounding worker for Intel XPU.
+"""SAM 3.1 text-grounding worker for Intel XPU and NVIDIA CUDA.
 
 The HTTP and hardware process deliberately keeps the multi-gigabyte model in a
 separate process. Requests use a JSON header plus raw JPEG bytes (legacy base64
@@ -429,7 +429,12 @@ class Sam31Engine:
         native_bundle: Path | None = None,
         w8a8_development_bundle: Path | None = None,
         allow_unqualified_w8a8: bool = False,
+        device_type: str = "xpu",
     ) -> None:
+        if device_type not in ("xpu", "cuda"):
+            raise ValueError("device_type must be xpu or cuda")
+        if device_type != "xpu" and (native_bundle is not None or w8a8_development_bundle is not None):
+            raise ValueError("Intel native/W8A8 bundles require XPU; use dense SAM on CUDA")
         if type(allow_unqualified_w8a8) is not bool or (allow_unqualified_w8a8 and w8a8_development_bundle is None):
             raise ValueError("Unqualified execution requires an explicit W8A8 development bundle")
         self.allow_unqualified_w8a8 = allow_unqualified_w8a8
@@ -449,19 +454,27 @@ class Sam31Engine:
         from sam3.model.geometry_encoders import Prompt
         from torchvision.transforms import v2
 
-        if not torch.xpu.is_available():
-            raise RuntimeError("PyTorch XPU is unavailable")
-        torch.xpu.set_device(device_index)
+        self.device_type = device_type
+        self.runtime = getattr(torch, device_type)
+        if not self.runtime.is_available():
+            raise RuntimeError(f"PyTorch {device_type.upper()} is unavailable")
+        self.runtime.set_device(device_index)
+        if device_type == "cuda":
+            # Preserve the dense reference's FP32 operations. No TF32 shortcut
+            # or reduced-precision accumulation is required by compilation.
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
         torch.set_grad_enabled(False)
         self.torch = torch
         self.Image = Image
-        self.device = torch.device(f"xpu:{device_index}")
+        self.device = torch.device(f"{device_type}:{device_index}")
         self.dtype = torch.float16 if precision == "float16" else torch.bfloat16
         if native_bundle is not None and precision != "float16":
             raise ValueError("native SAM requires float16 autocast with FP32 master weights")
         self.confidence = confidence
         if not use_sycl_graph:
-            raise ValueError("shared-feature inference requires SYCL graphs")
+            raise ValueError("shared-feature inference requires GPU graphs")
         if grounding_batch_size not in (1, 2, 4, 8):
             raise ValueError("grounding batch size must be 1, 2, 4, or 8")
         self.grounding_batch_size = grounding_batch_size
@@ -504,10 +517,10 @@ class Sam31Engine:
             model.eval()
         except Exception:
             print(
-                "XPU move failed: "
-                f"allocated={torch.xpu.memory_allocated(device_index)} "
-                f"reserved={torch.xpu.memory_reserved(device_index)} "
-                f"free_total={torch.xpu.mem_get_info(device_index)}",
+                f"{device_type.upper()} move failed: "
+                f"allocated={self.runtime.memory_allocated(device_index)} "
+                f"reserved={self.runtime.memory_reserved(device_index)} "
+                f"free_total={self.runtime.mem_get_info(device_index)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -636,22 +649,22 @@ class Sam31Engine:
         worker_started = time.perf_counter()
         pixels = (self._pixels(jpeg) if prepared_pixels is None
                   else self.preprocessor(jpeg, prepared=prepared_pixels))
-        torch.xpu.synchronize()
+        self.runtime.synchronize()
         preprocess_ms = (time.perf_counter() - worker_started) * 1000
         detections = []
         categories = []
-        with torch.inference_mode(), torch.autocast("xpu", dtype=self.dtype):
+        with torch.inference_mode(), torch.autocast(self.device_type, dtype=self.dtype):
             cached = all(prompt in self.text_cache for prompt in prompts)
             text_started = time.perf_counter()
             embeddings = self._prepare(pixels, prompts)
-            torch.xpu.synchronize()
+            self.runtime.synchronize()
             prompt_setup_ms = (time.perf_counter() - text_started) * 1000
             started = time.perf_counter()
             features = self.image_stage(pixels)
-            torch.xpu.synchronize()
+            self.runtime.synchronize()
             image_done = time.perf_counter()
             outputs = self._run_heads(features, embeddings)
-            torch.xpu.synchronize()
+            self.runtime.synchronize()
             grounding_done = time.perf_counter()
             boxes_by_prompt = self._decode_outputs(outputs)
             for index, (prompt, boxes) in enumerate(
@@ -665,21 +678,23 @@ class Sam31Engine:
                     {**box, "prompt": prompt, "prompt_index": index, "color": color}
                     for box in boxes
                 )
-        torch.xpu.synchronize()
+        self.runtime.synchronize()
         latency_ms = (time.perf_counter() - started) * 1000
         result = {
             "boxes": detections,
             "categories": categories,
             "latency_ms": round(latency_ms),
             "torch": torch.__version__,
-            "device": torch.xpu.get_device_name(self.device),
+            "device": self.runtime.get_device_name(self.device),
+            "device_type": self.device_type,
             "torch_compile": True,
             "image_backend": getattr(self.image_stage, "backend", "torch.compile"),
             "native_image_validation": getattr(self.image_stage, "proof", None),
             "accuracy_policy": "report-only-development" if getattr(self, "allow_unqualified_w8a8", False) else "enforced",
             "preprocess_validation": getattr(getattr(self, "preprocessor", None), "validation", None),
             "preprocess_prefetched": prepared_pixels is not None,
-            "sycl_graph": self.graph_active,
+            "sycl_graph": self.graph_active and self.device_type == "xpu",
+            "cuda_graph": self.graph_active and self.device_type == "cuda",
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
             "shared_image_features": True,
@@ -767,6 +782,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--device", type=int, default=0)
+    parser.add_argument("--device-type", choices=("xpu", "cuda"), default="xpu")
     parser.add_argument(
         "--precision", choices=("float16", "bfloat16"), default="float16"
     )
@@ -796,14 +812,16 @@ def main() -> None:
             native_bundle=args.native_bundle,
             w8a8_development_bundle=args.w8a8_development_bundle,
             allow_unqualified_w8a8=args.allow_unqualified_w8a8,
+            device_type=args.device_type,
         )
         _emit(
             {
                 "type": "ready",
                 "engine": "sam3.1/israel-w8a8-development" if args.w8a8_development_bundle else
-                          "sam3.1/native-image+inductor-xpu" if args.native_bundle else "sam3.1/torch.compile/inductor-xpu",
+                          "sam3.1/native-image+inductor-xpu" if args.native_bundle else f"sam3.1/torch.compile/inductor-{args.device_type}",
                 "torch_compile": False,
-                "sycl_graph_requested": not args.no_sycl_graph,
+                "sycl_graph_requested": not args.no_sycl_graph and args.device_type == "xpu",
+                "cuda_graph_requested": not args.no_sycl_graph and args.device_type == "cuda",
                 "request_transport": JPEG_BYTES,
                 "cpu_prefetch": engine.preprocessor is not None,
             }

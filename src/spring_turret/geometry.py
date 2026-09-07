@@ -1,13 +1,21 @@
 """Qualified fisheye rays and coupled pan/tilt geometry; standard library only."""
 import json
 import math
+import os
+import stat
 from pathlib import Path
 
 
 def usb_identity(device):
     """Bind calibration to a USB camera, not its changeable videoN number."""
     try:
-        path = (Path("/sys/class/video4linux") / Path(device).resolve().name / "device").resolve()
+        info = Path(device).stat()
+        if not stat.S_ISCHR(info.st_mode):
+            return None
+        # Character-device identity survives container aliases such as
+        # /dev/spring-turret-camera; the basename need not be videoN.
+        path = (Path("/sys/dev/char") /
+                f"{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}" / "device").resolve()
         for parent in (path, *path.parents):
             if (parent / "idVendor").exists():
                 return ":".join((parent / name).read_text().strip() for name in ("idVendor", "idProduct", "serial"))
