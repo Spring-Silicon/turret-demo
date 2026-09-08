@@ -1,0 +1,11 @@
+# Dedicated demo peer only. Includes container response traffic.
+table inet turret_direct_link {
+    chain output {
+        type filter hook output priority 0; policy accept;
+        ip daddr 192.168.249.1 oifname != "enP2p1s0" counter drop
+    }
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        ip daddr 192.168.249.1 oifname != "enP2p1s0" counter drop
+    }
+}

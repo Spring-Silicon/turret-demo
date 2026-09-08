@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Turret Demo</title>
+    <link rel="stylesheet" href="/app.css">
+  </head>
+  <body>
+    <header>
+      <h1>Turret Demo</h1>
+      <div class="device-status" aria-label="Hardware status">
+        <span id="camera-status">Camera: checking</span>
+        <span id="servo-status">X/Y: checking</span>
+      </div>
+    </header>
+
+    <main>
+      <section class="vision" aria-label="Camera and detection">
+        <label class="model-control" for="detection-model">Model
+          <select id="detection-model" disabled>
+            <option value="sam3.1">SAM 3.1</option>
+            <option value="yolo26x">YOLO26x</option>
+            <option value="sam3.1-tracking">SAM 3.1 Tracking</option>
+          </select>
+        </label>
+        <form id="detection-form">
+          <div id="prompt-rows"></div>
+          <div class="prompt-actions">
+            <button id="add-prompt" type="button" aria-label="Add object" title="Add object" disabled>+</button>
+            <button id="update-prompts" type="submit" disabled>Update prompts</button>
+          </div>
+        </form>
+        <template id="prompt-row-template">
+          <div class="prompt-row">
+            <button class="target-prompt" type="button" aria-label="Track object" aria-pressed="false" title="Track object" disabled>
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
+            </button>
+            <input class="detection-prompt" type="text" maxlength="256" placeholder="Object to find" aria-label="Object to find" autocomplete="off" disabled>
+            <output class="prompt-count" aria-label="Detected count unavailable" aria-live="off">—</output>
+            <button class="remove-prompt" type="button" aria-label="Remove object" title="Remove object" disabled>
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>
+            </button>
+          </div>
+        </template>
+        <p id="detection-status" role="status">Detector: checking</p>
+        <p id="tracking-status" role="status" hidden></p>
+        <div class="feed" aria-label="Live camera">
+          <img id="camera-feed" alt="Live turret camera feed">
+          <div id="box-targets" aria-label="Detected objects" hidden></div>
+          <svg id="tracking-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" hidden><rect id="tracked-box"/></svg>
+          <svg id="frame-center" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="3"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6"/></svg>
+          <p id="camera-offline" hidden>Camera unavailable</p>
+        </div>
+      </section>
+
+      <section class="controls" aria-label="Pan and tilt controls">
+        <div class="axis-control">
+          <label for="x-slider">X <output id="x-degrees" for="x-slider">—</output></label>
+          <input id="x-slider" type="range" min="-90" max="90" value="0" step="0.5" aria-label="X pan angle in degrees" disabled>
+        </div>
+        <button id="motor-toggle" type="button" aria-label="Start motors" title="Start motors" disabled>
+          <svg id="start-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M7 4l14 8-14 8z"/></svg>
+          <svg id="stop-icon" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" hidden><path d="M5 5h14v14H5z"/></svg>
+        </button>
+        <div class="axis-control">
+          <label for="y-slider">Y <output id="y-degrees" for="y-slider">—</output></label>
+          <input id="y-slider" type="range" min="-90" max="90" value="0" step="0.5" aria-label="Y tilt angle in degrees" disabled>
+        </div>
+        <button id="recalibrate" type="button" title="Save current X/Y positions as 0°. Motors must be stopped." disabled>Recalibrate zeros</button>
+        <p id="message" role="status" hidden></p>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

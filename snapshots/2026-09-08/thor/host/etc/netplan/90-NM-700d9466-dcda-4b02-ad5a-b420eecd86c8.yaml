@@ -1,0 +1,24 @@
+network:
+  version: 2
+  ethernets:
+    NM-700d9466-dcda-4b02-ad5a-b420eecd86c8:
+      renderer: NetworkManager
+      match:
+        name: "enP2p1s0"
+      addresses:
+      - "192.168.249.2/30"
+      wakeonlan: true
+      networkmanager:
+        uuid: "700d9466-dcda-4b02-ad5a-b420eecd86c8"
+        name: "turret-direct-ethernet"
+        passthrough:
+          connection.autoconnect-priority: "100"
+          ethernet._: ""
+          ipv4.ignore-auto-dns: "true"
+          ipv4.never-default: "true"
+          ipv6.addr-gen-mode: "default"
+          ipv6.ignore-auto-dns: "true"
+          ipv6.method: "link-local"
+          ipv6.never-default: "true"
+          ipv6.ip6-privacy: "-1"
+          proxy._: ""

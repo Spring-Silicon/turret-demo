@@ -1,0 +1,17 @@
+[Unit]
+Description=Spring turret demo on NVIDIA Thor
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/opt/spring/turret-demo/run-container.sh
+ExecStop=/usr/bin/docker stop --time=5 spring-turret-demo
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,65 @@
+{
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "camera": {
+    "device": "/dev/spring-turret-camera",
+    "width": 1280,
+    "height": 720,
+    "framerate": 30,
+    "restart_delay_seconds": 2
+  },
+  "servo": {
+    "device": "/dev/spring-turret-servo",
+    "protocol": "dynamixel-2.0",
+    "model_number": 1200,
+    "baudrate": 57600,
+    "operating_mode": 4,
+    "calibrated": true,
+    "axes": {
+      "x": {
+        "id": 2,
+        "center_position": 1027,
+        "direction": 1,
+        "min_degrees": -90,
+        "max_degrees": 90,
+        "profile_velocity": 0,
+        "profile_acceleration": 0
+      },
+      "y": {
+        "id": 1,
+        "center_position": 1026,
+        "direction": 1,
+        "min_degrees": -90,
+        "max_degrees": 90,
+        "profile_velocity": 0,
+        "profile_acceleration": 0
+      }
+    },
+    "calibration_file": "/var/lib/spring-turret-demo/servo-zeros-5B3D042965.json"
+  },
+  "inference": {
+    "enabled": true,
+    "python": "/var/lib/spring-data/turret-inference/venv/bin/python",
+    "checkpoint": "/var/lib/spring-data/turret-inference/sam3.1_multiplex.pt",
+    "cache_dir": "/var/lib/spring-data/turret-inference/israel-cast-cache.0F5LmD/cache",
+    "device": 0,
+    "precision": "float16",
+    "confidence": 0.5,
+    "max_fps": 0,
+    "model": "sam3.1",
+    "yolo26x_checkpoint": "/var/lib/spring-data/turret-inference/yolo26x.pt",
+    "sam31_tracking_bundle": "/var/lib/spring-data/turret-inference/israel-cast-cache.0F5LmD/bundle",
+    "sam31_w4a4_bundle": "/var/lib/spring-data/turret-inference/sleepy-w4a4-68ms-20260907",
+    "sam31_allow_w4a4_accuracy_tradeoff": true
+  },
+  "tracking": {
+    "calibrated": true,
+    "x_direction": 1,
+    "y_direction": -1,
+    "x_degrees_per_frame": 161.6,
+    "y_degrees_per_frame": 82.8,
+    "geometry_file": "/etc/spring-turret-geometry-5B3D042965.json"
+  }
+}

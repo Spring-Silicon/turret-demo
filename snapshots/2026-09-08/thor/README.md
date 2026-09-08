@@ -3,11 +3,6 @@
 Camera feed, switchable SAM 3.1 / YOLO26x bounding boxes, and manual or opt-in automatic
 X/Y camera framing.
 
-The [2026-09-08 deployed snapshot](snapshots/2026-09-08/README.md) contains the
-newer SAM 3.1 Tracking code captured from Edge and Thor, their host configs,
-and the verified offline Ethernet connection. Read it before restoring either
-deployment; the source at this repository root predates those installed versions.
-
 Optional qualified native SAM image execution from `sleepy-joe` is documented
 in [the native image setup](docs/sam31-native.md). Text/grounding and the default
 compiled image path remain available; activation is an explicit device setting.

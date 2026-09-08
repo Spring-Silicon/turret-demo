@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "axes": {
+    "x": {"id": 2, "direction": 1, "center_position": 1027},
+    "y": {"id": 1, "direction": 1, "center_position": 1026}
+  }
+}
