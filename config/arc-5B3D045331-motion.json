@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "servo_adapter_serial": "5B3D045331",
+  "model_number": 1200,
+  "baudrate": 57600,
+  "axes": {
+    "x": {"id": 2, "position_gains": {"p": 800, "i": 0, "d": 1600}},
+    "y": {"id": 1, "position_gains": {"p": 1200, "i": 0, "d": 1600}}
+  }
+}

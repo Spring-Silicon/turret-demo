@@ -3,6 +3,13 @@
 This is measured control tuning, not model-accuracy qualification. Do not copy
 assembly-specific gains, zeros or intrinsics to another turret without testing.
 
+## Moving-target follow-up (2026-09-09)
+
+The original P1200/D1600 setting below describes the stationary/step
+qualification. A subsequent motor-only moving-path comparison selected pan
+P800/D1600, with tilt unchanged, for live evaluation. See
+[measurements and deployment boundaries](arc-moving-response.md).
+
 ## Non-tracking mask reacquisition correction (2026-09-08)
 
 The old Arc-only world-bearing lock could hold forever after a mask dropout if
