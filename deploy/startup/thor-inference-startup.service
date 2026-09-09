@@ -1,0 +1,15 @@
+[Unit]
+Description=Start Thor inference with the demo's default prompt
+Wants=spring-turret-demo.service
+After=spring-turret-demo.service
+
+[Service]
+Type=oneshot
+User=spring
+ExecStart=/usr/bin/python3 /opt/spring/turret-demo/start-inference.py
+RemainAfterExit=yes
+TimeoutStartSec=200
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

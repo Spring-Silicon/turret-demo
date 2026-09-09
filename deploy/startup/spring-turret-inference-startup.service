@@ -1,0 +1,14 @@
+[Unit]
+Description=Start Arc inference with the demo's default prompt
+Wants=spring-turret-demo.service
+After=spring-turret-demo.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/share/spring-turret-frontend/scripts/start-inference.py
+RemainAfterExit=yes
+TimeoutStartSec=200
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

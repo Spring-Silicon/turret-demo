@@ -1,0 +1,11 @@
+# Dedicated demo peer only. Never route this private link through Wi-Fi.
+table inet turret_direct_link {
+    chain output {
+        type filter hook output priority 0; policy accept;
+        ip daddr 192.168.249.2 oifname != "enp7s0" counter reject
+    }
+    chain forward {
+        type filter hook forward priority 0; policy accept;
+        ip daddr 192.168.249.2 oifname != "enp7s0" counter reject
+    }
+}

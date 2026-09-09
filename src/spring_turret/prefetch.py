@@ -13,6 +13,7 @@ class LatestPreparation:
         self.prepare = prepare
         self.condition = threading.Condition()
         self.pending = self.ready = None
+        self.active = None
         self.generation = 0
         self.closed = False
         self.thread = threading.Thread(target=self._run, name="cpu-prepare", daemon=True)
@@ -27,8 +28,17 @@ class LatestPreparation:
             self.ready = None
             self.condition.notify()
 
-    def take(self, token, jpeg):
+    def take(self, token, jpeg, *, wait_seconds=0):
         with self.condition:
+            # Mask workers may briefly reuse preparation already in flight for
+            # this EXACT frame rather than decode/resize it a second time. Other
+            # workers retain the original nonblocking behavior by default.
+            active = self.active
+            if (wait_seconds > 0 and active is not None
+                    and active == (self.generation, token, jpeg)):
+                self.condition.wait_for(lambda: self.closed or self.active != active
+                                        or self.ready is not None,
+                                        timeout=min(wait_seconds,.025))
             candidate, self.ready = self.ready, None
         if candidate and candidate[0] == token and candidate[1] == jpeg:
             return candidate[2]
@@ -42,15 +52,21 @@ class LatestPreparation:
                     return
                 generation, token, jpeg = self.pending
                 self.pending = None
+                self.active = (generation, token, jpeg)
             try:
                 prepared = self.prepare(jpeg)
             except Exception:
                 # Speculation is optional. The normal path reports any actual
                 # requested-frame error; never retain/use a partial preparation.
+                with self.condition:
+                    self.active = None
+                    self.condition.notify_all()
                 continue
             with self.condition:
                 if not self.closed and generation == self.generation:
                     self.ready = (token, jpeg, prepared)
+                self.active = None
+                self.condition.notify_all()
 
     def close(self):
         with self.condition:

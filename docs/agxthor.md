@@ -3,7 +3,25 @@
 This is the same camera, two-axis controls, calibrated pointing, click retargeting,
 multi-category boxes, counts and FPS UI, using dense SAM 3.1 on CUDA instead of
 the Intel native/W8A8 implementation. No TensorRT export or additional quantization.
-The current CUDA deployment does not expose the Intel-only YOLO worker.
+Both deployments expose the same three SAM profiles; YOLO has been removed.
+See [shared policy and hardware boundary](sam-policy-audit.md).
+
+The optional [SAM 3.1 Tracking profile](sam31-tracking.md) adds full temporal
+Object Multiplex tracking on CUDA. Set `inference.sam31_tracking_bundle` to
+`/opt/sam3` to enable the dropdown option. It is a separate dense BF16 compiled
+path with masks, memory and native IDs; the compiled detector contract below
+continues to apply only to the original `sam3.1` mode.
+
+[Temporal qualification](sam31-tracking-thor-qualification.json) exercised 160
+camera-frame steps, stable native IDs, multi-prompt resets, and 176 exact checks
+that memory pruning preserved the next step's reachable temporal inputs. For
+three tracked tables, median tracking / whole-worker times were 372 / 406 ms.
+This is functional qualification, not a ground-truth occlusion/crossing accuracy
+benchmark. The original detector's timings below are a different workload.
+Two full temporal prompt passes took about 710 ms model time live. The earlier
+750 ms click/motion age cutoff has since been removed: delayed results can now
+drive corrections and remain clickable. More prompts still increase control
+latency. Each prompt supports up to 16 tracked instances.
 
 ## Inference contract
 
@@ -40,15 +58,21 @@ sudo docker build -f deploy/thor/Dockerfile -t spring-turret-demo:0.16.0-thor .
 
 The launch script assumes the verified agxthor-4 IDs: application UID/GID 1000,
 video GID 44, dialout GID 20. Adapt these IDs before using another host. The
-application runs without root or Linux capabilities; Docker receives only the
-matched camera and serial device, not a privileged container or Docker socket.
+application runs without root or Linux capabilities. The host's live `/dev`
+directory is mounted read-only at `/host/dev`; device-cgroup rules allow V4L2
+(major 81) and USB ACM serial (major 166) read/write, alongside NVIDIA runtime
+devices. Exact-serial udev aliases select the camera/controller. This permits
+reconnection with new device nodes without restarting the container; it does not
+use a privileged container or Docker socket. Devices may be absent at startup.
 
 Required host files:
 
 - `/etc/spring-turret-demo.json`: demo configuration; inference Python
   `/usr/bin/python`, checkpoint `/models/sam3.1_multiplex.pt`, cache `/cache`,
   `device_type: cuda`, `model: sam3.1`, precision `float16`. Remove Intel bundle
-  and YOLO checkpoint fields. Keep the existing camera/servo/tracking settings.
+  and YOLO checkpoint fields. Set camera `device` to
+  `/host/dev/spring-turret-camera` and servo `device` to
+  `/host/dev/spring-turret-servo`; preserve all other camera/servo/tracking settings.
 - `/opt/spring/turret-demo/models/sam3.1_multiplex.pt`: authorized checkpoint,
   mounted read-only. It is not included in Git or the container image.
 - `/etc/spring-turret-geometry.json`: camera/mount calibration, read-only.

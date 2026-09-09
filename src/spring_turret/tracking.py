@@ -1,4 +1,4 @@
-"""Opt-in camera framing from fresh detections; never arms or renews the lease."""
+"""Framing from completed detections; Start intent survives transient faults."""
 
 from __future__ import annotations
 
@@ -11,15 +11,21 @@ from typing import Any
 
 from spring_turret.servo import DeviceUnavailable, ServoDisarmed
 from spring_turret.geometry import Geometry
+from spring_turret.bearing_filter import BearingFilter
+from spring_turret.tracking_masks import valid_mask_centroid
+from spring_turret.interfaces import CameraDevice, MotorDevice, DetectionSource
+from spring_turret.policy import POLICY_VERSION, DEAD_BAND, continuity, select_candidates
 
 LOGGER = logging.getLogger("spring-turret.tracking")
 DEFAULTS = {
     "calibrated": False,
     "x_direction": 1, "y_direction": -1,
     "x_degrees_per_frame": 160.0, "y_degrees_per_frame": 90.0,
-    "deadband": 0.012,
-    "max_frame_age_seconds": 0.75,
+    "deadband": DEAD_BAND,
+    "max_frame_age_seconds": 0.75,  # Legacy config accepted but no longer expires detections.
     "geometry_file": None,
+    "bearing_filter": None,  # Optional assembly-qualified target-noise filter.
+    "hold_reacquire": False,  # Legacy accepted; shared model policy now owns continuity.
 }
 
 
@@ -31,10 +37,23 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("tracking.geometry_file must be an absolute path or null")
     if type(merged["calibrated"]) is not bool:
         raise ValueError("tracking.calibrated must be a boolean")
+    if type(merged["hold_reacquire"]) is not bool:
+        raise ValueError("tracking.hold_reacquire must be a boolean")
+    if merged["hold_reacquire"] and not merged["geometry_file"]:
+        raise ValueError("tracking.hold_reacquire requires calibrated geometry")
     for axis in ("x", "y"):
         value = merged[f"{axis}_direction"]
         if type(value) is not int or value not in (-1, 1):
             raise ValueError(f"tracking.{axis}_direction must be -1 or 1")
+    filtering = merged["bearing_filter"]
+    if filtering is not None:
+        if (not isinstance(filtering, dict) or set(filtering) != {"min_cutoff_hz", "speed_gain"}
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in filtering.values())
+                or not .1 <= filtering["min_cutoff_hz"] <= 30
+                or not 0 <= filtering["speed_gain"] <= 100):
+            raise ValueError("tracking.bearing_filter requires min_cutoff_hz and speed_gain")
+        if not merged["geometry_file"]:
+            raise ValueError("tracking.bearing_filter requires calibrated geometry")
     for key, (low, high) in {
         "x_degrees_per_frame": (1, 360), "y_degrees_per_frame": (1, 180),
         "deadband": (0.001, 0.1), "max_frame_age_seconds": (0.1, 1),
@@ -44,8 +63,21 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"tracking.{key} must be between {low} and {high}")
 
 
+def tracking_point(box: dict) -> tuple[float, float] | None:
+    """Use an original-mask centroid; box-only detectors retain their center.
+
+    An explicitly empty/invalid mask has no point: do not silently aim at its
+    box instead. Centroids of concave/disconnected masks need not lie inside it.
+    """
+    if "mask_centroid" in box:
+        point = box["mask_centroid"]
+        return tuple(point) if valid_mask_centroid(point) else None
+    x1, y1, x2, y2 = box["xyxy"]
+    return (x1 + x2) / 2, (y1 + y2) / 2
+
+
 def nearest_box(boxes: list[dict], prompt: str, width: int, height: int) -> dict | None:
-    """Choose box-center distance in pixels, not normalized square-image space."""
+    """Choose aiming-point distance in pixels, not normalized square space."""
     candidates = []
     for box in boxes:
         if not isinstance(box, dict) or box.get("prompt") != prompt:
@@ -60,23 +92,30 @@ def nearest_box(boxes: list[dict], prompt: str, width: int, height: int) -> dict
         x1, y1, x2, y2 = coords
         if x2 <= x1 or y2 <= y1:
             continue
-        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        point = tracking_point(box)
+        if point is None:
+            continue
+        cx, cy = point
         distance = ((cx - 0.5) * width) ** 2 + ((cy - 0.5) * height) ** 2
         candidates.append((distance, -score, box))
     return min(candidates, key=lambda item: item[:2])[2] if candidates else None
 
 
 class TrackingController:
-    def __init__(self, config: dict, detection: Any, servo: Any, camera: Any):
+    def __init__(self, config: dict, detection: DetectionSource, servo: MotorDevice, camera: CameraDevice):
         validate_config(config)
         self.config = {**DEFAULTS, **config}
         self.geometry = Geometry.load(self.config["geometry_file"]) if self.config["geometry_file"] else None
+        filtering = self.config["bearing_filter"]
+        self.bearing_filter = BearingFilter(**filtering) if filtering else None
         self.detection, self.servo, self.camera = detection, servo, camera
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="camera-tracking", daemon=True)
         self.target: str | None = None
         self.instance_id: int | None = None
+        self.clicked = False
+        self.lock_revision = None
         self.state = "off"
         self.error: str | None = None
         self.box: dict | None = None
@@ -88,6 +127,7 @@ class TrackingController:
         self.previous_pose: dict | None = None
         self.hold_bias = {"x": 0.0, "y": 0.0}
         self.goal_degrees: dict | None = None
+        self.last_armed_at = None
 
     def start(self) -> None:
         self.thread.start()
@@ -98,10 +138,12 @@ class TrackingController:
             self.thread.join(timeout=3)
 
     def _pause(self, state: str) -> None:
+        if self.bearing_filter:
+            self.bearing_filter.reset()
         if self.moving:
             try:
                 self.servo.track({"x": 0.0, "y": 0.0})
-            except ServoDisarmed:
+            except (ServoDisarmed, DeviceUnavailable):
                 pass
         self.moving = False
         self.previous_pose = None
@@ -132,8 +174,13 @@ class TrackingController:
         was_moving = self.moving
         self._pause("off")
         if prompt and not was_moving and self.servo.status()["armed"]:
-            self.servo.track({"x": 0.0, "y": 0.0})
+            try:
+                self.servo.track({"x": 0.0, "y": 0.0})
+            except (ServoDisarmed, DeviceUnavailable):
+                pass  # Retain the requested class across a disappearing bus.
         self.target, self.instance_id = prompt, instance_id
+        self.lock_revision = None
+        self.clicked = instance_id is not None
         self.last_frame = None
         self.ignore_before = time.monotonic()
         self.error = None
@@ -142,9 +189,11 @@ class TrackingController:
     def set_prompts(self, prompts: Any) -> None:
         with self.lock:
             self.detection.set_prompts(prompts)
-            if self.instance_id is not None or self.target not in self.detection.status()["prompts"]:
-                self.target = self.instance_id = None
+            if self.target not in self.detection.status()["prompts"]:
+                self.target = None
+            self.instance_id, self.clicked = None, False
             self._pause("waiting" if self.target else "off")
+            self.lock_revision = None
             self.last_frame = None
             self.ignore_before = time.monotonic()
 
@@ -153,8 +202,9 @@ class TrackingController:
             previous = self.detection.status()["model"]
             self.detection.set_model(model)
             if previous != model:
-                self.target = self.instance_id = None
-                self._pause("off")
+                self.instance_id, self.clicked = None, False
+                self._pause("waiting" if self.target else "off")
+                self.lock_revision = None
                 self.last_frame = None
                 self.ignore_before = time.monotonic()
                 self.error = None
@@ -162,6 +212,8 @@ class TrackingController:
     def arm(self) -> None:
         with self.lock:
             self.servo.arm()
+            if self.bearing_filter:
+                self.bearing_filter.reset()
             # Never move using a frame captured before the user pressed Start.
             self.ignore_before = time.monotonic()
             self.last_frame = None
@@ -172,6 +224,8 @@ class TrackingController:
 
     def disable(self) -> None:
         with self.lock:
+            if self.bearing_filter:
+                self.bearing_filter.reset()
             self.moving = False
             self.state = "stopped" if self.target else "off"
             self.box = self.frame = self.error_pixels = None
@@ -197,12 +251,15 @@ class TrackingController:
 
     def status(self) -> dict[str, Any]:
         with self.lock:
+            model = getattr(self.detection, "model", None)
             return {"target": self.target, "instance_id": self.instance_id,
-                    "selection": "retarget" if self.instance_id is not None else "class",
+                    "selection": "retarget" if self.clicked and self.instance_id is not None else "class",
                     "state": self.state, "error": self.error,
                     "box": self.box, "frame": list(self.frame) if self.frame else None,
                     "error_pixels": self.error_pixels, "mode": "absolute-angle",
                     "mapping": "fisheye-kinematics" if self.geometry else "linear",
+                    "policy_version": POLICY_VERSION, "continuity": continuity(model),
+                    "hold_reason": "temporary-occlusion" if self.state == "lost" and self.instance_id is not None else None,
                     "goal_degrees": self.goal_degrees}
 
     def _tick(self) -> None:
@@ -215,18 +272,23 @@ class TrackingController:
             servo = self.servo.status()
             if not servo["armed"] or not servo["online"]:
                 self.moving = False
-                self._pause("stopped")
+                self._pause("recovering" if servo.get("run_requested", False) else "stopped")
                 return
+            if servo.get("armed_at") != self.last_armed_at:
+                self.last_armed_at = servo.get("armed_at")
+                self.ignore_before = max(self.ignore_before, self.last_armed_at or 0)
+                self.last_frame = None
+                self.moving = False
+                self._pause("waiting")
             camera, detection = self.camera.status(), self.detection.status()
             now = time.monotonic()
             age = detection.get("frame_age_ms")
             if self.target not in detection.get("prompts", []):
-                self.target = self.instance_id = None
-                self._pause("off")
+                self._pause("waiting")
                 return
             if (not camera["online"] or detection.get("state") != "running" or
                 type(age) not in (int, float) or not math.isfinite(age) or
-                not 0 <= age <= self.config["max_frame_age_seconds"] * 1000):
+                age < 0):
                 self._pause("waiting")
                 return
             frame = (detection["revision"], detection["frame_sequence"])
@@ -239,31 +301,52 @@ class TrackingController:
             if now - age / 1000 < self.ignore_before:
                 return
             boxes = detection.get("boxes", [])
-            if self.instance_id is not None:
-                selected = [box for box in boxes if box.get("instance_id") == self.instance_id]
-                if selected:
-                    boxes = selected
-                else:
-                    # Clicking is a temporary preference, not a persistent ID
-                    # lock. If the association disappears, resume the original
-                    # nearest-of-class behavior on this same fresh frame.
-                    self.instance_id = None
+            if self.lock_revision is not None and detection["revision"] != self.lock_revision:
+                self.instance_id, self.clicked = None, False
+            self.lock_revision = detection["revision"]
+            boxes, self.instance_id, self.clicked, holding = select_candidates(
+                detection, self.target, self.instance_id, self.clicked)
+            if holding:
+                self._pause("lost")
+                return
             box = nearest_box(boxes, self.target, camera["width"], camera["height"])
             if box is None:
                 self._pause("lost")
                 return
-            x1, y1, x2, y2 = box["xyxy"]
-            errors = {"x": (x1 + x2) / 2 - 0.5, "y": (y1 + y2) / 2 - 0.5}
+            if detection.get("temporal_tracking") is True and self.instance_id is None:
+                # Class selection acquires the nearest instance once. A click
+                # can override it; selecting the class again reacquires.
+                self.instance_id = box["instance_id"]
+            cx, cy = tracking_point(box)
+            errors = {"x": cx - 0.5, "y": cy - 0.5}
+            control_errors = errors
             pose = detection.get("frame_pose")
             captured_at = detection.get("captured_at")
             if not self._valid_pose(pose, captured_at):
                 self._pause("waiting")
                 return
             geometric = None
+            geometry_limited = False
             if self.geometry:
                 try:
                     self.geometry.check_binding(camera, servo, self.config)
-                    geometric = self.geometry.goals((x1+x2)/2*camera["width"], (y1+y2)/2*camera["height"], pose, servo)
+                    world = self.geometry.world_direction(cx*camera["width"], cy*camera["height"], pose, servo)
+                    if self.bearing_filter:
+                        filtered = self.bearing_filter.update(world,captured_at,(self.target,box.get("instance_id")))
+                        try:
+                            u,v = self.geometry.image_point(filtered,pose,servo)
+                        except ValueError:
+                            # A lagging estimate outside the calibrated view is
+                            # reacquired from this visible measurement, not a
+                            # reason to fall back to uncalibrated geometry.
+                            self.bearing_filter.reset()
+                            filtered = world
+                            u,v = cx*camera["width"],cy*camera["height"]
+                        world = filtered
+                        control_errors = {"x":u/camera["width"]-.5,"y":v/camera["height"]-.5}
+                    solution = self.geometry.solve_direction(world,pose,servo)
+                    geometric = solution["goals"]
+                    geometry_limited = solution["limited"]
                 except ValueError as error:
                     self._pause("uncalibrated")
                     self.error = str(error)
@@ -276,7 +359,9 @@ class TrackingController:
                 if self.previous_pose:
                     previous = self.previous_pose["axes"][axis]
                     elapsed = pose["sampled_at"] - self.previous_pose["sampled_at"]
-                    if (0 < elapsed <= self.config["max_frame_age_seconds"] and
+                    # This interval only qualifies stationary load-bias samples;
+                    # it does not reject a delayed detection or stop tracking.
+                    if (0 < elapsed <= 0.75 and
                         abs(sample["goal_degrees"] - previous["goal_degrees"]) < 0.1 and
                         abs(sample["degrees"] - previous["degrees"]) / elapsed < 1.0):
                         self.hold_bias[axis] = sample["goal_degrees"] - sample["degrees"]
@@ -287,7 +372,7 @@ class TrackingController:
                     correction = geometric[axis] - sample["degrees"]
                     # Coupled geometry can require BOTH motors even if only
                     # one image coordinate is outside the centering deadband.
-                    centered = all(abs(e) <= self.config["deadband"] for e in errors.values())
+                    centered = all(abs(e) <= self.config["deadband"] for e in control_errors.values())
                 goals[axis] = sample["degrees"] + (0.0 if centered else correction) + self.hold_bias[axis]
                 # Keep a settled holding goal inside the image deadband, but
                 # brake at the observed center if an older goal would overshoot.
@@ -298,9 +383,10 @@ class TrackingController:
             result = self.servo.point(goals)
             self.goal_degrees = result["goal_degrees"]
             self.moving = True
-            self.state = ("limited" if result["limited"] else
-                          "centered" if all(abs(e) <= self.config["deadband"] for e in errors.values()) else "tracking")
-            if self.state == "centered":
+            self.state = ("limited" if result["limited"] or geometry_limited else
+                          "centered" if all(abs(e) <= self.config["deadband"] for e in control_errors.values()) else "tracking")
+            if (self.state == "centered"
+                    and detection.get("temporal_tracking") is not True):
                 # Once the clicked object is centered, the ordinary tracker
                 # takes over; no ID continuity is required to keep following.
                 self.instance_id = None
@@ -327,22 +413,21 @@ class TrackingController:
             version = self.detection.frame_version()
             try:
                 self._tick()
-            except ServoDisarmed:
+            except (ServoDisarmed, DeviceUnavailable) as error:
                 with self.lock:
                     self.moving = False
-                    self._pause("stopped")
+                    self._pause("recovering" if self.servo.status().get("run_requested", False) else "stopped")
+                    self.error = str(error)
             except Exception as error:
-                LOGGER.exception("camera tracking stopped")
+                LOGGER.exception("camera tracking frame failed; waiting for next result")
                 with self.lock:
-                    self.target = self.instance_id = None
-                    self.moving = False
-                    self.state, self.error = "error", str(error)
-                    self.box = self.frame = self.error_pixels = None
                     try:
-                        self.servo.disable()
-                    except DeviceUnavailable:
-                        LOGGER.exception("tracking fault torque-off unconfirmed")
+                        self._pause("waiting")
+                    except Exception:
+                        self.moving = False
+                        LOGGER.exception("tracking hold unavailable")
+                    self.error = str(error)
             # Wake on a new inference result, not a fixed-rate control timer.
-            # The timeout only provides checks for Stop, stale data and faults
+            # The timeout only provides checks for Stop and hardware/model faults
             # when inference has stopped publishing results.
             self.detection.wait_for_update(version, timeout=0.1)

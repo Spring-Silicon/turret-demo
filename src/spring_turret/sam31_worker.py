@@ -608,7 +608,8 @@ class Sam31Engine:
             if batch not in self.grounding_stages:
                 packed = getattr(self, "packed_bundle", None)
                 self.grounding_stages[batch] = (
-                    PackedHeadStage(torch, self.head, f"packed-grounding-{batch}", self._progress, packed)
+                    PackedHeadStage(torch, self.head, f"packed-grounding-{batch}", self._progress, packed,
+                                    proof=self.image_stage.proof)
                     if packed is not None else
                     CompiledStage(torch, self.head, f"grounding-{batch}", self._progress)
                 )
@@ -798,8 +799,11 @@ def main() -> None:
         raise SystemExit("confidence must be between zero and one")
 
     engine = preparation = None
+    terminating = False
     # A normal model switch/stop must reap the resident native runner as well.
     def terminate(signum, frame):
+        nonlocal terminating
+        terminating = True
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
     try:
@@ -852,10 +856,18 @@ def main() -> None:
         _emit({"type": "fatal", "error": str(error)})
         raise
     finally:
-        if preparation is not None:
-            preparation.close()
-        if engine is not None and isinstance(engine.image_stage, (NativeImageStage, W8A8ImageStage)):
-            engine.image_stage.close()
+        try:
+            if preparation is not None:
+                preparation.close()
+            if engine is not None and isinstance(engine.image_stage, (NativeImageStage, W8A8ImageStage)):
+                engine.image_stage.close()
+        finally:
+            if terminating:
+                # RequestInbox can be blocked inside buffered stdin. CPython
+                # finalization aborts on that daemon lock and triggers a large
+                # core dump. Cleanup above is complete; the parent owns/reaps
+                # the process group, so do not enter interpreter finalization.
+                os._exit(0)
 
 
 if __name__ == "__main__":

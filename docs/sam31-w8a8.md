@@ -2,7 +2,7 @@
 
 This is the retained **development candidate**, not an accuracy-qualified model.
 Israel's 24-frame/72-case development set still fails five confidence and four
-retained-box checks. Its 80% roofline target is unproven. The UI and API expose
+retained-box checks. Its 80% roofline target is unproven. The API exposes
 that status; no threshold, dense reference, or servo safety limit is changed.
 
 In the original profile, only the shared image encoder changes. The image linears use SmoothQuant W8A8
@@ -33,7 +33,60 @@ Source measurements: 74.02/74.49 ms image replay (GPU0/GPU1); GPU1 full worker
 107.50/122.30/151.30/209.59 ms for 1/2/4/8 prompts. These are Israel results,
 not guarantees for another host or browser/camera/servo end-to-end latency.
 
-## Current retained packed profile (0.15.4)
+## Retained exact head-cast cache (2026-09-07)
+
+Israel's current retained recipe is `engine_only_retained_cast_cached_config.json`,
+SHA-256 `b7a9fa2c6fb283f8060c005cd9b6d5a3a6604a5e4c98b1c3dea749479be56539`.
+This extends the packed profile below. The checkpoint, image kernels, calibration,
+FP32 head masters, arithmetic, resolution, prompts and thresholds are unchanged.
+It constructs 243 exact FP16 parameter-cast caches once, removing 293 repeated
+cast launches per head pass. The four feature/position/text/mask inputs remain
+dynamic; each requested class still gets its own head pass over shared image
+features. No frames or classes are omitted.
+
+`w8a8_cast_cache_manifest.json` pins the retained recipe, original helper and
+qualification evidence. Place those files at their manifest-relative paths in
+a **copy** of a verified packed bundle, then run destination qualification before
+selecting that bundle. The adapter recognizes the retained config; it never
+selects newer experimental files by timestamp. Keep the original bundle/cache
+and application for rollback. To copy this extension, including its packed base:
+
+```sh
+bash scripts/copy-sam31-w8a8.sh spring@israel spring@spring-edge-2-1 cast-cached
+```
+
+The `packed` argument still copies only the older profile.
+
+The pinned helper proves that only pure FP32-to-FP16 conversions and GEMM read
+operands are changed. Construction runs before graph capture, with exact
+retained/direct/replay checks; unsupported generated code aborts, without a
+silent fallback. Original parameters and cache buffers remain owned for the
+worker's lifetime. **Any weight/device/layout change requires a new worker and
+new cache/graphs**; in-place parameter updates are not supported.
+
+Runtime identity is `israel-w8a8-packed-cast-cached-development`. After successful
+head capture, `native_image_validation.head_cast_cache` reports exact replay,
+structural-proof and cache identities. These are copy-equivalence checks, not
+full accuracy qualification. The existing five confidence/four box development
+failures remain disclosed in the API. The destination qualification additionally
+requires bitwise equality to saved current-release camera outputs.
+
+Israel's alternating resident image-plus-one-head benchmark saved 0.75–0.88 ms
+(about 85 ms to 84.2 ms). That measurement excludes host preprocessing, camera,
+network and browser delivery, and is not a destination FPS guarantee.
+
+Arc destination verification (2026-09-07): all 25 image replays and 72 source
+head cases passed; all 28 camera-image/prompt outputs were bitwise identical to
+the captured prior deployment. Source failures remain exactly five confidence
+and four box checks, with the same identities. No incremental failures occurred.
+Six alternating same-process rounds on B580 measured image-plus-head execution
+at 86.85 ms control versus 86.12 ms cached (median paired saving 0.734 ms).
+The deployed `hand` prompt delivered 336 paired frames in 30 seconds, 11.15 FPS;
+mean image/head/worker times were 73.98/11.44/89.12 ms. This live sample is not an
+isolated before/after FPS comparison or exposure-to-browser latency measurement.
+Camera settings, servo calibration and UI were preserved; motors remained off.
+
+## Previous retained packed profile (0.15.4)
 
 Israel's retained recipe is `engine_only_retained_packed_config.json`, SHA-256
 `c7985199c70ead9b4b6735b4c8ae9599135b1eeb597f759506b68b12a77e51b7`.
@@ -171,7 +224,7 @@ Default is false; the flag is invalid without that bundle and is never passed
 to YOLO. This does **not** raise the 0.03 confidence or 0.01 box tolerances or
 change the dense reference. Numerical failures remain `validation[].passed=false`
 with the original error and `accuracy_policy=report-only-development` in results.
-The UI always labels this image as accuracy-unqualified. Shape/dtype mismatches,
+The API keeps this image marked accuracy-unqualified. Shape/dtype mismatches,
 nonfinite outputs, file hash mismatches, native errors and graph qualification
 failures still abort. Servo bounds, lease, calibration and fault checks are unchanged.
 

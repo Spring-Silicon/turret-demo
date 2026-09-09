@@ -1,0 +1,14 @@
+[Unit]
+Description=Arc-local combined Arc and Thor frontend
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/spring-turret-frontend/runtime/bin/node %h/.local/share/spring-turret-frontend/scripts/frontend.mjs --arc http://127.0.0.1:8080 --thor http://192.168.249.2:8080 --thor-interface enp7s0 --thor-local-address 192.168.249.1 --port 8081
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -27,6 +27,8 @@ PINNED_FILES = json.loads(Path(__file__).with_name("w8a8_manifest.json").read_te
 PACKED_FILES = json.loads(Path(__file__).with_name("w8a8_packed_manifest.json").read_text())
 GRAPHICS_FILES = json.loads(Path(__file__).with_name("w8a8_graphics_manifest.json").read_text())
 PACKED_CONFIG = f"{RESULTS}/engine_only_retained_packed_config.json"
+CAST_CACHE_CONFIG = f"{RESULTS}/engine_only_retained_cast_cached_config.json"
+CAST_CACHE_FILES = json.loads(Path(__file__).with_name("w8a8_cast_cache_manifest.json").read_text())
 PACKED_SOURCE = f"{RESULTS}/packed_head_rounded_sources"
 MLP_SOURCE = f"{RESULTS}/mlp_cached_recip_vec16_sources"
 REPORT = "results/turret_megakernel/demo_native_qkv_grouped_gpu1.json"
@@ -36,6 +38,10 @@ HELPERS = {"persistent_forward", "mega_forward", "attention_projection_residual"
 
 def packed_profile(bundle: Path) -> bool:
     return (bundle / PACKED_CONFIG).exists()
+
+
+def cast_cache_profile(bundle: Path) -> bool:
+    return (bundle / CAST_CACHE_CONFIG).exists()
 
 
 def verify_graphics(bundle: Path) -> Path:
@@ -50,6 +56,10 @@ def verify_bundle(bundle: Path, checkpoint: Path) -> None:
     if digest(checkpoint) != CHECKPOINT:
         raise ValueError("W8A8 requires the pinned SAM 3.1 checkpoint")
     files = {**PINNED_FILES, **(PACKED_FILES if packed_profile(bundle) else {})}
+    if cast_cache_profile(bundle):
+        if not packed_profile(bundle):
+            raise ValueError("Cast-cached heads require the retained packed bundle")
+        files.update(CAST_CACHE_FILES)
     for name, expected in files.items():
         if digest(bundle / name) != expected:
             raise ValueError(f"W8A8 bundle checksum mismatch: {name}")
@@ -74,16 +84,77 @@ def configure_source(bundle: Path, checkpoint: Path) -> None:
 class PackedHeadStage(CompiledStage):
     """Patch only during optimized tracing; eager dense references stay original."""
 
-    def __init__(self, torch, module, name, progress, bundle):
+    def __init__(self, torch, module, name, progress, bundle, proof=None):
         self.library = bundle / "runtime/joint_head_attention_packed512.so"
         self.direct_replay_passed = False
+        self.cast_cache_enabled = cast_cache_profile(bundle)
+        self.cast_cache_proof = None
+        self.image_proof = proof
         super().__init__(torch, module, name, progress)
+
+    def _capture_cached(self, inputs, implementation):
+        """Cache exact casts once; preserve the compiled control and FP32 masters.
+
+        Model weights are immutable for a worker's entire lifetime. A model or
+        device change creates a new worker/cache/graph, never an in-place update.
+        The source helper fails closed on an unrecognized generated program.
+        """
+        from megakernel_design_head_cast_cache_v3 import prepare_cached_head
+        torch = self.torch
+        if any(value.device.type != "xpu" for value in inputs):
+            raise ValueError("Retained cast cache supports only XPU")
+        if self.compiled is None:
+            self._compile(inputs)
+        self.inputs = tuple(value.clone() for value in inputs)
+        self.stream = torch.xpu.Stream()
+        torch.xpu.synchronize()
+        self.progress("compiling", self.name)
+        with torch.xpu.stream(self.stream):
+            for _ in range(2):
+                control = self.compiled(*self.inputs)
+            expected = tuple(value.clone() for value in control)
+            cached = prepare_cached_head(self.compiled, self.inputs)
+            direct = tuple(value.clone() for value in cached(*self.inputs))
+        torch.xpu.synchronize()
+        self._require_exact(expected, direct, "cached/retained")
+        cached.validate_cache()
+        if len(implementation["invocations"]) < 18:
+            raise RuntimeError("Packed SAM heads did not capture all six decoder layers")
+        self.progress("capturing", self.name)
+        graph = torch.xpu.XPUGraph()
+        with torch.xpu.graph(graph, stream=self.stream):
+            outputs = cached(*self.inputs)
+        graph.replay()
+        torch.xpu.synchronize()
+        self._require_exact(expected, outputs, "cached replay/retained")
+        cached.validate_cache()
+        # Publish only a fully validated graph; keep its caches and masters alive.
+        self.cached_head, self.outputs, self.graph = cached, outputs, graph
+        self.direct_replay_passed = True
+        self.cast_cache_proof = {
+            key: cached.report[key] for key in (
+                "unique_casts", "cache_bytes", "removed_cast_launches",
+                "rewritten_gemm_read_operands", "exact_structural_diff_passed",
+                "original_source_sha256", "transformed_source_sha256")}
+        self.cast_cache_proof.update(retained_direct_replay_exact=True,
+                                     cache_signatures_validated=True)
+        if self.image_proof is not None:
+            self.image_proof["head_cast_cache"] = self.cast_cache_proof
+        self.calls += 1
+        return self.outputs
+
+    def _require_exact(self, expected, actual, label):
+        if not all(self.torch.equal(a, b) and bool(self.torch.isfinite(b).all())
+                   for a, b in zip(expected, actual, strict=True)):
+            raise RuntimeError(f"Packed SAM heads {label} outputs differ")
 
     def __call__(self, *inputs):
         if self.graph is not None:
             return super().__call__(*inputs)
         from packed_head_attention import packed_heads
         with packed_heads(self.library) as implementation:
+            if self.cast_cache_enabled:
+                return self._capture_cached(inputs, implementation)
             result = super().__call__(*inputs)
             replay = tuple(value.clone() for value in result)
             direct = self.compiled(*self.inputs)
@@ -152,6 +223,10 @@ class W8A8ImageStage(CompiledStage):
             self.proof.update(retained_config_sha256=PACKED_FILES[PACKED_CONFIG],
                               mlp="cached-recip-vec16", heads="packed512-rounded",
                               graphics_runtime="israel-26.27-igc-2.38.5")
+            if cast_cache_profile(bundle):
+                self.backend = "israel-w8a8-packed-cast-cached-development"
+                self.proof.update(retained_config_sha256=CAST_CACHE_FILES[CAST_CACHE_CONFIG],
+                                  heads="packed512-rounded-cast-cached")
         progress("loading", "Israel W8A8 development image")
         # Separate module topology, shared immutable FP32 masters. Quantization
         # replaces modules/allocates packed buffers only on the image copy;

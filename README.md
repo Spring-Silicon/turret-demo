@@ -1,6 +1,6 @@
 # Spring turret demo
 
-Camera feed, switchable SAM 3.1 / YOLO26x bounding boxes, and manual or opt-in automatic
+Camera feed, switchable SAM 3.1 / SAM 3.1 Mask / SAM 3.1 Tracking, and manual or opt-in automatic
 X/Y camera framing.
 
 Optional qualified native SAM image execution from `sleepy-joe` is documented
@@ -8,9 +8,22 @@ in [the native image setup](docs/sam31-native.md). Text/grounding and the defaul
 compiled image path remain available; activation is an explicit device setting.
 The faster, **accuracy-unqualified** Israel W8A8 candidate has a separate
 explicit [development setup](docs/sam31-w8a8.md); dense-reference gates remain unchanged.
+The approved [sleepy-joe W4A4 setup](docs/sam31-w4a4.md) provides the retained
+67.8 ms GPU-model candidate, with its explicitly accepted measured accuracy tradeoff.
+
+The optional [SAM 3.1 Tracking profile](docs/sam31-tracking.md) uses the full
+Object Multiplex network, temporal memory and native object IDs on Arc and Thor. It is
+dense BF16 by default, with an optional pinned Israel native672 tracking build
+on Arc. Both are separate from the fast detector-only profiles. See the
+[native tracking tradeoffs](docs/sam31-tracking.md#israel-native672-tracking-opt-in).
 
 NVIDIA Thor uses [dense SAM 3.1 with CUDA compilation and graphs](docs/agxthor.md).
 The same camera/servo UI is retained; Intel binaries are not used on Thor.
+
+[SAM 3.1 mask](docs/sam31-mask.md) is a separate per-frame mask detector: the
+qualified sleepy-joe native mask recipe on Arc, and the same SAM checkpoint and
+mask head through standard `torch.compile` and CUDA graph replay on Thor.
+It is not the temporal Tracking profile.
 
 ## Current hardware status
 
@@ -32,17 +45,40 @@ The service starts torque-off with no startup movement. **Start** writes both
 current positions as hold goals before enabling either motor; it never homes
 the assembly. **Stop** (or Escape) attempts to release both motors even if one
 does not answer. Failed communication or a partial Start cancels motion and
-attempts torque-off on both axes. An unconfirmed stop is reported explicitly;
-reconnection never automatically re-arms. Start checks model, position mode,
-drive mode, secondary ID, homing offset, range and hardware faults.
+attempts torque-off on both axes. An unconfirmed stop is reported explicitly.
+Start intent survives recoverable device faults: reconnection rechecks model,
+position mode, drive mode, secondary ID, homing offset, range and hardware faults,
+then enables torque at the newly measured position. Stop cancels that intent even
+while unplugged. A fresh backend process still starts torque-off. See
+[device recovery](docs/recovery.md).
 
-The browser sends a keepalive while running. After three seconds without one,
-the service releases both motors. Each servo also has a one-second bus watchdog:
+Start stays active when the browser tab is backgrounded, closed or disconnected;
+there is no browser-heartbeat timeout. Use **Stop** (or Escape in the focused
+page) to release the motors. Service shutdown and hardware faults also attempt
+torque-off; restarting the service never re-arms. Each servo retains its one-second bus watchdog:
 if the process or bus stops sending traffic it stops motion, **but retains
-holding torque**. Neither safeguard is a physical emergency stop. A released
+holding torque**. These controls are not a physical emergency stop. A released
 tilt axis can fall under gravity; support the camera before disconnecting power.
 
 ## UI
+
+The frontend can run on your workstation while all hardware and inference stay
+remote: `node scripts/frontend.mjs --arc http://ARC:8080 --thor http://THOR:8080`.
+Open `http://127.0.0.1:8080/` for Arc and Thor side by side, each with the same
+independent controls. HTML, CSS and JavaScript are served locally;
+API commands and paired camera/detection streams stay scoped to their device.
+No Python, GPU runtime or model files are needed on the workstation. See
+[local frontend setup](docs/local-frontend.md) for Arc/Thor side-by-side use.
+
+The HTTP viewer is a separate, restartable Python process. The backend owns
+camera capture, inference and servo control; a viewer crash/reload/disconnect
+does not restart the model, lose tracking memory or stop armed motors. The viewer
+reads an atomic latest-snapshot file in private tmpfs and keeps its own bounded
+JPEG cache. There is no shared Python lock/GIL, viewer acknowledgment or video
+queue that can backpressure control. All HTTP, SSE encoding and network writes
+are in the viewer; the backend's single snapshot publisher does fixed work
+regardless of viewer count. Only explicit commands cross a bounded private Unix
+socket. See [process isolation](docs/process-isolation.md).
 
 Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
 **triangle/square Start/Stop** button, and a **Y degree slider**. Sliders move
@@ -79,17 +115,22 @@ one object category per row (for example `person`, `cup`, `keyboard`). Each row
 shows its detected instance count and a trash button. The single **+** below
 the list adds another row. Counts show `—` while unavailable or for unapplied
 prompts; `0` means no instances were detected in the current result. Select **Update
-prompts**, or press **Enter** in a text box, to apply every row together.
+prompts** to apply every row together without starting stopped motors. Pressing
+**Enter** in a text box applies the prompts and requests Start; Enter elsewhere
+also starts the affected panel (both panels from shared controls).
 Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
 and update to return to the raw feed. Detection alone never moves either servo.
 
 Select the **target icon** beside an applied object class to follow it; only one
 class can be selected. Click it again to return to manual control. While **Start**
-is active, the camera follows whichever matching bounding-box center is nearest
+is active, the camera follows whichever matching aiming point is nearest
 the frame center (distance in image pixels, not apparent object size or depth).
 A dashed white box previews that instance and the center marker shows the framing
-goal. In class mode the nearest instance is reconsidered on each fresh frame.
+goal. Mask-producing profiles aim at the original mask centroid; box-only models
+use the bounding-box center. An empty mask has no aiming point. The preview and
+both calibrated axis corrections use the same point. Non-tracking class mode
+reconsiders the nearest instance each frame; SAM temporal tracking retains its ID.
 
 **Click a bounding box** to temporarily retarget to that object, including another
 instance of the same class. The white dashed outline follows the clicked object
@@ -108,19 +149,19 @@ the original nearest-of-class tracker takes over immediately. With no matching
 detections it holds, then reacquires automatically when that class returns; it
 does not remain stuck on an expired ID. Updating prompts clears a pending
 retarget. The server validates a click against the exact displayed
-JPEG's cached detections and rejects stale frames or fabricated object IDs.
-Click metadata is kept independently of the eight-JPEG cache for the full 750 ms
-freshness window. Pointer presses stay attached to the stable overlay if a box
+JPEG's cached detections and rejects unavailable frames or fabricated object IDs.
+Click metadata is kept independently of the eight-JPEG cache for the last 128
+results, without an age timeout. Pointer presses stay attached to the stable overlay if a box
 changes ID before release. Ambiguous old IDs are retired, so one crossing cannot
 cause continuous ID churn after objects separate. Rejected-click errors remain
 visible for five seconds rather than disappearing on the next video frame.
 
 Selecting a class never starts stopped motors. Stop/Escape still releases both
 motors; a manual slider move cancels automatic tracking. Editing/removing the
-selected prompt also cancels tracking. No target, a stale frame (>750 ms), a
-camera/inference fault, or a prompt change pauses corrections and holds position;
+selected prompt also cancels tracking. No target, a camera/inference fault, or
+a prompt change pauses corrections and holds position;
 there is no automatic search/sweep. New frames resume tracking while Start is
-still active. Automatic corrections never renew the browser's three-second lease.
+still active, including when the browser is backgrounded or disconnected.
 
 Tracking has no step-size cap, encoder-to-goal lead cap, or settling delay. Each
 new inference result wakes the controller immediately, including frames captured
@@ -134,7 +175,10 @@ It does not repeatedly add delayed image errors to the previous goal. Fresh
 frames refine that absolute destination; a stationary, unchanged goal allows
 learning the small load/stiction holding bias. The 1.2% centering deadband remains.
 Reused frames and images from before Start/class selection are still ignored.
-Stop, the browser lease, stale-frame rejection, and hardware fault protections
+There is no maximum age for a completed detection or a box click: slow inference
+does not pause corrections solely because its camera frame is old. This can
+command an outdated object position; later results provide corrections.
+Stop, exact-frame validation, and hardware fault protections
 are unchanged. The existing uncapped motor profile registers are also unchanged.
 The tracker reports `angle limit` when centering would require travel outside
 the configured range. Faster corrections can be more abrupt.
@@ -150,8 +194,8 @@ encoder/phase-correlation measurements (640 × 360): 640 × 2.02 / 8 and
 360 × 1.15 / 5 degrees per frame. They are not measured full lens fields of view
 or a full optical/gimbal calibration; wide-angle distortion and cross-axis
 coupling can leave residual errors that later frames correct. Commission scales
-for another camera rather than copying these blindly. `deadband` and
-`max_frame_age_seconds` also remain configurable. The old `x_gain`, `y_gain`,
+for another camera rather than copying these blindly. `deadband` remains
+configurable. Legacy `max_frame_age_seconds` is accepted but ignored. The old `x_gain`, `y_gain`,
 `max_step_degrees` and `settle_seconds` settings have been removed.
 
 Inference matches the latest camera frame to a bounded 16-snapshot X/Y history
@@ -184,7 +228,7 @@ venv with an idle XPU for exhaustive byte-value and changed-frame parity tests.
 SAM advertises `jpeg-bytes-v1` in its worker handshake: a bounded JSON header
 with `jpeg_length`, followed by exactly that many unmodified JPEG bytes.
 Responses stay JSON lines, and legacy base64 JSON requests remain accepted.
-YOLO/older workers retain the base64 path unless they advertise the capability.
+Older workers retain the base64 path unless they advertise the capability.
 This removes base64 encoding/decoding and its 33% payload expansion from SAM's
 local input pipe; it does not reorder inference requests/results.
 
@@ -265,8 +309,8 @@ While running, feedback outside these software limits no longer stops the
 motors. The affected axis is commanded back to the nearest limit, with torque
 remaining on. Recovery happens once per excursion so it does not repeatedly
 reset the motion profile or overwrite a subsequent valid slider command. Both
-axes' communication, hardware-fault and torque checks, and the browser control
-timeout, must still pass before any correction. Stop and those fault shutdowns
+axes' communication, hardware-fault and torque checks must still pass before
+any correction. Stop and those fault shutdowns
 are unchanged; recovery never starts a stopped motor. These are corrective
 software limits, not a guarantee against physical overshoot.
 
@@ -302,63 +346,24 @@ must already exist and be accessible to the process. Check the live state:
 curl http://127.0.0.1:8080/api/status
 ```
 
-## Model selector and YOLO26x on Intel Arc
+## Model selector
 
-The **Model** selector switches between SAM 3.1 free-text grounding and the
-official **YOLO26x** COCO detector. YOLO's rows are class dropdowns, not free-text
-prompts: it supports the [80 pretrained COCO classes](https://docs.ultralytics.com/models/yolo26/).
-For example, `person` is supported but `face` is not; use SAM for that. Both modes
-retain multiple instances, per-class counts, class tracking and click retargeting.
-The add/trash controls and Update prompts / Enter work in both modes.
+The demo offers SAM 3.1 (boxes), SAM 3.1 Mask (per-frame masks), and SAM 3.1
+Tracking (temporal masks and IDs). All accept free-text prompts, retain multiple
+instances, and support per-class counts and click retargeting. YOLO is removed
+from the selector, API model registry, worker and installation dependencies.
 
-Applied object lists are retained separately in server memory; browser drafts
-are retained separately while the page remains open. A model switch clears
-old boxes/instance IDs and the tracking target, holds any automatic motion, and
-never arms the motors. The old worker is interrupted and reaped before the new
-worker allocates GPU memory. First use compiles/captures; later switches still
-need model loading and graph setup. There is no background second GPU model,
-silent model substitution, CPU fallback, or eager-only fallback.
-
-To extend the SAM environment with the pinned YOLO dependencies:
-
-```bash
-uv pip install --python /var/lib/spring-data/turret-inference/venv/bin/python \
-  --extra-index-url https://download.pytorch.org/whl/xpu \
-  --index-strategy unsafe-best-match -r requirements-yolo26.txt
-```
-
-Download [the official v8.4.0 yolo26x.pt checkpoint](https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26x.pt)
-to the configured `inference.yolo26x_checkpoint` path. The worker verifies SHA256
-`9fdd44a31c504547ffb81d2c6d9e6dac3493c8eaa8b0398d3f43bae6c7003e92`
-**before** unpickling it. Model downloads never happen in the service. Ultralytics
-provides [AGPL-3.0 and Enterprise licensing options](https://www.ultralytics.com/license);
-its dependency/checkpoint licensing is separate from this repository's code.
-
-YOLO26x uses a centered 640×640 RGB letterbox (114 padding), FP32 master weights
-with FP16 autocast by default, fused Conv/BN and the end-to-end one-to-one head.
-One forward pass produces detections across all 80 classes; selected classes
-are filtered afterward, with at most 300 predictions/frame and confidence >0.5.
-No NMS is needed. Original-frame normalized XYXY coordinates undo the letterbox.
-The complete network, decoding and top-k run through full-graph static
-`torch.compile(backend="inductor")` and `torch.xpu.XPUGraph` replay. CPU work is
-JPEG/resize, result transfer/filtering and annotation. YOLO caches live under
-`inference.cache_dir/yolo26x`; the SAM cache layout is unchanged.
-
-Capture validates replay against uncaptured compiled output. The first three
-frames additionally compare meaningful eager/compiled detections independent
-of top-k ordering (confidence error ≤0.03 and coordinates ≤6.4px at 640px).
-Failure is surfaced in the UI. `tests/smoke-yolo26.py` exercises an official bus
-fixture, its reflection, and optional real MJPEG camera frames; unload other GPU
-workers before running it. In a B580 run on 2026-09-04, both fixture orientations
-retained four people plus one bus. Observed maximum coordinate error was 0.125px
-and score error 0.000488; all 15 SYCL replays passed.
-
-In that same run, 10 warmed live-frame medians were **8.80ms network** and
-**25.38ms worker total** (8.54ms preprocessing, 0.42ms postprocessing, 7.63ms
-annotation; medians need not sum). `latency_ms` is synchronized model execution;
-`timing.worker_total_ms` includes worker-side overhead and cold setup when present.
-Neither includes camera buffering, HTTP delivery or browser display. The first
-uncached compile/capture took about 105 seconds; this is not steady-state latency.
+Applied prompts and browser drafts are kept separately per model. Switching
+models clears old results and instance IDs and holds automatic motion; it keeps
+the selected class when that class remains in the applied prompts and
+never arms the motors. Workers exit when switching models; no warm-worker pool
+is enabled. Disk compiler caches survive but weights/live GPU graphs reload.
+Start remains requested across device faults; reconnection automatically resumes
+after checking the commissioned hardware. Stop clears that request even while
+disconnected. Enter starts again (and applies prompts first when editing them).
+See [reconnection behavior](docs/recovery.md).
+See [the deployed policy audit](docs/sam-policy-audit.md) for current Arc/Thor
+model/hardware differences; inference and control policy are shared.
 
 ## SAM 3.1 on Intel Arc
 
@@ -378,9 +383,7 @@ object as the `inference` key in the service's JSON config. The checkpoint is
 not included in this repository. The tested checkpoint SHA256 is
 `0567debeec80ba4ac6369540c6c248025283cb3ff2b92827509e57e2b3541cb6`.
 
-For SAM-only installations, omit `yolo26x_checkpoint` from the example; YOLO
-will remain unavailable in the selector. Both checkpoints are administrator
-configuration, never browser-supplied paths.
+The checkpoint path is administrator configuration, never a browser-supplied path.
 
 The host needs both Intel Level Zero and **GPU OpenCL** drivers. On the tested
 Ubuntu 24.04 host, `libze-intel-gpu1` and `intel-opencl-icd` are both
@@ -495,7 +498,7 @@ image backend and frame-driven delivery are separate improvements.
   newer detection metadata, without acquiring hardware-status locks.
 - `POST /api/servo/arm`
 - `POST /api/servo/disable`
-- `POST /api/servo/keepalive` at least once a second while running
+- `POST /api/servo/keepalive` compatibility no-op for older clients; no heartbeat required
 - `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
 - `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` temporarily retargets to a box from the displayed frame without arming.
 - `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or

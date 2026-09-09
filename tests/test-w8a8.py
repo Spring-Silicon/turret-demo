@@ -27,6 +27,7 @@ class W8A8Tests(unittest.TestCase):
                 events.append("restored")
         value = SimpleNamespace(clone=lambda: value)
         stage = w8.PackedHeadStage.__new__(w8.PackedHeadStage)
+        stage.cast_cache_enabled = False
         stage.library, stage.graph, stage.inputs = Path("/kernel"), None, (value,)
         stage.torch = SimpleNamespace(equal=lambda a, b: True,
                                      isfinite=lambda x: SimpleNamespace(all=lambda: True))
@@ -69,6 +70,53 @@ class W8A8Tests(unittest.TestCase):
                     Sam31Engine(Path("/checkpoint"), 0, "float16", .5, True, batch,
                                 w8a8_development_bundle=Path("/bundle"))
 
+    def test_cast_cache_requires_packed_base_and_pins_every_new_artifact(self):
+        root, checkpoint = Path("/bundle"), Path("/checkpoint")
+        files = {**w8.PINNED_FILES, **w8.PACKED_FILES, **w8.CAST_CACHE_FILES}
+        files.update({f"runtime/graphics/{n}": v for n, v in w8.GRAPHICS_FILES.items()})
+        def digest(path):
+            return w8.CHECKPOINT if path == checkpoint else files[str(path.relative_to(root))]
+        with patch.object(w8, "cast_cache_profile", return_value=True), \
+                patch.object(w8, "packed_profile", return_value=False), \
+                patch.object(w8, "digest", side_effect=digest):
+            with self.assertRaisesRegex(ValueError, "require the retained packed bundle"):
+                w8.verify_bundle(root, checkpoint)
+        with patch.object(w8, "cast_cache_profile", return_value=True), \
+                patch.object(w8, "packed_profile", return_value=True):
+            with patch.object(w8, "digest", side_effect=digest):
+                w8.verify_bundle(root, checkpoint)
+            for name in w8.CAST_CACHE_FILES:
+                with self.subTest(name=name), patch.object(w8, "digest", side_effect=
+                        lambda p: "bad" if p == root/name else digest(p)):
+                    with self.assertRaises(ValueError):
+                        w8.verify_bundle(root, checkpoint)
+
+    def test_cast_cache_setup_errors_propagate_and_restore_patches(self):
+        events = []
+        @contextmanager
+        def context(library):
+            events.append("patched")
+            try:
+                yield {"invocations": [None] * 18}
+            finally:
+                events.append("restored")
+        stage = w8.PackedHeadStage.__new__(w8.PackedHeadStage)
+        stage.library, stage.graph, stage.cast_cache_enabled = Path('/kernel'), None, True
+        with patch.dict(sys.modules, {'packed_head_attention': SimpleNamespace(packed_heads=context)}), \
+                patch.object(stage, '_capture_cached', side_effect=RuntimeError('unknown program')), \
+                patch.object(w8.CompiledStage, '__call__') as fallback:
+            with self.assertRaisesRegex(RuntimeError, 'unknown program'):
+                stage(object())
+            fallback.assert_not_called()
+            self.assertIsNone(stage.graph)
+        self.assertEqual(events, ['patched', 'restored'])
+        stage.graph = object()
+        with patch.object(stage, '_capture_cached') as prepare, \
+                patch.object(w8.CompiledStage, '__call__') as replay:
+            stage(object())
+            prepare.assert_not_called()
+            replay.assert_called_once()
+
     def test_packed_graphics_are_pinned_only_for_sam_and_use_a_separate_cache(self):
         with tempfile.TemporaryDirectory() as cache, \
                 patch.object(w8, "packed_profile", return_value=True), \
@@ -81,7 +129,7 @@ class W8A8Tests(unittest.TestCase):
             self.assertTrue(env["LD_LIBRARY_PATH"].startswith("/bundle/runtime/graphics:/inference/venv/lib:"))
             self.assertIn("sam31-israel-w8a8-packed", env["TORCHINDUCTOR_CACHE_DIR"])
             verify.assert_called_once_with(Path("/bundle"))
-            WorkerClient({**config,"model":"yolo26x"}).launch()
+            WorkerClient({**config,"model":"sam3.1-mask"}).launch()
             self.assertNotIn("/bundle/runtime/graphics", launch.call_args.kwargs["env"].get("LD_LIBRARY_PATH", ""))
             verify.assert_called_once()
 
@@ -159,7 +207,7 @@ class W8A8Tests(unittest.TestCase):
                 self.assertNotIn("--allow-unqualified-w8a8", launch.call_args.args[0])
                 WorkerClient({**config, "sam31_allow_unqualified_w8a8": True}).launch()
                 self.assertIn("--allow-unqualified-w8a8", launch.call_args.args[0])
-                WorkerClient({**config, "model": "yolo26x", "sam31_allow_unqualified_w8a8": True}).launch()
+                WorkerClient({**config, "model": "sam3.1-mask", "sam31_allow_unqualified_w8a8": True}).launch()
                 self.assertNotIn("--w8a8-development-bundle", launch.call_args.args[0])
                 self.assertNotIn("--allow-unqualified-w8a8", launch.call_args.args[0])
 

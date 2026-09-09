@@ -3,7 +3,6 @@
   "python": "/var/lib/spring-data/turret-inference/venv/bin/python",
   "checkpoint": "/var/lib/spring-data/turret-inference/sam3.1_multiplex.pt",
   "model": "sam3.1",
-  "yolo26x_checkpoint": "/var/lib/spring-data/turret-inference/yolo26x.pt",
   "cache_dir": "/var/lib/spring-data/turret-inference/cache",
   "device": 0,
   "precision": "float16",

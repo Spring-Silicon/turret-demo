@@ -1,4 +1,4 @@
-:root {
+:root, :host {
   color-scheme: dark;
   font-family: ui-sans-serif, system-ui, sans-serif;
   background: #0b0d0d;
@@ -37,7 +37,7 @@ main {
 }
 
 .feed { position: relative; aspect-ratio: 16 / 9; overflow: hidden; background: #000; border: 1px solid var(--line); }
-.feed img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.feed img, .feed canvas { width: 100%; height: 100%; display: block; object-fit: contain; }
 .vision { min-width: 0; }
 .model-control { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 14px; }
 #detection-model { border: 1px solid var(--line); background: #151919; color: inherit; padding: 8px 12px; font: inherit; }
@@ -57,10 +57,15 @@ select:focus { outline: 1px solid var(--accent); }
 #tracking-status.error { color: var(--error); }
 #tracking-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #box-targets { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+#mask-overlay { position: absolute; inset: 0; pointer-events: none; }
+#mask-overlay img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .box-target { position: absolute; min-height: 0; padding: 0; background: transparent; border: 2px solid transparent; pointer-events: auto; }
 .box-target:hover:not(:disabled), .box-target:focus-visible { border-color: white; outline: none; }
 .box-target:disabled { pointer-events: none; }
 .box-target.client-overlay { border-color: var(--box-color); opacity: 1; }
+#box-targets.masked { pointer-events: auto; }
+.box-target.mask-instance, .box-target.mask-instance:hover, .box-target.mask-instance:focus-visible { border: 0; outline: none; background: transparent; pointer-events: none; }
+.box-target.mask-instance .box-label { display: none; }
 .box-label { position: absolute; left: -2px; top: 0; color: var(--box-color); background: #0b0d0de6; padding: 1px 3px; white-space: nowrap; font-size: 12px; pointer-events: none; }
 .box-label:empty { display: none; }
 #tracking-overlay, #frame-center { z-index: 2; }

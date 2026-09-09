@@ -19,8 +19,6 @@ from spring_turret.detection import DetectionController, validate_config
 from spring_turret.server import TurretApplication, make_handler
 from spring_turret.sam31_worker import Sam31Engine
 from spring_turret.instances import InstanceAssociator
-from spring_turret.models import COCO_CLASSES
-from spring_turret.yolo26_worker import decode, validate_predictions
 
 
 def eventually(check, timeout=3):
@@ -86,7 +84,40 @@ class Worker:
 
 
 class DetectionTests(unittest.TestCase):
-    def test_click_history_survives_jpeg_eviction_at_30fps_but_expires(self):
+    def test_temporal_worker_preserves_ids_and_receives_session_boundary(self):
+        c, worker = self.controller()
+        c.model = "sam3.1-tracking"
+        c.config["sam31_tracking_bundle"] = "/source"
+        def forbidden(*args):
+            raise AssertionError("Native SAM IDs must not use geometric association")
+        c.instances.update = forbidden
+        original = worker.detect
+        def detect(*args, **kwargs):
+            self.assertEqual(kwargs["session_revision"], c.revision)
+            self.assertIsInstance(kwargs["captured_at"], float)
+            result = original(*args)
+            return {**result, "torch_compile":False, "sycl_graph":False,
+                    "temporal_tracking":True, "tracking_backend":"sam31-object-multiplex",
+                    "tracking_frame":2, "memory_frames":2, "active_instance_ids":[777],
+                    "boxes":[{"instance_id":777, "prompt":"cup", "score":.9, "xyxy":[.1,.2,.3,.4]}]}
+        worker.detect = detect
+        worker.release.set()
+        c.set_prompt("cup")
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertEqual(c.status()["boxes"][0]["instance_id"], 777)
+        self.assertFalse(c.status()["torch_compile"])
+
+    def test_temporal_marker_cannot_bypass_original_detector_graph_gate(self):
+        c, worker = self.controller()
+        original = worker.detect
+        worker.detect = lambda *args: {**original(*args), "torch_compile":False,
+                                      "temporal_tracking":True}
+        worker.release.set()
+        c.set_prompt("cup")
+        eventually(lambda: c.status()["state"] == "error")
+        self.assertIn("compiled", c.status()["error"])
+
+    def test_click_history_has_no_age_expiry_but_remains_bounded(self):
         c = DetectionController({"enabled": True}, Camera())
         c.state = "running"
         box = {"prompt": "cup", "instance_id": 42, "xyxy": [.1, .2, .3, .4]}
@@ -96,15 +127,19 @@ class DetectionTests(unittest.TestCase):
                 c._cache_frame(f"{c.revision}-{i}", b"jpeg", [box], clock.return_value)
             self.assertEqual(len(c.frames), 8)
             self.assertIsNone(c.frame(f"{c.revision}-0"))
-            self.assertEqual(c.selection(c.revision, 0, 42), box)  # 667 ms, still fresh.
-            clock.return_value = 10.8
+            self.assertEqual(c.selection(c.revision, 0, 42), box)
+            clock.return_value = 70.0
             c._cache_frame(f"{c.revision}-24", b"jpeg", [box], clock.return_value)
-            with self.assertRaisesRegex(ValueError, "stale"):
-                c.selection(c.revision, 0, 42)
-            self.assertNotIn(f"{c.revision}-0", c.frame_selections)
+            self.assertEqual(c.selection(c.revision, 0, 42), box)  # 60 seconds old.
+            with self.assertRaisesRegex(ValueError, "not in"):
+                c.selection(c.revision, 0, 99)
+            with self.assertRaisesRegex(ValueError, "no longer available"):
+                c.selection(c.revision + 1, 0, 42)
             for i in range(300):
                 c._cache_frame(f"{c.revision}-{100+i}", b"jpeg", [box], clock.return_value)
             self.assertEqual(len(c.frame_selections), 128)
+            with self.assertRaisesRegex(ValueError, "no longer available"):
+                c.selection(c.revision, 0, 42)  # Evicted by count, not elapsed time.
 
     def test_model_switch_serializes_workers_preserves_lists_and_discards_old_frames(self):
         workers = []
@@ -114,65 +149,45 @@ class DetectionTests(unittest.TestCase):
             worker.model = config["model"]
             workers.append(worker)
             return worker
-        c = DetectionController({"enabled": True, "max_fps": 30, "yolo26x_checkpoint": "/models/yolo26x.pt"}, Camera(), factory)
+        c = DetectionController({"enabled": True, "max_fps": 30, "sam31_mask_bundle": "/mask"}, Camera(), factory)
         c.start()
         self.addCleanup(c.stop)
         c.set_prompts(["face"])
         eventually(lambda: workers and workers[0].entered.is_set())
-        c.set_model("yolo26x")
-        self.assertEqual(c.status()["prompts"], ["person"])
-        self.assertNotIn("frame_url", c.status())
+        c.set_model("sam3.1-mask")
+        self.assertEqual(c.status()["prompts"], [])
+        c.set_prompts(["person"])
+        self.assertIsNone(c.status()["frame_url"])
         eventually(lambda: len(workers) == 2 and workers[1].entered.is_set())
         workers[1].release.set()
         eventually(lambda: c.status()["state"] == "running")
-        self.assertEqual(c.status()["model"], "yolo26x")
-        self.assertTrue(all(key.startswith("2-") for key in c.frames))
-        self.assertEqual(len(c.status()["classes"]), 80)
+        self.assertEqual(c.status()["model"], "sam3.1-mask")
+        self.assertTrue(all(key.startswith("3-") for key in c.frames))
+        self.assertIsNone(c.status()["classes"])
         c.set_prompts(["Cup", "person"])
-        self.assertEqual(c.status()["prompts"], ["cup", "person"])
-        with self.assertRaises(ValueError): c.set_prompts(["face"])
+        self.assertEqual(c.status()["prompts"], ["Cup", "person"])
         c.set_model("sam3.1")
         self.assertEqual(c.status()["prompts"], ["face"])
         eventually(lambda: len(workers) == 3)
-        c.set_model("yolo26x")
-        self.assertEqual(c.status()["prompts"], ["cup", "person"])
+        c.set_model("sam3.1-mask")
+        self.assertEqual(c.status()["prompts"], ["Cup", "person"])
         with self.assertRaises(ValueError): c.selection(2, 1, 1)
 
     def test_model_validation_and_switch_to_empty_unloads_previous_worker(self):
         c, worker = self.controller()
         for value in (None, True, [], "yolo26n", "unknown"):
             with self.assertRaises(ValueError): c.set_model(value)
-        with self.assertRaises(ValueError): c.set_model("yolo26x")
-        c.config["yolo26x_checkpoint"] = "/models/yolo26x.pt"
-        c.set_model("yolo26x")
+        with self.assertRaises(ValueError): c.set_model("sam3.1-mask")
+        c.config["sam31_mask_bundle"] = "/mask"
+        c.set_model("sam3.1-mask")
+        c.set_prompts(["face"])
         self.assertTrue(worker.entered.wait(1))
         c.set_model("sam3.1")
         eventually(lambda: worker.stopped)
         self.assertEqual(c.status()["state"], "idle")
         self.assertEqual(c.status()["prompts"], [])
         with self.assertRaises(ValueError):
-            validate_config({"enabled": True, "python": "/p", "checkpoint": "/c", "cache_dir": "/cache", "model": "yolo26x"})
-
-    def test_yolo_letterbox_decoding_classes_counts_and_clipping(self):
-        rows = [[64, 172, 192, 280, .9, 0], [320, 140, 640, 500, .8, 0],
-                [-10, 100, 100, 220, .95, 41], [20, 20, 60, 40, .9, 41],
-                [0, 140, 640, 500, .49, 0], [0, 140, 640, 500, .95, 1]]
-        boxes = decode(rows, ["cup", "person"], 1280, 720, (640, 360), (0, 140), .5)
-        self.assertEqual([b["prompt"] for b in boxes], ["person", "person", "cup"])
-        self.assertEqual(boxes[0]["xyxy"], [.1, 32/360, .3, 140/360])
-        self.assertEqual(boxes[1]["xyxy"], [.5, 0, 1, 1])
-        self.assertEqual(boxes[2]["xyxy"], [0, 0, 100/640, 80/360])
-        self.assertEqual(boxes[0]["color"], boxes[1]["color"])
-        self.assertNotEqual(boxes[0]["color"], boxes[2]["color"])
-        self.assertEqual(len(COCO_CLASSES), 80)
-        with self.assertRaises(RuntimeError): decode([[0, 0, 1, 1, float("nan"), 0]], [], 1, 1, (1, 1), (0, 0), .5)
-
-    def test_yolo_validation_allows_reordering_but_not_wrong_boxes_classes_or_scores(self):
-        rows = [[1, 2, 3, 4, .9, 0], [100, 100, 200, 200, .8, 0]]
-        self.assertEqual(validate_predictions(rows, rows[::-1], .5)["matched"], 4)
-        for wrong in ([[1, 2, 3, 4, .9, 1]], [[20, 20, 30, 40, .9, 0]],
-                      [[1, 2, 3, 4, .2, 0]], [[1, 2, 3, 4, float("nan"), 0]]):
-            with self.assertRaises(RuntimeError): validate_predictions(rows[:1], wrong, .5)
+            validate_config({"enabled": True, "python": "/p", "checkpoint": "/c", "cache_dir": "/cache", "model": "sam3.1-mask"})
 
     def test_engine_preserves_every_instance_and_category_on_one_frame(self):
         engine = Sam31Engine.__new__(Sam31Engine)
@@ -319,7 +334,7 @@ class DetectionTests(unittest.TestCase):
         worker.release.set()
         time.sleep(0.1)
         self.assertEqual(c.status()["state"], "idle")
-        self.assertNotIn("frame_url", c.status())
+        self.assertIsNone(c.status()["frame_url"])
         self.assertEqual(len(worker.requests), 1)
         self.assertFalse(c.frames)
 
@@ -350,7 +365,7 @@ class DetectionTests(unittest.TestCase):
                 eventually(lambda: c.status()["state"] == expected)
                 if expected == "error":
                     self.assertIn("compiled cuda_graph", c.status()["error"])
-                    self.assertNotIn("frame_url", c.status())
+                    self.assertIsNone(c.status()["frame_url"])
                 c.stop()
 
     def test_bad_prompts(self):
@@ -369,20 +384,36 @@ class DetectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             c.set_prompt("person")
 
-    def test_encoder_pose_survives_inference_delay_and_is_not_resampled_at_completion(self):
+    def test_encoder_pose_is_resolved_for_capture_time_after_inference(self):
         c, worker = self.controller()
-        pose = {"sampled_at": time.monotonic(), "axes": {
+        pose = {"axes": {
             "x": {"degrees": 10, "goal_degrees": 40}, "y": {"degrees": 5, "goal_degrees": 5}}}
-        c.pose_provider = lambda captured_at: pose
+        requested = []
+        def provider(at):
+            requested.append(at)
+            self.assertTrue(worker.release.is_set())
+            # These are interpolated historical angles, not current angles.
+            return {**pose, "sampled_at": at, "read_completed_at": at + .04,
+                    "interpolated": True}
+        c.pose_provider = provider
         c.set_prompt("cup")
         self.assertTrue(worker.entered.wait(1))
-        # The capture pose is a snapshot. Inference must not replace it with a
-        # later pose after the motors have moved during model execution.
-        pose = {**pose, "axes": {**pose["axes"], "x": {"degrees": 40, "goal_degrees": 40}}}
+        self.assertEqual(requested, [])
         worker.release.set()
         eventually(lambda: c.status()["state"] == "running")
         self.assertEqual(c.status()["frame_pose"]["axes"]["x"]["degrees"], 10)
-        self.assertGreaterEqual(c.status()["captured_at"], c.status()["frame_pose"]["sampled_at"])
+        self.assertEqual(c.status()["captured_at"], c.status()["frame_pose"]["sampled_at"])
+
+    def test_stop_during_inference_does_not_publish_old_pose(self):
+        c, worker = self.controller()
+        available = True
+        c.pose_provider = lambda at: {"sampled_at": at} if available else None
+        c.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        available = False
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertIsNone(c.status()["frame_pose"])
 
     def test_old_pose_is_not_paired_with_a_later_camera_frame(self):
         c, worker = self.controller()
@@ -604,15 +635,15 @@ class DetectionTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
             response.read()
-        c.config["yolo26x_checkpoint"] = "/models/yolo26x.pt"
-        connection.request("POST", "/api/detection/model", '{"model":"yolo26x"}')
+        c.config["sam31_mask_bundle"] = "/mask"
+        connection.request("POST", "/api/detection/model", '{"model":"sam3.1-mask"}')
         response = connection.getresponse()
         self.assertEqual(response.status, 200)
         body = json.loads(response.read())
-        self.assertEqual(body["detection"]["model"], "yolo26x")
+        self.assertEqual(body["detection"]["model"], "sam3.1-mask")
         self.assertFalse(body["servo"]["armed"])
         self.assertIsNone(body["tracking"]["target"])
-        for payload in ('{"model":"nano"}', '{"model":[]}', '{"model":"sam3.1","extra":1}'):
+        for payload in ('{"model":"yolo26x"}', '{"model":"nano"}', '{"model":[]}', '{"model":"sam3.1","extra":1}'):
             connection.request("POST", "/api/detection/model", payload)
             response = connection.getresponse()
             self.assertEqual(response.status, 400)
@@ -651,8 +682,11 @@ class DetectionTests(unittest.TestCase):
             self.assertEqual(response.status, 400)
             response.read()
             self.assertEqual(app.tracking.instance_id, 42)
-        c.frame_selections[f"{c.revision}-777"]["captured_at"] -= 1
-        with self.assertRaises(ValueError): c.selection(c.revision, 777, 42)
+        c.frame_selections[f"{c.revision}-777"]["captured_at"] -= 60
+        connection.request("POST", "/api/tracking/instance", json.dumps(selection))
+        response = connection.getresponse()
+        self.assertEqual(response.status, 200)
+        self.assertFalse(json.loads(response.read())["servo"]["armed"])
 
 
 class InstanceTests(unittest.TestCase):

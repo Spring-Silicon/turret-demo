@@ -1,5 +1,10 @@
 "use strict";
 
+// Each mounted panel owns all mutable UI state and its fixed API namespace.
+function mountTurret(document, apiPrefix = "", options = {}) {
+const sharedControls = options.sharedControls === true;
+let sharedBusy = false;
+const apiUrl = path => apiPrefix + path;
 const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };
 const motorToggle = document.getElementById("motor-toggle");
 const recalibrateButton = document.getElementById("recalibrate");
@@ -11,7 +16,6 @@ let moveTimer = null;
 let arming = false;
 let stopping = false;
 let recalibrating = false;
-let keepaliveSending = false;
 let status = null;
 let detectionSending = false;
 let feedSource = "";
@@ -23,17 +27,26 @@ const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
 const modelSelector = document.getElementById("detection-model");
 let activeModel = null;
+let renderedModel = null;
 let modelSending = false;
 const modelDrafts = new Map();
 let draftInitialized = false;
 let draftVersion = 0;
 let promptError = "";
 let targetSending = false;
-const cameraFeed = document.getElementById("camera-feed");
+let cameraFeed = document.getElementById("camera-feed");
 const boxTargets = document.getElementById("box-targets");
 const boxButtons = new Map();
+const maskOverlay = document.getElementById("mask-overlay");
+const frameBuffer = document.createElement("canvas");
+const frameBufferContext = frameBuffer.getContext("2d", {alpha: false});
+let displayContext = null;
 let frameDetection = null;
-let loadingDetection = null;
+let frameBackendPid = null;
+let visibleFrame = null;
+let maskPointer = null;
+let focusedMaskId = null;
+let loadingFrame = null;
 let streamFrame = null;
 let detectionStreamOpen = false;
 let fpsRevision = null;
@@ -64,13 +77,209 @@ function detectionFps(detection, now = performance.now()) {
 
 function clickableFrame() {
   return frameDetection?.state === "running" && status?.camera?.online &&
+    frameBackendPid === (status?.runtime?.backend_pid ?? null) &&
     frameDetection.revision === status?.detection?.revision &&
-    status?.detection?.state === "running" &&
-    frameDetection.frame_age_ms + performance.now() - frameDetection.receivedAt <= 750;
+    status?.detection?.state === "running";
+}
+
+function hasTrackingMask(detection) {
+  return ((detection?.model === "sam3.1-tracking" && detection?.temporal_tracking === true) ||
+      (detection?.model === "sam3.1-mask" && detection?.mask_detection === true)) &&
+    detection.mask_overlay?.format === "indexed-png" &&
+    typeof detection.mask_overlay.png === "string" && detection.mask_overlay.png.length > 0;
+}
+
+function isMaskMode(detection) {
+  return ["sam3.1-mask", "sam3.1-tracking"].includes(detection?.model);
+}
+
+function trackedBox(detection, backendPid = frameBackendPid) {
+  const tracking = status?.tracking;
+  if (!tracking?.target || !status?.camera?.online || detection?.state !== "running" ||
+      status?.detection?.state !== "running" || detection.revision !== status.detection.revision ||
+      backendPid !== (status?.runtime?.backend_pid ?? null)) return null;
+  if (tracking.continuity === "hold-reacquire" &&
+      !["tracking", "centered", "limited"].includes(tracking.state)) return null;
+  if (tracking.instance_id != null) return detection.boxes.find(b => b.instance_id === tracking.instance_id);
+  // Prefer the controller's actual target over independently picking a nearer
+  // instance. Never reuse an ID from a different prompt/model revision.
+  const active = tracking.frame?.[0] === detection.revision && tracking.box?.prompt === tracking.target
+    ? detection.boxes.find(b => b.instance_id === tracking.box.instance_id) : null;
+  return active || nearestDisplayedBox(detection, tracking.target);
+}
+
+function prepareMaskSurface(pending) {
+  if (!pending.mask) return null;
+  const canvas = document.createElement("canvas");
+  canvas.width = pending.mask.naturalWidth; canvas.height = pending.mask.naturalHeight;
+  const context = canvas.getContext("2d", {willReadFrequently: true});
+  context.drawImage(pending.mask, 0, 0);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+  const original = new Uint8ClampedArray(pixels.data);
+  const labels = new Uint16Array(canvas.width * canvas.height);
+  const boxes = pending.detection.boxes;
+  const colors = boxes.map((box, index) => ({index: index + 1, box,
+    rgb: /^#[0-9a-f]{6}$/i.test(box.color || "")
+      ? [1, 3, 5].map(i => parseInt(box.color.slice(i, i+2), 16)) : null}));
+  const palette = new Map();
+  for (let i = 0; i < labels.length; i++) {
+    const p = i * 4;
+    if (!original[p+3]) continue;
+    const rgb = (original[p] << 16) | (original[p+1] << 8) | original[p+2];
+    if (!palette.has(rgb)) {
+      // Canvas un-premultiplication can round palette channels by 1-2. Resolve
+      // each color once; ambiguous colors remain visible but cannot mis-target.
+      let best = 13, label = 0;
+      for (const candidate of colors) {
+        if (!candidate.rgb || !Number.isInteger(candidate.box.instance_id)) continue;
+        const distance = candidate.rgb.reduce((sum, c, n) => sum + (c-original[p+n]) ** 2, 0);
+        if (distance < best) { best = distance; label = candidate.index; }
+        else if (distance === best) label = 0;
+      }
+      palette.set(rgb, label);
+    }
+    labels[i] = palette.get(rgb);
+  }
+  return {canvas, context, pixels, original, labels, boxes, key: null};
+}
+
+function maskInstanceAt(surface, point) {
+  if (!surface || !point) return null;
+  const rect = boxTargets.getBoundingClientRect();
+  const x = Math.floor((point.x - rect.left) / rect.width * surface.canvas.width);
+  const y = Math.floor((point.y - rect.top) / rect.height * surface.canvas.height);
+  if (x < 0 || y < 0 || x >= surface.canvas.width || y >= surface.canvas.height) return null;
+  return surface.boxes[surface.labels[y * surface.canvas.width + x] - 1]?.instance_id ?? null;
+}
+
+function paintMask(pending) {
+  const surface = pending.maskSurface;
+  if (!surface) return null;
+  const target = trackedBox(pending.detection, pending.backendPid)?.instance_id ?? null;
+  const hover = focusedMaskId ?? maskInstanceAt(surface, maskPointer);
+  const key = `${target}:${hover}`;
+  if (key !== surface.key) {
+    surface.pixels.data.set(surface.original);
+    const selectedLabel = target == null ? -1 : surface.boxes.findIndex(b => b.instance_id === target) + 1;
+    const hoveredLabel = hover == null ? -1 : surface.boxes.findIndex(b => b.instance_id === hover) + 1;
+    for (let i = 0; i < surface.labels.length; i++) {
+      const label = surface.labels[i];
+      if (!label || (label !== selectedLabel && label !== hoveredLabel)) continue;
+      const p = i * 4, selected = label === selectedLabel;
+      surface.pixels.data[p] = 255;
+      surface.pixels.data[p+1] = selected ? 32 : 132;
+      surface.pixels.data[p+2] = selected ? 48 : 142;
+      surface.pixels.data[p+3] = 144;
+    }
+    surface.context.putImageData(surface.pixels, 0, 0);
+    surface.key = key;
+  }
+  return surface.canvas;
+}
+
+function renderMaskOverlay() {
+  // Mask pixels are composited into the persistent camera canvas, not a
+  // separately uploaded image layer that can paint out of sync with the JPEG.
+  maskOverlay.hidden = true;
+  if (!visibleFrame?.maskSurface || visibleFrame.detection !== frameDetection) return;
+  const previous = visibleFrame.maskSurface.key;
+  paintMask(visibleFrame);
+  if (previous !== visibleFrame.maskSurface.key) {
+    composeProcessedFrame(visibleFrame);
+    displayContext.drawImage(frameBuffer, 0, 0);
+  }
+}
+
+function composeProcessedFrame(pending) {
+  const width = pending.image.naturalWidth, height = pending.image.naturalHeight;
+  if (!width || !height || !frameBufferContext) throw new Error("Cannot render camera frame");
+  if (frameBuffer.width !== width) frameBuffer.width = width;
+  if (frameBuffer.height !== height) frameBuffer.height = height;
+  // Compose offscreen first. A mask draw failure leaves the visible surface
+  // untouched; the opaque JPEG overwrites the previous offscreen pixels.
+  frameBufferContext.globalCompositeOperation = "copy";
+  frameBufferContext.drawImage(pending.image, 0, 0, width, height);
+  frameBufferContext.globalCompositeOperation = "source-over";
+  if (pending.mask) frameBufferContext.drawImage(paintMask(pending), 0, 0, width, height);
+}
+
+function presentProcessedFrame(pending) {
+  pending.maskSurface = prepareMaskSurface(pending);
+  composeProcessedFrame(pending);
+  const width = pending.image.naturalWidth, height = pending.image.naturalHeight;
+  if (!displayContext || cameraFeed.width !== width || cameraFeed.height !== height) {
+    // Create a surface only on first frame or a genuine resolution change.
+    // Draw before insertion; never clear/replace the visible surface per frame.
+    const canvas = document.createElement("canvas");
+    canvas.id = "camera-feed";
+    canvas.width = width; canvas.height = height;
+    canvas.setAttribute("role", "img");
+    canvas.setAttribute("aria-label", "Processed turret camera frame");
+    const context = canvas.getContext("2d", {alpha: false});
+    if (!context) throw new Error("Cannot render camera frame");
+    context.globalCompositeOperation = "copy";
+    context.drawImage(frameBuffer, 0, 0);
+    cameraFeed.replaceWith(canvas);
+    cameraFeed = canvas; displayContext = context;
+    cameraFeed.parentElement.style.aspectRatio = `${width} / ${height}`;
+  } else {
+    displayContext.drawImage(frameBuffer, 0, 0);
+  }
+  cameraFeed.setAttribute("data-frame-key", processedFrameKey(pending.detection));
+  cameraFeed.setAttribute("data-frame-sequence", String(pending.detection.frame_sequence));
+  cameraFeed.setAttribute("data-mask-present", String(Boolean(pending.mask)));
+  maskOverlay.replaceChildren();
+  frameDetection = pending.detection;
+  frameBackendPid = pending.backendPid;
+  visibleFrame = pending;
+  document.getElementById("camera-offline").hidden = true;
+  renderTracking();
+}
+
+function processedFrameKey(detection) {
+  return `${status?.runtime?.backend_pid ?? ""}:${detection.model}:${detection.revision}:${detection.frame_sequence}:${detection.frame_url}`;
+}
+
+function loadProcessedFrame(detection, source, streamed) {
+  const pending = {detection: {...detection}, source, streamed, image: document.createElement("img"),
+    mask: hasTrackingMask(detection) ? document.createElement("img") : null, remaining: 0,
+    backendPid: status?.runtime?.backend_pid ?? null};
+  loadingFrame = pending;
+  feedSource = processedFrameKey(detection);
+  pending.image.alt = "Processed turret camera frame";
+  for (const image of [pending.image, pending.mask].filter(Boolean)) {
+    image.setAttribute("data-frame-key", processedFrameKey(detection));
+    image.setAttribute("data-frame-sequence", String(detection.frame_sequence));
+  }
+  if (pending.mask) pending.mask.alt = "";
+  pending.remaining = pending.mask ? 2 : 1;
+  const finish = (failed = false) => {
+    if (loadingFrame !== pending) return;
+    if (!failed && --pending.remaining > 0) return;
+    loadingFrame = null;
+    if (!failed && pending.detection.revision === displayedDetection?.revision &&
+        pending.detection.model === displayedDetection?.model) {
+      try { presentProcessedFrame(pending); }
+      catch (_) { showMessage("Frame display failed; retaining the last result", true); }
+    }
+    // At most one decode plus the latest worker result, never a video backlog.
+    // Errors retain the previous complete pair and wait for a newer result.
+    if (displayedDetection && status?.camera) renderDetection(displayedDetection);
+  };
+  const decode = (image, url) => {
+    image.addEventListener("load", () => {
+      if (typeof image.decode === "function") image.decode().then(() => finish(), () => finish(true));
+      else finish();
+    }, {once: true});
+    image.addEventListener("error", () => finish(true), {once: true});
+    image.src = url;
+  };
+  decode(pending.image, source);
+  if (pending.mask) decode(pending.mask, `data:image/png;base64,${detection.mask_overlay.png}`);
 }
 
 async function selectInstance(selection) {
-  if (targetSending || detectionSending || modelSending) return;
+  if (targetSending || detectionSending || modelSending || sharedBusy) return;
   targetSending = true;
   pendingAngles.clear();
   renderTracking();
@@ -92,18 +301,41 @@ boxTargets.addEventListener("pointerup", (event) => {
   pressedBox = null;
   boxTargets.releasePointerCapture(event.pointerId);
   if (Math.hypot(event.clientX - picked.x, event.clientY - picked.y) > 12) return;
-  if (!clickableFrame() || picked.selection.revision !== frameDetection.revision ||
-      performance.now() > picked.expiresAt) {
-    showMessage("That camera frame is stale; click a box in a fresh frame", true);
+  if (!clickableFrame() || picked.selection.revision !== frameDetection.revision) {
+    showMessage("That camera frame is no longer available; click a displayed box", true);
     return;
   }
   return selectInstance(picked.selection);
 });
 boxTargets.addEventListener("pointercancel", () => { pressedBox = null; });
 boxTargets.addEventListener("lostpointercapture", () => { pressedBox = null; });
+boxTargets.addEventListener("pointermove", event => {
+  if (!isMaskMode(frameDetection)) return;
+  maskPointer = {x: event.clientX, y: event.clientY};
+  focusedMaskId = null;
+  boxTargets.style.cursor = maskInstanceAt(visibleFrame?.maskSurface, maskPointer) == null ? "default" : "pointer";
+  renderMaskOverlay();
+});
+boxTargets.addEventListener("pointerleave", () => {
+  maskPointer = null;
+  renderMaskOverlay();
+});
+boxTargets.addEventListener("pointerdown", event => {
+  if (!isMaskMode(frameDetection) || !clickableFrame() || event.button !== 0 || !event.isPrimary ||
+      targetSending || detectionSending || modelSending || sharedBusy) return;
+  const id = maskInstanceAt(visibleFrame?.maskSurface, {x: event.clientX, y: event.clientY});
+  if (id == null) return;
+  pressedBox = {selection: {revision: frameDetection.revision,
+    frame_sequence: frameDetection.frame_sequence, instance_id: id},
+    pointerId: event.pointerId, x: event.clientX, y: event.clientY};
+  boxTargets.setPointerCapture(event.pointerId);
+});
 
 function renderBoxTargets() {
-  boxTargets.hidden = !clickableFrame();
+  const masked = isMaskMode(frameDetection);
+  boxTargets.classList.toggle("masked", masked);
+  if (!masked) { maskPointer = null; focusedMaskId = null; boxTargets.style.cursor = ""; }
+  boxTargets.hidden = !frameDetection;
   if (boxTargets.hidden) return;
   const ids = new Set();
   for (const box of frameDetection.boxes) {
@@ -121,17 +353,19 @@ function renderBoxTargets() {
       const selection = () => ({revision: frameDetection.revision,
         frame_sequence: frameDetection.frame_sequence, instance_id: id});
       button.addEventListener("pointerdown", (event) => {
-        if (event.button !== 0 || !event.isPrimary || button.disabled || !clickableFrame()) return;
+        if (isMaskMode(frameDetection)) return; // Mask pixels, not rectangles, own pointer hit testing.
+        if (event.button !== 0 || !event.isPrimary || button.disabled || button.hidden || !clickableFrame()) return;
         pressedBox = {selection: selection(), pointerId: event.pointerId,
-          x: event.clientX, y: event.clientY,
-          expiresAt: frameDetection.receivedAt + 750 - frameDetection.frame_age_ms};
+          x: event.clientX, y: event.clientY};
         boxTargets.setPointerCapture(event.pointerId);
       });
       button.addEventListener("click", (event) => {
         // Pointer activation was handled above. Retain keyboard/assistive clicks.
-        if (event.detail !== 0 || !clickableFrame() || button.disabled) return;
+        if (event.detail !== 0 || !clickableFrame() || button.disabled || button.hidden) return;
         return selectInstance(selection());
       });
+      button.addEventListener("focus", () => { focusedMaskId = id; renderMaskOverlay(); });
+      button.addEventListener("blur", () => { focusedMaskId = null; renderMaskOverlay(); });
       boxButtons.set(id, button);
       boxTargets.append(button);
     }
@@ -139,37 +373,25 @@ function renderBoxTargets() {
     Object.assign(button.style, {left: `${x1*100}%`, top: `${y1*100}%`,
       width: `${(x2-x1)*100}%`, height: `${(y2-y1)*100}%`,
       zIndex: String(Math.round(1000000*(1-(x2-x1)*(y2-y1))))});
-    button.disabled = targetSending || detectionSending || modelSending;
+    button.disabled = !clickableFrame() || targetSending || detectionSending || modelSending || sharedBusy;
     button.setAttribute("aria-label", `Track ${box.prompt} object ${id}`);
-    button.setAttribute("aria-pressed", String(status?.tracking?.instance_id === id));
-    button.title = `Track this ${box.prompt}`;
-    button.classList.toggle("client-overlay", frameDetection.client_overlay === true);
+    button.setAttribute("aria-pressed", String(trackedBox(frameDetection)?.instance_id === id));
+    button.title = masked ? "" : `Track this ${box.prompt}`;
+    button.classList.toggle("client-overlay", frameDetection.client_overlay === true && !masked);
+    button.classList.toggle("mask-instance", masked);
     button.style.setProperty("--box-color", box.color || "#55e8ce");
-    button.children[0].textContent = frameDetection.client_overlay === true
+    button.children[0].textContent = frameDetection.client_overlay === true && !masked
       ? `${box.prompt.slice(0, 48)} ${Math.round(box.score * 100)}%` : "";
   }
   for (const [id, button] of boxButtons) if (!ids.has(id)) {
+    if (focusedMaskId === id) focusedMaskId = null;
     button.remove();
     boxButtons.delete(id);
   }
 }
 
-cameraFeed.addEventListener("load", () => {
-  // A click must refer to the JPEG actually on screen, not the newest API
-  // result while that image is still downloading. Only one JPEG loads at once.
-  frameDetection = loadingDetection;
-  loadingDetection = null;
-  renderTracking();
-  // If a newer pair arrived during JPEG decoding, load it immediately.
-  if (detectionStreamOpen && streamFrame && status?.camera) renderDetection(status.detection);
-});
-cameraFeed.addEventListener("error", () => {
-  loadingDetection = frameDetection = null;
-  feedSource = "";
-  renderTracking();
-});
-
 function updatePromptControls() {
+  if (sharedControls) return;
   const rows = [...promptRows.children];
   const enabled = Boolean(status?.detection?.enabled) && !modelSending;
   rows.forEach((row, index) => {
@@ -179,15 +401,18 @@ function updatePromptControls() {
   });
   addPromptButton.disabled = !enabled || rows.length >= (status?.detection?.max_prompts || 8);
   updatePromptsButton.disabled = !enabled || detectionSending;
-  modelSelector.disabled = !enabled || detectionSending || targetSending;
+  const disabled = !enabled || detectionSending || targetSending;
+  if (modelSelector.disabled !== disabled) modelSelector.disabled = disabled;
   for (const option of modelSelector.options || []) {
-    option.disabled = !status?.detection?.models?.find(model => model.id === option.value)?.available;
+    const disabled = !status?.detection?.models?.find(model => model.id === option.value)?.available;
+    if (option.disabled !== disabled) option.disabled = disabled;
   }
   updatePromptCounts(displayedDetection || status?.detection);
   updateTargetControls();
 }
 
 function updateTargetControls() {
+  if (sharedControls) return;
   const target = status?.tracking?.target;
   const prompts = status?.detection?.prompts || [];
   const seen = new Set();
@@ -221,13 +446,16 @@ async function selectTarget(target) {
 }
 
 function nearestDisplayedBox(detection, target) {
-  const width = status?.camera?.width || 1280, height = status?.camera?.height || 720;
+  const width = (displayContext && cameraFeed.width) || cameraFeed.naturalWidth || status?.camera?.width || 1280;
+  const height = (displayContext && cameraFeed.height) || cameraFeed.naturalHeight || status?.camera?.height || 720;
   let nearest = null, distance = Infinity;
   for (const box of detection?.boxes || []) {
     if (box.prompt !== target || !Array.isArray(box.xyxy) || box.xyxy.length !== 4) continue;
     const [x1, y1, x2, y2] = box.xyxy;
     if (!box.xyxy.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1) || x1 >= x2 || y1 >= y2) continue;
-    const d = (((x1 + x2) / 2 - .5) * width) ** 2 + (((y1 + y2) / 2 - .5) * height) ** 2;
+    const point = Object.hasOwn(box, "mask_centroid") ? box.mask_centroid : [(x1+x2)/2, (y1+y2)/2];
+    if (!Array.isArray(point) || point.length !== 2 || !point.every(v => typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1)) continue;
+    const d = ((point[0] - .5) * width) ** 2 + ((point[1] - .5) * height) ** 2;
     if (d < distance || (d === distance && box.score > nearest.score)) { nearest = box; distance = d; }
   }
   return nearest;
@@ -237,31 +465,53 @@ function renderTracking() {
   const tracking = status?.tracking, target = tracking?.target;
   const element = document.getElementById("tracking-status");
   const labels = { stopped: "press Start", waiting: "waiting for fresh detections", lost: "not found",
+    holding: "holding · target lost", reacquiring: "reacquiring target",
     centered: "centered", tracking: "tracking", limited: "angle limit", uncalibrated: "camera directions not calibrated" };
   element.hidden = !target && !tracking?.error;
-  element.textContent = tracking?.error || (target ? `${target}${tracking.instance_id != null ? " · retargeting" : ""} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
+  element.textContent = tracking?.error || (target ? `${target}${tracking.selection === "retarget" ? " · selected instance" : ""} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : status?.servo?.recovering ? "reconnecting" : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
   element.classList.toggle("error", Boolean(tracking?.error));
   document.getElementById("frame-center").toggleAttribute("hidden", !target);
   const detection = frameDetection;
-  const box = target && clickableFrame()
-    ? tracking.instance_id != null ? detection.boxes.find(b => b.instance_id === tracking.instance_id)
-      : nearestDisplayedBox(detection, target) : null;
-  document.getElementById("tracking-overlay").toggleAttribute("hidden", !box);
+  const box = trackedBox(detection);
+  document.getElementById("tracking-overlay").toggleAttribute("hidden", !box || isMaskMode(detection));
   if (box) {
     const [x1, y1, x2, y2] = box.xyxy;
     const rect = document.getElementById("tracked-box");
     for (const [key, value] of Object.entries({x: x1 * 1000, y: y1 * 1000, width: (x2 - x1) * 1000, height: (y2 - y1) * 1000})) rect.setAttribute(key, value);
   }
   updateTargetControls();
+  renderMaskOverlay();
   renderBoxTargets();
 }
 
 function isDetectionFresh(detection) {
   return detection?.state === "running" &&
-    detection.frame_age_ms < Math.max(5000, 2 * detection.latency_ms + 1000);
+    Number.isFinite(detection.frame_age_ms) &&
+    detection.frame_age_ms < Math.max(5000, 2 * (Number.isFinite(detection.latency_ms) ? detection.latency_ms : 0) + 1000);
+}
+
+function detectionPhase(detection) {
+  if (detection?.progress?.phase) return detection.progress.phase;
+  // Compatibility with a backend during a rolling viewer update.
+  const stage = String(detection?.progress_stage || detection?.state || "idle");
+  if (stage.startsWith("compiling")) return "preparing";
+  if (stage.startsWith("loading")) return "loading";
+  return stage;
+}
+
+function detectionTiming(detection) {
+  const timing = detection?.timing || {};
+  const temporal = detection?.model === "sam3.1-tracking";
+  const value = Number.isFinite(timing.model_ms) ? timing.model_ms
+    : temporal && Number.isFinite(timing.tracking_ms) ? timing.tracking_ms : detection?.latency_ms;
+  const label = Number.isFinite(timing.model_ms) ? "model" : temporal ? "tracking" : "inference";
+  const measured = Number.isFinite(value) ? ` · ${Number(value.toFixed(1))} ms ${label}` : "";
+  const cycle = detection?.pipeline_timing?.cycle_ms;
+  return measured + (Number.isFinite(cycle) ? ` · ${Math.round(cycle)} ms total` : "");
 }
 
 function updatePromptCounts(detection) {
+  if (sharedControls) return;
   const fresh = isDetectionFresh(detection);
   [...promptRows.children].forEach((row, index) => {
     const prompt = row.querySelector(".detection-prompt").value.trim();
@@ -283,19 +533,7 @@ function updatePromptCounts(detection) {
 
 function addPromptRow(value = "", focus = false) {
   const row = document.getElementById("prompt-row-template").content.firstElementChild.cloneNode(true);
-  let input = row.querySelector(".detection-prompt");
-  if (status?.detection?.model === "yolo26x") {
-    const select = document.createElement("select");
-    select.className = "detection-prompt";
-    for (const name of ["", ...status.detection.classes]) {
-      const option = document.createElement("option");
-      option.value = name;
-      option.textContent = name || "Select COCO class";
-      select.append(option);
-    }
-    input.replaceWith(select);
-    input = select;
-  }
+  const input = row.querySelector(".detection-prompt");
   input.value = value;
   input.addEventListener("input", () => {
     if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
@@ -335,43 +573,67 @@ function renderDetection(detection) {
        (detection.revision === displayedDetection.revision && detection.state === "running" &&
         detection.frame_sequence < displayedDetection.frame_sequence))) return;
   if (detection && (!draftInitialized || activeModel !== (detection.model || "sam3.1"))) {
-    if (activeModel) modelDrafts.set(activeModel, readPromptRows());
+    if (activeModel && !sharedControls) modelDrafts.set(activeModel, readPromptRows());
     activeModel = detection.model || "sam3.1";
     draftVersion += 1;
-    setPromptRows(modelDrafts.get(activeModel) || detection.prompts || (detection.prompt ? [detection.prompt] : []));
+    if (!sharedControls) setPromptRows(modelDrafts.get(activeModel) || detection.prompts || (detection.prompt ? [detection.prompt] : []));
     draftInitialized = true;
-    frameDetection = loadingDetection = null;
+    loadingFrame = null;
     promptError = "";
   }
-  modelSelector.value = detection?.model || "sam3.1";
+  const selection = detection?.model || "sam3.1";
+  // Do not reset Firefox's open native menu on every inference result. Compare
+  // committed model state, not the popup's temporary hover/keyboard selection.
+  if (!sharedControls && renderedModel !== selection) {
+    if (modelSelector.value !== selection) modelSelector.value = selection;
+    renderedModel = selection;
+  }
   displayedDetection = detection;
   updatePromptControls();
-  const name = detection?.model === "yolo26x" ? "YOLO26x · 80 COCO classes" : "SAM 3.1";
+  const name = detection?.model === "sam3.1-tracking" ? "SAM 3.1 Tracking"
+    : detection?.model === "sam3.1-mask" ? "SAM 3.1 Mask" : "SAM 3.1";
   const labels = { disabled: "Inference not configured", idle: name, loading: `Loading ${name}…`,
-    compiling: `Compiling ${name}…`, validating: "Validating detector…", capturing: "Capturing GPU graph…",
-    waiting_for_camera: "Waiting for camera…" };
+    preparing: detection?.model === "sam3.1-tracking" ? "Preparing tracking graph…" : "Preparing model graph…",
+    validating: "Validating model…", capturing: "Capturing model graph…", waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
   const fps = detectionFps(detection);
-  const imageMode = ["israel-w8a8-development", "israel-w8a8-packed-development"].includes(detection?.image_backend)
-    ? "W8A8 dev (accuracy unqualified) · torch.compile"
-    : detection?.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile";
-  const loopMs = detection?.pipeline_timing?.cycle_ms;
-  const loopTiming = Number.isFinite(loopMs) ? ` · ${Math.round(loopMs)} ms loop` : "";
-  detectionMessage.textContent = promptError || detection?.error || (fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms model${loopTiming} · ${imageMode} + ${detection.cuda_graph ? "CUDA" : "SYCL"} graphs`
-    : labels[detection?.state] || "Waiting for detection…");
+  const phase = detectionPhase(detection);
+  const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
+  const holdResult = preparing && detection.state === "running" &&
+    Boolean(detection.frame_url) && Number.isInteger(detection.frame_sequence);
+  const countNoun = ["sam3.1-mask", "sam3.1-tracking"].includes(detection?.model) ? "mask" : "box";
+  const pluralNoun = countNoun === "mask" ? "masks" : "boxes";
+  const omitted = Object.values(detection?.mask_overflow || {}).reduce((sum, count) => sum + count, 0);
+  const capacityNotice = omitted > 0 ? ` · ${omitted} over mask cap` : "";
+  detectionMessage.textContent = promptError || detection?.error || (preparing
+    ? `${labels[phase]}${holdResult ? " · showing last result" : ""}` : fresh
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? countNoun : pluralNoun} · ${fps === null ? "—" : fps.toFixed(1)} FPS${detectionTiming(detection)}${capacityNotice}`
+    : labels[phase] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
-  const source = fresh ? detection.frame_url : "/stream.mjpg";
-  const streamed = streamFrame?.frame_url === source && streamFrame?.revision === detection?.revision;
-  // Full hardware polls may be ahead of the stream. Wait for the paired JPEG
-  // instead of downloading it again; disconnected streams retain HTTP fallback.
-  if (fresh && detectionStreamOpen && !streamed) return;
-  if (source !== feedSource && (!loadingDetection || !fresh)) {
-    feedSource = source;
-    loadingDetection = fresh ? {...detection, receivedAt: performance.now()} : null;
-    if (!fresh) frameDetection = null;
-    cameraFeed.src = streamed ? streamFrame.dataUrl : source;
-  }
+  // The viewer is a sink for completed worker results, never the raw camera.
+  // Hold the last pair during loading, stalls, camera loss and model changes.
+  // A status poll may already describe N+1 while the paired SSE image is N.
+  // That is still a new, valid display frame: never require SSE to catch the
+  // status poll exactly (which can starve slower backends at the poll cadence).
+  const candidate = detectionStreamOpen ? streamFrame?.detection : detection;
+  if (candidate?.state !== "running" || !candidate.frame_url ||
+      !Number.isInteger(candidate.frame_sequence) || candidate.revision !== detection?.revision ||
+      candidate.model !== detection?.model) return;
+  if (frameDetection && frameBackendPid === (status?.runtime?.backend_pid ?? null) &&
+      candidate.revision === frameDetection.revision && candidate.model === frameDetection.model &&
+      candidate.frame_sequence <= frameDetection.frame_sequence) return;
+  const source = candidate.frame_url;
+  const streamed = streamFrame?.frame_url === source && streamFrame?.revision === candidate.revision;
+  // A queued initial HTTP JPEG must not block already-arrived SSE frames.
+  // Upgrade it once to an in-memory JPEG; thereafter still decode one at a time.
+  const upgradeToStream = streamed && loadingFrame && !loadingFrame.streamed;
+  if ((processedFrameKey(candidate) !== feedSource || upgradeToStream) && (!loadingFrame || upgradeToStream))
+    loadProcessedFrame(candidate, streamed ? streamFrame.dataUrl : apiUrl(source), streamed);
+}
+
+function shouldStop(servo) {
+  return (servo.run_requested ?? servo.armed) || servo.armed ||
+    Object.values(servo.axes).some(axis => servo.run_requested === undefined ? axis.torque !== false : axis.torque === true);
 }
 
 function renderMotors() {
@@ -389,12 +651,12 @@ function renderMotors() {
       document.getElementById(name + "-degrees").textContent = value === null ? "—" : Number(value).toFixed(1) + "°";
     }
   }
-  const stop = servo.armed || Object.values(servo.axes).some(axis => axis.torque !== false);
-  motorToggle.disabled = arming || stopping || (!stop && (recalibrating || !servo.ready));
+  const stop = shouldStop(servo);
+  motorToggle.disabled = arming || stopping || (!stop && (recalibrating || !(servo.can_start ?? servo.ready)));
   recalibrateButton.disabled = arming || stopping || recalibrating || !servo.can_recalibrate;
   recalibrateButton.textContent = recalibrating ? "Saving zeros…" : "Recalibrate zeros";
   motorToggle.setAttribute("aria-label", stop ? "Stop motors" : "Start motors");
-  motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors";
+  motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors (Enter)";
   motorToggle.classList.toggle("stopping", stop);
   // SVGElement does not reflect a .hidden property into the HTML attribute.
   document.getElementById("start-icon").toggleAttribute("hidden", stop);
@@ -415,6 +677,17 @@ function showMessage(text, error = false) {
 }
 
 function render(next) {
+  // Command replies can omit process diagnostics supplied by status polling.
+  if (!next.runtime && status?.runtime) next = {...next, runtime: status.runtime};
+  if (status?.runtime?.backend_pid && next.runtime?.backend_pid &&
+      status.runtime.backend_pid !== next.runtime.backend_pid) {
+    // Revisions/sequences restart with the backend. Retain the old picture,
+    // but never reject all results from the new process as out of order.
+    status = {...status, detection: null};
+    displayedDetection = loadingFrame = streamFrame = null;
+    feedSource = "";
+    fpsRevision = null;
+  }
   if (status?.detection && next.detection && (
       next.detection.revision < status.detection.revision ||
       (next.detection.revision === status.detection.revision &&
@@ -424,20 +697,23 @@ function render(next) {
   status = next;
   renderDetection(next.detection);
   const { camera, servo } = next;
-  cameraFeed.parentElement.style.aspectRatio = `${camera.width} / ${camera.height}`;
+  if (!frameDetection) cameraFeed.parentElement.style.aspectRatio = `${camera.width} / ${camera.height}`;
   showDevice("camera-status", "Camera", camera.online);
   showDevice("servo-status", "X/Y", servo.online);
-  document.getElementById("camera-offline").hidden = camera.online;
+  // A transient device/status outage must not cover the last good picture
+  // with the black offline panel. The camera status/error still reports it.
+  document.getElementById("camera-offline").hidden = camera.online || Boolean(frameDetection);
   if (!servo.armed) pendingAngles.clear();
   renderMotors();
   renderTracking();
+  options.onStatus?.(next);
   // A 30 FPS detection update must not erase a rejected click's error instantly.
   if (servo.error || camera.error || performance.now() >= messageExpiresAt)
     showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     cache: "no-store",
     signal: AbortSignal.timeout(5000),
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -450,7 +726,8 @@ async function request(path, options = {}) {
 }
 
 async function startMotors() {
-  if (arming || stopping || recalibrating || !status?.servo?.ready) return;
+  if (arming || stopping || recalibrating || !(status?.servo?.can_start ?? status?.servo?.ready)
+      || (status?.servo?.run_requested ?? status?.servo?.armed)) return;
   arming = true;
   renderMotors();
   try {
@@ -533,26 +810,18 @@ for (const [axis, slider] of Object.entries(sliders)) {
 
 motorToggle.addEventListener("click", () => {
   if (motorToggle.disabled || !status?.servo) return;
-  const stop = status.servo.armed || Object.values(status.servo.axes).some(axis => axis.torque !== false);
+  const stop = shouldStop(status.servo);
   if (stop) stopMotors();
   else startMotors();
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") stopMotors();
-});
-
-async function keepMotorsAlive() {
-  if (!status?.servo?.armed || stopping || keepaliveSending) return;
-  keepaliveSending = true;
-  try {
-    await request("/api/servo/keepalive", { method: "POST" });
-  } catch (error) {
-    showMessage(error.message, true);
-  } finally {
-    keepaliveSending = false;
+  if (event.key === "Enter" && !event.defaultPrevented && !event.repeat && !event.isComposing
+      && event.target?.tagName !== "BUTTON") {
+    event.preventDefault?.();
+    startMotors();
   }
-}
-setInterval(keepMotorsAlive, 700);
+});
 
 async function poll() {
   if (polling) return;
@@ -561,6 +830,7 @@ async function poll() {
     await request("/api/status");
   } catch (error) {
     showMessage(error.message, true);
+    options.onOffline?.(error);
     updatePromptCounts(null);
     detectionFps(null);
     detectionMessage.textContent = "Detector connection lost";
@@ -572,7 +842,7 @@ async function poll() {
   }
 }
 
-async function setPrompts() {
+async function setPrompts(startAfter = false) {
   if (detectionSending || modelSending) return;
   const submittedVersion = draftVersion;
   const prompts = readPromptRows();
@@ -582,6 +852,7 @@ async function setPrompts() {
   try {
     const body = await request("/api/detection/prompts", { method: "POST", body: JSON.stringify({ prompts }) });
     if (draftVersion === submittedVersion) setPromptRows(body.detection.prompts);
+    if (startAfter) await startMotors();
   } catch (error) {
     promptError = error.message;
     detectionMessage.textContent = error.message;
@@ -595,7 +866,7 @@ async function pollDetection() {
   try {
     const current = status?.detection;
     if (current?.enabled && !detectionStreamOpen) {
-      const response = await fetch(`/api/detection/status?revision=${current.revision}&sequence=${current.frame_sequence ?? -1}`, {
+      const response = await fetch(apiUrl(`/api/detection/status?revision=${current.revision}&sequence=${current.frame_sequence ?? -1}`), {
         cache: "no-store", signal: AbortSignal.timeout(5000),
       });
       if (!response.ok) throw new Error("Detection stream unavailable");
@@ -608,15 +879,16 @@ async function pollDetection() {
     setTimeout(pollDetection, 1000);
   }
 }
-const detectionEvents = new EventSource("/api/detection/events");
+const detectionEvents = new EventSource(apiUrl("/api/detection/events"));
 detectionEvents.onopen = () => { detectionStreamOpen = true; };
 detectionEvents.onerror = () => { detectionStreamOpen = false; }; // Automatic reconnect; HTTP fallback meanwhile.
 detectionEvents.onmessage = (event) => {
   const detection = JSON.parse(event.data);
   if (detection.jpeg) {
-    streamFrame = {frame_url: detection.frame_url, revision: detection.revision,
-      dataUrl: `data:image/jpeg;base64,${detection.jpeg}`};
+    const dataUrl = `data:image/jpeg;base64,${detection.jpeg}`;
     delete detection.jpeg;
+    streamFrame = {frame_url: detection.frame_url, revision: detection.revision,
+      dataUrl, detection};
   }
   if (status) render({...status, detection});
 };
@@ -624,6 +896,7 @@ function readPromptRows() {
   return [...promptRows.querySelectorAll(".detection-prompt")].map(input => input.value.trim());
 }
 
+if (!sharedControls) {
 modelSelector.addEventListener("change", async () => {
   if (modelSending || detectionSending || targetSending) return;
   const model = modelSelector.value;
@@ -634,7 +907,8 @@ modelSelector.addEventListener("change", async () => {
   try {
     await request("/api/detection/model", {method: "POST", body: JSON.stringify({model})});
   } catch (error) {
-    modelSelector.value = activeModel;
+    if (modelSelector.value !== activeModel) modelSelector.value = activeModel;
+    renderedModel = activeModel;
     promptError = error.message;
     detectionMessage.textContent = error.message;
     detectionMessage.classList.add("error");
@@ -644,9 +918,9 @@ modelSelector.addEventListener("change", async () => {
   }
 });
 document.getElementById("detection-form").addEventListener("keydown", event => {
-  if (event.key === "Enter" && event.target.tagName === "SELECT") {
+  if (event.key === "Enter" && !event.repeat && !event.isComposing && ["SELECT", "INPUT"].includes(event.target.tagName)) {
     event.preventDefault();
-    setPrompts();
+    setPrompts(true);
   }
 });
 document.getElementById("detection-form").addEventListener("submit", (event) => {
@@ -660,6 +934,19 @@ addPromptButton.addEventListener("click", () => {
   addPromptRow("", true);
 });
 setPromptRows([]);
+}
 poll();
 setInterval(poll, 200);
 pollDetection();
+return {
+  command: (path, body) => request(path, {method: "POST", body: JSON.stringify(body)}),
+  setSharedBusy(value) {
+    sharedBusy = value;
+    if (value) pendingAngles.clear();
+    renderBoxTargets();
+  },
+};
+}
+
+// Preserve the standalone page used by the remote viewer and single-device CLI.
+if (document.getElementById("motor-toggle")) mountTurret(document);
