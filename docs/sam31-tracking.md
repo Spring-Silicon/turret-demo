@@ -60,6 +60,15 @@ Absolute tracker time advances independently of a single current image slot.
 Pointer-time normalization treats the stream as a long video, not a sequence
 of progressively longer short clips. The standard tracking thresholds and
 masklet confirmation are retained; unconfirmed/suppressed masks are hidden.
+The live suppression adapter forwards the GPU hotstart suppression mask into
+the CPU hidden-ID table consumed by output postprocessing. The pinned planner
+previously discarded that mask, leaving unmatched tracks visible with their
+original detection scores. It preserves the model thresholds and ID order.
+
+If object retirement leaves a multiplex state with IDs but no conditioning
+frames, the shared session retires those orphaned IDs before propagation. This
+avoids the upstream `No points are provided; please add points first` exception;
+healthy tracker memories and monotonic IDs are preserved.
 
 The adapter retains 32 recent frames, the last four conditioning frames, and
 the first conditioning frame if requested by the model. That covers the stock
@@ -168,7 +177,43 @@ New shape capture still causes warmup pauses. Regional replay is enabled by
 available for controlled baseline comparisons and rollback. The web frontend,
 camera/servo configuration, existing YOLO26x, and non-tracking SAM are unchanged.
 
+## Arc football comparison (September 9)
+
+Arc's live Tracking profile returned to **dense BF16 at 1008×1008** after the
+native672 build missed the football and retained masks on unrelated objects.
+Remove only `inference.sam31_tracking_native_bundle` from the device config and
+restart the backend; restore the selected Tracking model and `football` prompt.
+The ordinary Mask profile keeps its separate build. Motor settings are unchanged.
+
+A controlled replay used 256 frames from earlier operator-cued Arc footage,
+with the original capture timestamps, followed by 64 copies of a scene without
+the ball. Both motors were stopped. Of these frames, 214 had a ball detection
+from the earlier Mask run, which serves as a reference rather than ground truth.
+
+| Tracking recipe | Aim inside reference ball box | Empty-scene frames with masks | Median tracking time |
+| --- | ---: | ---: | ---: |
+| native672, previous adapter | 104 / 214 | 25 / 64 | 88 ms |
+| dense1008, previous adapter | 213 / 214 | 0 / 64 | 222 ms |
+| native672, suppression and orphan-state fixes | 21 / 214 | 0 / 64 | 86 ms |
+| dense1008, suppression and orphan-state fixes | 213 / 214 | 0 / 64 | 222 ms |
+
+Restoring suppression removes native's stale masks but also exposes its frequent
+failure to confirm the actual ball. Dense retains its ball aiming point with the
+fix. Each replay completed 320 frames without a worker crash. Timings exclude
+initial graph warmup and use recorded frames 64–255; these are tracking-stage
+wall times, not camera-to-display latency. Tiny stray pixels sometimes enlarge
+dense bounding boxes while leaving the mask centroid on the ball, so box IoU
+alone is a misleading aiming-quality metric here.
+
+The comparison does not isolate quantization, resolution, or temporal-memory
+reduction, and it covers one clip/prompt. Physical moving-target confirmation
+remains pending. Structured results and artifact hashes are in
+[the qualification record](arc-football-tracking-qualification.json).
+
 ## Israel native672 tracking opt-in
+
+This build is retained for explicit experiments. It is no longer Arc's live
+Tracking choice after the football comparison above.
 
 `inference.sam31_tracking_native_bundle` selects the pinned **v24 native672**
 build from `spring@israel` for `sam3.1-tracking` only. Retain the existing

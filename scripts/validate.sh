@@ -32,6 +32,7 @@ python3 tests/test-temporal.py
 python3 tests/test-native-tracking.py
 python3 tests/test-track-lifetime.py
 python3 tests/test-shared-policy.py
+python3 tests/test-tracking-suppression.py
 python3 tests/test-recovery.py
 python3 tests/test-startup.py
 python3 tests/test-deployment-bundle.py

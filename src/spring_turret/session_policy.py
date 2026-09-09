@@ -23,6 +23,14 @@ class ManagedSession:
         return self.session.index
 
     def step(self, pixels, *, timestamp=None):
+        # Removing the last conditioning input can leave other multiplex IDs
+        # alive after upstream clears their shared tracking memories. Such IDs
+        # cannot propagate; retire only those states and let detection reacquire.
+        orphaned = {int(identity) for tracker in self.session.trackers
+                    if not tracker["output_dict"]["cond_frame_outputs"]
+                    for identity in tracker["obj_ids"]}
+        if orphaned:
+            retire_tracks(self.session.model, self.session.trackers, self.session.metadata, orphaned)
         result = self.session.step(pixels)
         active = set(map(int, result["active_ids"]))
         visible = {int(i) for i, score, box, mask in zip(

@@ -128,6 +128,34 @@ class SharedPolicyTests(unittest.TestCase):
                 self.assertEqual(len(result["out_obj_ids"]),0)
                 retire.assert_called_once_with(raw.model,raw.trackers,raw.metadata,{7})
 
+    def test_orphaned_tracker_retires_before_propagation_without_resetting_healthy_memory(self):
+        healthy_memory = object()
+        broken = {"obj_ids": [7, 8], "output_dict": {"cond_frame_outputs": {}}}
+        healthy = {"obj_ids": [9], "output_dict": {"cond_frame_outputs": {0: healthy_memory}}}
+        raw = SimpleNamespace(index=40, model=object(), trackers=[broken, healthy], metadata={})
+        def retire(model, trackers, metadata, ids):
+            self.assertEqual(ids, {7, 8})
+            trackers.remove(broken)
+        def step(pixels):
+            # This is the upstream failure condition behind 'No points ...'.
+            if any(not t["output_dict"]["cond_frame_outputs"] for t in raw.trackers):
+                raise RuntimeError("No points are provided; please add points first")
+            raw.index += 1
+            return {"active_ids": [9], "propagated_ids": [9], "memory_frames": 1,
+                    "out_obj_ids": np.array([9]), "out_probs": np.array([.9]),
+                    "out_boxes_xywh": np.array([[.1,.1,.2,.2]]),
+                    "out_binary_masks": np.ones((1,2,2), dtype=bool)}
+        raw.step = step
+        session = ManagedSession(raw, confidence=.5)
+        session.previous_active = {7, 8, 9}
+        with patch("spring_turret.session_policy.retire_tracks", side_effect=retire) as call:
+            result = session.step(None, timestamp=10)
+            self.assertEqual(result["retired_ids"], [7, 8])
+            self.assertEqual(result["active_ids"], [9])
+            self.assertIs(raw.trackers[0]["output_dict"]["cond_frame_outputs"][0], healthy_memory)
+            self.assertEqual(raw.index, 41)
+            call.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
