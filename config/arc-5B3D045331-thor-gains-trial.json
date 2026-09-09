@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "status": "pending-live-validation",
+  "servo_adapter_serial": "5B3D045331",
+  "model_number": 1200,
+  "baudrate": 57600,
+  "axes": {
+    "x": {"id": 2, "position_gains": {"p": 400, "i": 0, "d": 0}},
+    "y": {"id": 1, "position_gains": {"p": 400, "i": 0, "d": 0}}
+  }
+}
