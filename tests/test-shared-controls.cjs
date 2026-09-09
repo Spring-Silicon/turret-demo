@@ -246,8 +246,11 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     controller.update(id,structuredClone(states[id]));
   }
   assert.equal(calls.length,gainStart); // Mixed initial values never auto-align.
-  assert.equal(get('shared-p-value').textContent,'Mixed');
-  assert.equal(get('shared-d-value').textContent,'Mixed');
+  assert.equal(get('shared-p-value').placeholder,'Mixed');
+  assert.equal(get('shared-p-value').value,'');
+  assert.equal(get('shared-d-value').placeholder,'Mixed');
+  assert.equal(get('shared-p-gain').max,2000);
+  assert.equal(get('shared-d-gain').max,2000);
   get('shared-p-gain').value='800'; get('shared-p-gain').events.input();
   controller.update('thor',structuredClone(states.thor));
   assert.equal(get('shared-p-gain').value,'800');
@@ -260,16 +263,16 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
       {axis:'x',p:800,d:0},{axis:'y',p:800,d:10}]);
     assert.equal(states[id].servo.armed,true);
   }
-  assert.equal(get('shared-p-value').textContent,'800');
-  assert.equal(get('shared-d-value').textContent,'Mixed');
+  assert.equal(get('shared-p-value').value,'800');
+  assert.equal(get('shared-d-value').placeholder,'Mixed');
   get('shared-d-gain').value='100'; get('shared-d-gain').events.input();
   await get('shared-d-gain').events.change();
   assert.ok(calls.slice(-4).every(c=>c.body.p===800 && c.body.d===100));
-  assert.equal(get('shared-d-value').textContent,'100');
+  assert.equal(get('shared-d-value').value,'100');
   await get('shared-gains-reset').events.click();
   assert.ok(calls.slice(-4).every(c=>c.route==='/api/servo/gains/reset'));
-  assert.equal(get('shared-p-value').textContent,'400');
-  assert.equal(get('shared-d-value').textContent,'0');
+  assert.equal(get('shared-p-value').value,'400');
+  assert.equal(get('shared-d-value').value,'0');
 
   controller.offline('thor');
   const offlineCount=calls.length;
@@ -282,7 +285,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   await get('shared-p-gain').events.change();
   assert.equal(calls.length,offlineCount+4); // Both axes attempted, no retries.
   assert.match(get('shared-gains-message').textContent,/Thor X: Disconnected.*Thor Y: Disconnected/);
-  assert.equal(get('shared-p-value').textContent,'Mixed');
+  assert.equal(get('shared-p-value').placeholder,'Mixed');
   failures.clear(); controller.update('thor',structuredClone(states.thor));
   assert.equal(calls.length,offlineCount+4);
   assert.ok(calls.slice(gainStart).every(c=>!c.route.includes('/arm') && !c.route.includes('/disable')));
@@ -296,6 +299,45 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length,gainBusyCount);
   releaseGains(); await pendingGain; blocks.clear();
   console.log('validated shared X/Y P/D across both devices, mixed values, reset, partial failures and no auto-arm');
+
+  const pNumber=get('shared-p-value'), dNumber=get('shared-d-value');
+  const enterGain = input => input.events.keydown({key:'Enter',preventDefault(){},stopPropagation(){}});
+  let numericStart=calls.length;
+  pNumber.events.focus(); pNumber.value='3456'; pNumber.events.input();
+  controller.update('thor',structuredClone(states.thor));
+  assert.equal(pNumber.value,'3456'); // Polls preserve typed drafts.
+  assert.equal(get('shared-p-gain').max,3500);
+  assert.equal(calls.length,numericStart); // No write while typing.
+  await enterGain(pNumber);
+  await pNumber.events.change(); await pNumber.events.blur();
+  assert.equal(calls.length,numericStart+4); // Enter + blur only sends once.
+  assert.ok(calls.slice(numericStart).every(c=>c.route==='/api/servo/gains' && c.body.p===3456));
+  assert.equal(get('shared-p-value').value,'3456');
+  for (const invalid of ['', '1.5', '-1', '0', '16384', 'NaN']) {
+    numericStart=calls.length;
+    pNumber.events.focus(); pNumber.value=invalid; pNumber.events.input();
+    await enterGain(pNumber); await pNumber.events.blur();
+    assert.equal(calls.length,numericStart);
+    assert.equal(pNumber.attributes['aria-invalid'],'true');
+    assert.match(get('shared-gains-message').textContent,/whole number/);
+  }
+  pNumber.value='750'; pNumber.events.input();
+  await pNumber.events.blur();
+  assert.equal(get('shared-p-value').value,'750');
+  assert.equal(get('shared-p-gain').max,2000);
+  assert.equal(pNumber.attributes['aria-invalid'],'false');
+  dNumber.events.focus(); dNumber.value='16383'; dNumber.events.input();
+  assert.equal(get('shared-d-gain').max,16383);
+  await dNumber.events.change();
+  assert.equal(dNumber.value,'16383');
+  dNumber.events.focus(); dNumber.value='0'; dNumber.events.input();
+  await enterGain(dNumber);
+  assert.equal(dNumber.value,'0');
+  assert.equal(get('shared-d-gain').max,2000);
+  numericStart=calls.length;
+  await enterGain(dNumber); // Unedited Enter cannot resend or start motors.
+  assert.equal(calls.length,numericStart);
+  console.log('validated exact gain entry, useful ranges, expansion, invalid drafts and single Enter/blur commit');
 
   // The actual per-device client runs without model/form/template elements
   // when mounted in shared-control mode. Local motor and instance commands

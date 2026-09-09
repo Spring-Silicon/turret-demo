@@ -15,12 +15,18 @@
     <fieldset id="shared-gains">
       <legend>Servo gains · X/Y on both turrets</legend>
       <div class="axis-control">
-        <label for="shared-p-gain">P <output id="shared-p-value">—</output></label>
-        <input id="shared-p-gain" type="range" min="1" max="16383" step="1" aria-label="P gain for X and Y on both turrets" disabled>
+        <div class="gain-heading"><label for="shared-p-gain">P</label>
+          <input id="shared-p-value" type="number" min="1" max="16383" step="1" aria-label="P gain value for both turrets" placeholder="—" disabled>
+        </div>
+        <input id="shared-p-gain" type="range" min="1" max="2000" step="1" aria-label="P gain for X and Y on both turrets" disabled>
+        <div class="gain-range" aria-hidden="true"><span>1</span><span id="shared-p-max">2000</span></div>
       </div>
       <div class="axis-control">
-        <label for="shared-d-gain">D <output id="shared-d-value">—</output></label>
-        <input id="shared-d-gain" type="range" min="0" max="16383" step="1" aria-label="D gain for X and Y on both turrets" disabled>
+        <div class="gain-heading"><label for="shared-d-gain">D</label>
+          <input id="shared-d-value" type="number" min="0" max="16383" step="1" aria-label="D gain value for both turrets" placeholder="—" disabled>
+        </div>
+        <input id="shared-d-gain" type="range" min="0" max="2000" step="1" aria-label="D gain for X and Y on both turrets" disabled>
+        <div class="gain-range" aria-hidden="true"><span>0</span><span id="shared-d-max">2000</span></div>
       </div>
       <button id="shared-gains-reset" type="button" disabled>Reset P/D</button>
       <p id="shared-gains-message" role="status" hidden></p>

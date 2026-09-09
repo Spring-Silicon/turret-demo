@@ -12,10 +12,21 @@ function mountSharedControls(document, devices) {
   let model = null, initialized = false, busy = false, error = '', dirty = false;
   let renderedModel = null;
   const gainSliders = Object.fromEntries(['p','d'].map(key => [key, document.getElementById(`shared-${key}-gain`)]));
+  const gainNumbers = Object.fromEntries(['p','d'].map(key => [key, document.getElementById(`shared-${key}-value`)]));
   const gainReset = document.getElementById('shared-gains-reset');
   const gainMessage = document.getElementById('shared-gains-message');
   let gainsBusy = false, gainsError = '';
   const gainEdits = new Set();
+  const gainNumberDirty = new Set();
+
+  const validGain = (key, value) => Number.isInteger(value) && value >= (key === 'p' ? 1 : 0) && value <= 16383;
+  function scaleGain(key, value) {
+    // Useful drag precision near the installed gains; exact entry can expand
+    // the view without clipping legitimate hardware values.
+    const max = Math.min(16383, Math.max(2000, Math.ceil(value / 500) * 500));
+    gainSliders[key].max = max;
+    document.getElementById(`shared-${key}-max`).textContent = String(max);
+  }
 
   const gainAxes = () => devices.flatMap(device => ['x','y'].map(axis => ({device, axis,
     state: states.get(device.id)?.servo?.axes?.[axis]})));
@@ -26,14 +37,18 @@ function mountSharedControls(document, devices) {
     const ready = gainsReady(), axes = gainAxes();
     for (const key of ['p','d']) {
       const slider = gainSliders[key];
+      const number = gainNumbers[key];
       slider.disabled = !ready || gainsBusy;
+      number.disabled = !ready || gainsBusy;
       if (!gainsBusy && !gainEdits.has(key)) {
         const values = axes.map(({state}) => state?.position_gains?.[key]);
         const known = values.every(Number.isInteger);
         const common = known && values.every(value => value === values[0]);
-        if (known) slider.value = values[0];
+        if (known) { scaleGain(key, Math.max(...values)); slider.value = values[0]; }
         const label = !ready ? '—' : common ? String(values[0]) : 'Mixed';
-        document.getElementById(`shared-${key}-value`).textContent = label;
+        number.value = ready && common ? String(values[0]) : '';
+        number.placeholder = label;
+        number.setAttribute('aria-invalid', 'false');
         slider.setAttribute('aria-valuetext', label);
       }
     }
@@ -43,14 +58,22 @@ function mountSharedControls(document, devices) {
     gainMessage.hidden = !gainsError;
   }
 
-  async function applyGain(key) {
+  async function applyGain(key, source = 'slider') {
     if (gainsBusy || !gainsReady()) return;
-    const value = key === 'reset' ? null : Number(gainSliders[key].value);
+    const raw = key === 'reset' ? '' : String((source === 'number' ? gainNumbers : gainSliders)[key].value).trim();
+    const value = key === 'reset' ? null : Number(raw);
+    if (key !== 'reset' && (!raw || !validGain(key, value))) {
+      gainsError = `${key.toUpperCase()} must be a whole number from ${key === 'p' ? 1 : 0} to 16383`;
+      gainEdits.add(key); renderGains();
+      gainNumbers[key].setAttribute('aria-invalid', 'true');
+      return;
+    }
+    if (key !== 'reset') { scaleGain(key, value); gainSliders[key].value = value; }
     // Freeze each untouched gain before any replies arrive. A P adjustment
     // never replaces a differing D value with one peer's value (or vice versa).
     const commands = gainAxes().map(({device, axis, state}) => ({device, axis,
       body: key === 'reset' ? {axis} : {axis, p:state.position_gains.p, d:state.position_gains.d, [key]:value}}));
-    gainsBusy = true; gainsError = ''; gainEdits.clear(); renderGains();
+    gainsBusy = true; gainsError = ''; gainEdits.clear(); gainNumberDirty.clear(); renderGains();
     const failures = [];
     try {
       await Promise.all(devices.map(async device => {
@@ -74,12 +97,37 @@ function mountSharedControls(document, devices) {
   for (const [key, slider] of Object.entries(gainSliders)) {
     slider.addEventListener('input', () => {
       gainEdits.add(key);
-      document.getElementById(`shared-${key}-value`).textContent = slider.value;
+      gainNumbers[key].value = slider.value;
       slider.setAttribute('aria-valuetext', slider.value);
     });
     slider.addEventListener('change', () => applyGain(key));
     for (const event of ['blur','pointercancel'])
       slider.addEventListener(event, () => { gainEdits.delete(key); renderGains(); });
+    const number = gainNumbers[key];
+    number.addEventListener('focus', () => gainEdits.add(key));
+    number.addEventListener('input', () => {
+      gainEdits.add(key); gainNumberDirty.add(key);
+      number.setAttribute('aria-invalid', 'false');
+      const value = Number(number.value);
+      if (String(number.value).trim() && validGain(key, value)) {
+        scaleGain(key, value); slider.value = value;
+        slider.setAttribute('aria-valuetext', String(value));
+      }
+    });
+    const commitNumber = () => gainNumberDirty.has(key) ? applyGain(key, 'number') : undefined;
+    // Blur/change and Enter may occur together: clear the dirty flag before
+    // awaiting replies so a single edit cannot dispatch a second batch.
+    number.addEventListener('change', commitNumber);
+    number.addEventListener('blur', () => {
+      if (gainNumberDirty.has(key)) return commitNumber();
+      gainEdits.delete(key); renderGains();
+    });
+    number.addEventListener('keydown', event => {
+      if (event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault(); event.stopPropagation?.();
+        if (!event.repeat) return commitNumber();
+      }
+    });
   }
   gainReset.addEventListener('click', () => applyGain('reset'));
 

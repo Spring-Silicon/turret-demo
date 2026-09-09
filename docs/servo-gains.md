@@ -12,6 +12,13 @@ A slider commits on release or keyboard
 change. Opening, polling, or reconnecting the page never writes gains. Stop stays
 available during a gain update; changing gains never arms a stopped turret.
 
+Shared sliders default to **P 1–2000 / D 0–2000**, step 1, with visible endpoints.
+Type exact values into the adjacent number fields and press Enter or leave the
+field to apply. Typing alone does not send commands; Enter here never starts
+motors. Numbers accept the full register range below. The slider expands in
+500-unit increments when a typed or existing gain exceeds 2000, up to 16383.
+Blank, fractional and out-of-range inputs are rejected without motor writes.
+
 These are the XL330 internal **position-controller raw register values**, not
 the camera tracking controller. P is 1–16383 (retaining the application's positive
 P requirement), D is 0–16383. I, feedforward, motor goals, zeros and angle limits
