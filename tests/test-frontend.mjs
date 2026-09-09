@@ -20,6 +20,11 @@ test('named Arc, Thor and combined modes share the same launcher', async t => {
     assert.equal(requests.length,0);
     await fetch(local+'/api/status');
     assert.deepEqual(requests,['/api/status']);
+    for (const path of ['/api/servo/gains','/api/servo/gains/reset']) {
+      assert.equal((await fetch(local+path,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(path.endsWith('/reset') ? {axis:'x'} : {axis:'x',p:400,d:0})})).status,200);
+      assert.equal(requests.at(-1),path);
+    }
   }
   const both=frontendOptions({arc:'http://arc:8080',thor:'http://thor:8080'});
   assert.deepEqual(Object.keys(both.backends),['arc','thor']);

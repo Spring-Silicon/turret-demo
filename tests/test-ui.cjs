@@ -405,6 +405,40 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run("JSON.stringify(targetRequests.at(-1))"), '["/api/detection/model",{"model":"sam3.1-mask"}]');
   assert.equal(rows()[0].fields.input.value, "cup"); // Mask draft preserved too.
   assert.equal(run("status.servo.armed"), false);
+  run(`globalThis.gainCalls = []; request = async (path, options) => {
+    gainCalls.push([path,JSON.parse(options.body)]);
+    const b = JSON.parse(options.body), a = status.servo.axes[b.axis];
+    a.position_gains = {...a.position_gains, ...(path.endsWith('/reset') ? a.gain_baseline : {p:b.p,d:b.d})};
+    return status;
+  };
+  status.servo.online=true; status.servo.run_requested=true; status.servo.armed=true;
+  for (const axis of ['x','y']) Object.assign(status.servo.axes[axis], {
+    position_gains:{p:400,i:0,d:0},gain_baseline:{p:400,d:0}});
+  renderMotors();`);
+  assert.equal(run('gainCalls.length'),0); // Mount/status cannot tune hardware.
+  assert.equal(get('x-p-gain').value,400);
+  get('x-p-gain').value='900'; get('x-p-gain').events.input();
+  run('renderMotors()');
+  assert.equal(get('x-p-gain').value,'900'); // Poll cannot overwrite an edit.
+  assert.equal(run('gainCalls.length'),0); // Dragging does not flood the bus.
+  await get('x-p-gain').events.change();
+  assert.equal(run('JSON.stringify(gainCalls)'), '[["/api/servo/gains",{"axis":"x","p":900,"d":0}]]');
+  assert.equal(get('x-p-gain').value,900);
+  await get('x-gains-reset').events.click();
+  assert.equal(run('JSON.stringify(gainCalls.at(-1))'),'["/api/servo/gains/reset",{"axis":"x"}]');
+  assert.equal(get('x-p-gain').value,400);
+  assert.equal(run('status.servo.armed'),true);
+  run('gainsSending=true; renderMotors()');
+  assert.equal(get('x-p-gain').disabled,true);
+  assert.equal(get('motor-toggle').disabled,false); // Stop remains usable.
+  await get('y-gains-reset').events.click();
+  assert.equal(run('gainCalls.length'),2);
+  run('gainsSending=false; status.servo.online=false; renderMotors()');
+  assert.equal(get('y-d-gain').disabled,true);
+  await get('y-gains-reset').events.click();
+  assert.equal(run('gainCalls.length'),2);
+  run('status.servo.online=true; status.servo.armed=false; status.servo.run_requested=false;');
+  console.log('validated per-axis P/D, read-only mount, release-only writes, reset, offline and busy behavior');
   run(`globalThis.promptCalls = []; globalThis.rejectTarget = false;
     status.servo.ready=true; status.servo.armed=false; status.servo.run_requested=false;
     request = async (path, options) => {

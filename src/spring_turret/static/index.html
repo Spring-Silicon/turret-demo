@@ -69,6 +69,22 @@
           <label for="y-slider">Y <output id="y-degrees" for="y-slider">—</output></label>
           <input id="y-slider" type="range" min="-90" max="90" value="0" step="0.5" aria-label="Y tilt angle in degrees" disabled>
         </div>
+        <fieldset class="gain-controls" id="x-gains">
+          <legend>X gains</legend>
+          <label for="x-p-gain">P <output id="x-p-value">—</output></label>
+          <input id="x-p-gain" type="range" min="1" max="16383" step="1" aria-label="X position P gain" disabled>
+          <label for="x-d-gain">D <output id="x-d-value">—</output></label>
+          <input id="x-d-gain" type="range" min="0" max="16383" step="1" aria-label="X position D gain" disabled>
+          <button id="x-gains-reset" type="button" title="Restore saved X P/D baseline" disabled>Reset P/D</button>
+        </fieldset>
+        <fieldset class="gain-controls" id="y-gains">
+          <legend>Y gains</legend>
+          <label for="y-p-gain">P <output id="y-p-value">—</output></label>
+          <input id="y-p-gain" type="range" min="1" max="16383" step="1" aria-label="Y position P gain" disabled>
+          <label for="y-d-gain">D <output id="y-d-value">—</output></label>
+          <input id="y-d-gain" type="range" min="0" max="16383" step="1" aria-label="Y position D gain" disabled>
+          <button id="y-gains-reset" type="button" title="Restore saved Y P/D baseline" disabled>Reset P/D</button>
+        </fieldset>
         <button id="recalibrate" type="button" title="Save current X/Y positions as 0°. Motors must be stopped." disabled>Recalibrate zeros</button>
         <p id="message" role="status" hidden></p>
       </section>

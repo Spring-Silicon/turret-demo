@@ -50,7 +50,11 @@ def main() -> None:
     html = (ROOT / "src/spring_turret/static/index.html").read_text()
     server = (ROOT / "src/spring_turret/server.py").read_text()
     controller = (ROOT / "src/spring_turret/servo.py").read_text()
-    assert html.count('type="range"') == 2
+    assert html.count('type="range"') == 6  # X/Y angle plus per-axis P/D.
+    for axis in ('x','y'):
+        assert f'id="{axis}-gains-reset"' in html
+        for gain in ('p','d'):
+            assert f'id="{axis}-{gain}-gain"' in html
     assert html.index('id="x-slider"') < html.index('id="motor-toggle"') < html.index('id="y-slider"')
     assert 'id="start-icon"' in html and 'id="stop-icon"' in html
     assert 'id="position-slider"' not in html

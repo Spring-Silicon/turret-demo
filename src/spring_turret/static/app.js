@@ -16,6 +16,8 @@ let moveTimer = null;
 let arming = false;
 let stopping = false;
 let recalibrating = false;
+let gainsSending = false;
+const editingGains = new Set();
 let status = null;
 let detectionSending = false;
 let feedSource = "";
@@ -622,6 +624,18 @@ function renderMotors() {
   if (!servo) return;
   for (const name of ["x", "y"]) {
     const axis = servo.axes[name];
+    for (const key of ["p", "d"]) {
+      const gain = document.getElementById(`${name}-${key}-gain`);
+      gain.disabled = !servo.online || !axis.position_gains || gainsSending || arming || recalibrating || stopping;
+      if (!editingGains.has(name) && !gainsSending) {
+        const value = axis.position_gains?.[key];
+        if (value !== undefined) gain.value = value;
+        document.getElementById(`${name}-${key}-value`).textContent = value ?? "—";
+      }
+    }
+    const reset = document.getElementById(`${name}-gains-reset`);
+    reset.disabled = !servo.online || !axis.gain_baseline || gainsSending || arming || recalibrating || stopping;
+    if (axis.gain_baseline) reset.title = `Reset ${name.toUpperCase()} to P ${axis.gain_baseline.p}, D ${axis.gain_baseline.d}`;
     const slider = sliders[name];
     slider.min = axis.min_degrees;
     slider.max = axis.max_degrees;
@@ -727,6 +741,39 @@ async function recalibrateZeros() {
   }
 }
 recalibrateButton.addEventListener("click", recalibrateZeros);
+
+async function updateGains(axis, reset = false) {
+  if (gainsSending || stopping || arming || recalibrating || !status?.servo?.online) return;
+  const body = reset ? {axis} : {axis,
+    p: Number(document.getElementById(`${axis}-p-gain`).value),
+    d: Number(document.getElementById(`${axis}-d-gain`).value)};
+  gainsSending = true;
+  editingGains.delete(axis);
+  renderMotors();
+  try {
+    await request(reset ? "/api/servo/gains/reset" : "/api/servo/gains",
+      {method: "POST", body: JSON.stringify(body)});
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    gainsSending = false;
+    renderMotors();
+  }
+}
+for (const axis of ["x", "y"]) {
+  for (const key of ["p", "d"]) {
+    const slider = document.getElementById(`${axis}-${key}-gain`);
+    slider.addEventListener("input", () => {
+      editingGains.add(axis);
+      document.getElementById(`${axis}-${key}-value`).textContent = slider.value;
+    });
+    // One acknowledged write on release/key commit, not a serial-bus flood.
+    slider.addEventListener("change", () => updateGains(axis));
+    slider.addEventListener("pointercancel", () => { editingGains.delete(axis); renderMotors(); });
+    slider.addEventListener("blur", () => { editingGains.delete(axis); renderMotors(); });
+  }
+  document.getElementById(`${axis}-gains-reset`).addEventListener("click", () => updateGains(axis, true));
+}
 
 async function stopMotors() {
   if (stopping) return;

@@ -505,6 +505,12 @@ image backend and frame-driven delivery are separate improvements.
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` compatibility no-op for older clients; no heartbeat required
 - `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
+- `POST /api/servo/gains` with `{"axis": "x", "p": 400, "d": 0}`
+- `POST /api/servo/gains/reset` with `{"axis": "x"}` (or `"y"`)
+
+Per-axis P/D sliders and Reset controls are available in each device panel.
+See [servo gains](docs/servo-gains.md) for raw units, persistence, readback and
+reset-baseline behavior. Gain changes do not arm motors or change servo zeros.
 - `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` temporarily retargets to a box from the displayed frame without arming.
 - `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
   `{"target": null}` to clear it. Selection is not persisted across restarts.

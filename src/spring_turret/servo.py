@@ -12,6 +12,7 @@ from typing import Any
 
 from spring_turret.calibration import load_zeros, save_zeros
 from spring_turret.pose_history import interpolate_pose
+from spring_turret.servo_gains import GainSettings, validate_pd
 
 LOGGER = logging.getLogger("spring-turret.servo")
 XL330_PROTOCOL_VERSION = 2.0
@@ -109,6 +110,7 @@ class ServoController:
     def __init__(self, config: dict[str, Any]):
         self.config = config
         load_zeros(config)
+        self.gain_settings = GainSettings(config)
         self.lock = threading.RLock()
         self.pose_lock = threading.Lock()
         self.cached_pose: dict | None = None
@@ -122,7 +124,8 @@ class ServoController:
         self._feedback_bases: dict[str, int] = {}
         self._saved_aliases: dict[str, list[int]] = {}
         self.axes = {name: {"online": False, "model": None, "position": None,
-                            "goal": None, "torque": None, "origin": None} for name in ("x", "y")}
+                            "goal": None, "torque": None, "origin": None,
+                            "position_gains": None} for name in ("x", "y")}
         self._recovery_boundary: dict[str, int | None] = {name: None for name in self.axes}
         self.armed = False
         # Operator intent is independent of whether the hardware is connected.
@@ -297,6 +300,7 @@ class ServoController:
         self.armed = False
         for state in self.axes.values():
             state["online"] = False
+            state["position_gains"] = None
             state["position"] = state["goal"] = None
 
     def _fault_locked(self, error: Exception) -> None:
@@ -345,6 +349,8 @@ class ServoController:
             if state["torque"] != self.armed:
                 raise DeviceUnavailable(f"{name.upper()}: unexpected torque state")
             state["online"] = True
+            if state["position_gains"] is None:
+                self._read_gains_locked(name)
         completed_at = time.monotonic()
         if (self.armed and completed_at - sampled_at <= 0.1
                 and not any(state["position_retried"] for state in self.axes.values())):
@@ -362,6 +368,57 @@ class ServoController:
 
     def _axis_config(self, name: str) -> dict:
         return {**self.config["axes"][name], "center_position": self.axes[name]["origin"]}
+
+    def _read_gains_locked(self, name: str) -> dict:
+        gains = {key: self._read(name, address, 2) for key, address in POSITION_GAIN_REGISTERS.items()}
+        if any(not 0 <= value <= 16383 for value in gains.values()):
+            raise DeviceUnavailable(f"{name.upper()}: invalid position gain readback")
+        self.axes[name]["position_gains"] = gains
+        if gains["p"] > 0:
+            self.gain_settings.baseline.setdefault(name, {key: gains[key] for key in ("p", "d")})
+        return gains
+
+    def set_gains(self, name: str, p: int, d: int) -> None:
+        if not isinstance(name, str) or name not in self.axes:
+            raise ValueError("axis must be x or y")
+        requested = {"p": p, "d": d}
+        validate_pd(requested)
+        with self.lock:
+            if not self.packet or not self.axes[name]["online"]:
+                raise DeviceUnavailable("Servo offline; reconnect before changing gains")
+            previous = None
+            try:
+                self._ping(name)
+                previous = self._read_gains_locked(name)
+                for key, value in requested.items():
+                    if previous[key] != value:
+                        self._write(name, POSITION_GAIN_REGISTERS[key], 2, value)
+                actual = self._read_gains_locked(name)
+                if actual != {**previous, **requested}:
+                    raise DeviceUnavailable(f"{name.upper()}: gain readback mismatch")
+                self.gain_settings.save(name, requested)
+            except Exception as error:
+                # Roll back a partial write or failed persistence. Never report
+                # an unacknowledged value as applied, or overwrite the I gain.
+                try:
+                    if previous is not None:
+                        for key in ("p", "d"):
+                            self._write(name, POSITION_GAIN_REGISTERS[key], 2, previous[key])
+                        if self._read_gains_locked(name) != previous:
+                            raise DeviceUnavailable("Gain rollback readback mismatch")
+                except Exception as rollback:
+                    self._fault_locked(rollback)
+                    raise DeviceUnavailable(f"Gain update failed; rollback unconfirmed: {rollback}") from error
+                raise DeviceUnavailable(f"Gain update failed: {error}") from error
+
+    def reset_gains(self, name: str) -> None:
+        if not isinstance(name, str) or name not in self.axes:
+            raise ValueError("axis must be x or y")
+        with self.lock:
+            baseline = self.gain_settings.baseline.get(name)
+            if baseline is None:
+                raise DeviceUnavailable("Servo gain baseline is not available yet")
+            self.set_gains(name, **baseline)
 
     def _position_limits(self, name: str) -> tuple[int, int]:
         axis = self._axis_config(name)
@@ -429,11 +486,15 @@ class ServoController:
                     # Optional assembly-qualified RAM gains. Never alter the
                     # operating mode/EEPROM or assume both assemblies share gains.
                     gains = axis.get("position_gains")
+                    if name in self.gain_settings.values:
+                        gains = {**(gains or self._read_gains_locked(name)),
+                                 **self.gain_settings.values[name]}
                     if gains is not None:
                         for key, address in POSITION_GAIN_REGISTERS.items():
                             self._write(name, address, 2, gains[key])
                             if self._read(name, address, 2) != gains[key]:
                                 raise DeviceUnavailable(f"{name.upper()}: {key.upper()} gain readback mismatch")
+                        self.axes[name]["position_gains"] = dict(gains)
                     self._write(name, 108, 4, axis["profile_acceleration"])
                     self._write(name, 112, 4, axis["profile_velocity"])
                     position = self.axes[name]["position"]
@@ -627,6 +688,9 @@ class ServoController:
                 "feedback_mode": "packed" if self._feedback_bases else "registers",
                 "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
                 "axes": {name: {**state, "id": self.config["axes"][name]["id"],
+                    "position_gains": dict(state["position_gains"]) if state["position_gains"] else None,
+                    "gain_baseline": dict(self.gain_settings.baseline[name])
+                        if name in self.gain_settings.baseline else None,
                     "direction": self.config["axes"][name]["direction"],
                     "degrees": to_degrees(self._axis_config(name), state["position"]),
                     "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
