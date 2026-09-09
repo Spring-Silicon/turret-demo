@@ -60,6 +60,9 @@ select:focus { outline: 1px solid var(--accent); }
 .box-target { position: absolute; min-height: 0; padding: 0; background: transparent; border: 2px solid transparent; pointer-events: auto; }
 .box-target:hover:not(:disabled), .box-target:focus-visible { border-color: white; outline: none; }
 .box-target:disabled { pointer-events: none; }
+.box-target.client-overlay { border-color: var(--box-color); opacity: 1; }
+.box-label { position: absolute; left: -2px; top: 0; color: var(--box-color); background: #0b0d0de6; padding: 1px 3px; white-space: nowrap; font-size: 12px; pointer-events: none; }
+.box-label:empty { display: none; }
 #tracking-overlay, #frame-center { z-index: 2; }
 #tracked-box { fill: none; stroke: white; stroke-width: 2; stroke-dasharray: 8 4; vector-effect: non-scaling-stroke; }
 #frame-center { position: absolute; left: 50%; top: 50%; width: 24px; height: 24px; transform: translate(-50%, -50%); fill: none; stroke: white; stroke-width: 1.5; filter: drop-shadow(0 0 2px black); pointer-events: none; }
@@ -80,6 +83,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 #motor-toggle { display: grid; place-items: center; height: 48px; color: var(--accent); }
 #motor-toggle.stopping { color: var(--error); }
 #motor-toggle svg { fill: currentColor; }
+#recalibrate { grid-column: 1 / -1; justify-self: center; padding: 0 14px; }
 #message { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 #message.error { color: var(--error); }
 

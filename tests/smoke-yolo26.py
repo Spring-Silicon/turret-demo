@@ -50,7 +50,7 @@ try:
         if index < 2:
             counts = {c["prompt"]: c["count"] for c in result["categories"]}
             assert counts["person"] >= 2 and counts["bus"] >= 1, counts
-        result.pop("jpeg")
+        result.pop("jpeg", None)
         print(json.dumps({"frame": index, **result}), flush=True)
         if index >= 5:
             metrics.append(result["timing"])

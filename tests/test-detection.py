@@ -86,6 +86,26 @@ class Worker:
 
 
 class DetectionTests(unittest.TestCase):
+    def test_click_history_survives_jpeg_eviction_at_30fps_but_expires(self):
+        c = DetectionController({"enabled": True}, Camera())
+        c.state = "running"
+        box = {"prompt": "cup", "instance_id": 42, "xyxy": [.1, .2, .3, .4]}
+        with patch("spring_turret.detection.time.monotonic") as clock:
+            for i in range(21):
+                clock.return_value = 10 + i / 30
+                c._cache_frame(f"{c.revision}-{i}", b"jpeg", [box], clock.return_value)
+            self.assertEqual(len(c.frames), 8)
+            self.assertIsNone(c.frame(f"{c.revision}-0"))
+            self.assertEqual(c.selection(c.revision, 0, 42), box)  # 667 ms, still fresh.
+            clock.return_value = 10.8
+            c._cache_frame(f"{c.revision}-24", b"jpeg", [box], clock.return_value)
+            with self.assertRaisesRegex(ValueError, "stale"):
+                c.selection(c.revision, 0, 42)
+            self.assertNotIn(f"{c.revision}-0", c.frame_selections)
+            for i in range(300):
+                c._cache_frame(f"{c.revision}-{100+i}", b"jpeg", [box], clock.return_value)
+            self.assertEqual(len(c.frame_selections), 128)
+
     def test_model_switch_serializes_workers_preserves_lists_and_discards_old_frames(self):
         workers = []
         def factory(config):
@@ -210,6 +230,12 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(result["boxes"][0]["color"], result["boxes"][1]["color"])
         self.assertNotEqual(result["boxes"][0]["color"], result["boxes"][2]["color"])
         draw.assert_called_once_with(b"original", result["boxes"])
+        with patch("spring_turret.sam31_worker.annotate") as draw:
+            overlay = engine.detect_many(b"original", ["person", "cup", "chair"], client_overlay=True)
+        draw.assert_not_called()
+        self.assertTrue(overlay["client_overlay"])
+        self.assertNotIn("jpeg", overlay)
+        self.assertEqual(overlay["boxes"], result["boxes"])
 
     def test_text_cache_is_owned_bounded_and_reused_across_reordering(self):
         class Tensor:
@@ -319,7 +345,7 @@ class DetectionTests(unittest.TestCase):
         c, worker = self.controller()
         pose = {"sampled_at": time.monotonic(), "axes": {
             "x": {"degrees": 10, "goal_degrees": 40}, "y": {"degrees": 5, "goal_degrees": 5}}}
-        c.pose_provider = lambda: pose
+        c.pose_provider = lambda captured_at: pose
         c.set_prompt("cup")
         self.assertTrue(worker.entered.wait(1))
         # The capture pose is a snapshot. Inference must not replace it with a
@@ -332,11 +358,57 @@ class DetectionTests(unittest.TestCase):
 
     def test_old_pose_is_not_paired_with_a_later_camera_frame(self):
         c, worker = self.controller()
-        c.pose_provider = lambda: {"sampled_at": time.monotonic() - 1}
+        c.pose_provider = lambda captured_at: {"sampled_at": time.monotonic() - 1}
         c.set_prompt("cup")
         worker.release.set()
         eventually(lambda: c.status()["state"] == "running")
         self.assertIsNone(c.status()["frame_pose"])
+
+    def test_latest_camera_frame_does_not_wait_for_a_newer_pose(self):
+        c, worker = self.controller()
+        frame_time = time.monotonic() - .01
+        def sample(previous, timeout, after=0):
+            self.assertEqual(after, 0)
+            return 1, b"latest-jpeg", frame_time
+        c.camera.wait_for_sample = sample
+        calls = []
+        def pose(at):
+            calls.append(at)
+            return {"sampled_at": at-.03, "read_completed_at": at-.01, "axes": {}}
+        c.pose_provider = pose
+        c.set_prompt("cup")
+        self.assertTrue(worker.entered.wait(1))
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertEqual(calls, [frame_time])
+        self.assertEqual(worker.requests[0][1], b"latest-jpeg")
+        self.assertEqual(c.status()["frame_pose"]["read_completed_at"], frame_time-.01)
+
+    def test_pose_read_that_completed_after_frame_is_rejected(self):
+        c, worker = self.controller()
+        c.pose_provider = lambda at: {"sampled_at": at-.03, "read_completed_at": at+.001}
+        c.set_prompt("cup")
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        self.assertIsNone(c.status()["frame_pose"])
+
+    def test_client_overlay_serves_exact_input_jpeg_and_pipeline_timings(self):
+        c, worker = self.controller()
+        original_detect = worker.detect
+        def detect(*args):
+            result = original_detect(*args)
+            result.pop("jpeg")
+            return {**result, "client_overlay": True}
+        worker.detect = detect
+        c.set_prompt("cup")
+        worker.release.set()
+        eventually(lambda: c.status()["state"] == "running")
+        result = c.status()
+        self.assertTrue(result["client_overlay"])
+        self.assertEqual(c.frame(result["frame_url"].split("/")[-1][:-4]), b"camera-jpeg")
+        self.assertEqual(set(result["pipeline_timing"]),
+                         {"pose_ms", "capture_wait_ms", "worker_roundtrip_ms", "cycle_ms"})
+        self.assertTrue(all(value >= 0 for value in result["pipeline_timing"].values()))
 
     def test_config(self):
         validate_config({})
@@ -455,6 +527,29 @@ class DetectionTests(unittest.TestCase):
         response = connection.getresponse()
         self.assertEqual(response.status, 200)
         self.assertEqual(response.read(), b"chair")
+        with patch.object(app, "status", side_effect=AssertionError("hardware status lock")):
+            connection.request("GET", "/api/detection/status?revision=-1&sequence=-1")
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            metadata = json.loads(response.read())
+            self.assertEqual(metadata["prompts"], ["chair"])
+            self.assertNotIn("servo", metadata)
+            events = HTTPConnection(*server.server_address)
+            self.addCleanup(events.close)
+            events.request("GET", "/api/detection/events")
+            stream = events.getresponse()
+            self.assertEqual(stream.status, 200)
+            self.assertEqual(stream.getheader("Content-Type"), "text/event-stream")
+            event = json.loads(stream.readline().removeprefix(b"data: "))
+            self.assertEqual(event["prompts"], ["chair"])
+            self.assertEqual(base64.b64decode(event["jpeg"]), b"chair")
+            stream.close()
+            events.close()
+        for query in ("revision=bad", "sequence=-2"):
+            connection.request("GET", "/api/detection/status?" + query)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
         c.set_prompt("")
         connection.request("GET", frame_url)
         response = connection.getresponse()
@@ -555,6 +650,26 @@ class InstanceTests(unittest.TestCase):
         first = tracker.update([self.box(.48), self.box(.52)], None, 1)
         next_frame = tracker.update([self.box(.495), self.box(.505)], None, 1.2)
         self.assertTrue({b["instance_id"] for b in first}.isdisjoint(b["instance_id"] for b in next_frame))
+
+    def test_ambiguity_recovers_instead_of_poisoning_every_future_frame(self):
+        tracker = InstanceAssociator({})
+        first = tracker.update([self.box(.48), self.box(.52)], None, 1)
+        crossing = tracker.update([self.box(.495), self.box(.505)], None, 1.03)
+        survivor = tracker.update([self.box(.5)], None, 1.06)[0]
+        self.assertNotIn(survivor["instance_id"], [b["instance_id"] for b in first + crossing])
+        for i in range(1, 61):
+            current = tracker.update([self.box(.5)], None, 1.06+i/30)[0]
+            self.assertEqual(current["instance_id"], survivor["instance_id"])
+            self.assertEqual(len(tracker.tracks), 1)
+
+    def test_nearby_objects_recover_stable_ids_after_separating(self):
+        tracker = InstanceAssociator({})
+        tracker.update([self.box(.48), self.box(.52)], None, 1)
+        tracker.update([self.box(.495), self.box(.505)], None, 1.03)
+        separated = tracker.update([self.box(.47), self.box(.53)], None, 1.06)
+        for i in range(1, 31):
+            current = tracker.update([self.box(.47), self.box(.53)], None, 1.06+i/30)
+            self.assertEqual([b["instance_id"] for b in current], [b["instance_id"] for b in separated])
 
     def test_expired_lost_or_different_class_does_not_reuse_identity(self):
         tracker = InstanceAssociator({})

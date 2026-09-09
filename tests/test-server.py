@@ -3,6 +3,7 @@
 import copy
 import json
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -58,6 +59,10 @@ class ControllerTests(unittest.TestCase):
     def setUp(self):
         self.config = server.load_config(ROOT / "config/spring-turret-demo.json")
         self.config["servo"]["calibrated"] = True
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.zero_path = Path(temporary.name) / "servo-zeros.json"
+        self.config["servo"]["calibration_file"] = str(self.zero_path)
         for axis in self.config["servo"]["axes"].values():
             axis.update(min_degrees=-45, max_degrees=45)
         self.packet = FakePacket()
@@ -70,6 +75,84 @@ class ControllerTests(unittest.TestCase):
     def tearDown(self):
         self.controller.stop()
         self.sdk.stop()
+
+    def test_recalibrate_outside_range_and_negative_turn_persists_without_motion(self):
+        original = copy.deepcopy(self.config["servo"])
+        self.packet.registers[2][132] = 3000
+        self.packet.registers[1][132] = -5000 & 0xFFFFFFFF
+        self.controller._poll_locked()
+        self.assertFalse(self.controller.status()["ready"])
+        self.assertTrue(self.controller.status()["can_recalibrate"])
+        self.packet.writes.clear()
+        self.controller.recalibrate()
+        self.assertEqual(self.packet.writes, [])
+        state = self.controller.status()
+        self.assertTrue(state["ready"])
+        self.assertFalse(state["armed"])
+        for name in ("x", "y"):
+            self.assertEqual(state["axes"][name]["degrees"], 0)
+            self.assertIsNone(state["axes"][name]["goal"])
+            before = {k: v for k, v in original["axes"][name].items() if k != "center_position"}
+            after = {k: v for k, v in self.config["servo"]["axes"][name].items() if k != "center_position"}
+            self.assertEqual(before, after)
+        self.packet.registers[1][132] = -5000 % 4096  # Power-cycle single-turn reading.
+        restarted = servo.ServoController(original)
+        restarted._poll_locked()
+        self.assertEqual(restarted.status()["axes"]["y"]["degrees"], 0)
+        self.assertFalse(restarted.armed)
+
+    def test_recalibrate_rejects_armed_without_changing_anything(self):
+        self.controller.arm()
+        before = copy.deepcopy(self.config)
+        self.packet.writes.clear()
+        with self.assertRaises(servo.ServoDisarmed): self.controller.recalibrate()
+        self.assertEqual(self.packet.writes, [])
+        self.assertEqual(self.config, before)
+        self.assertFalse(self.zero_path.exists())
+
+    def test_recalibrate_refuses_bad_hardware_or_uncommissioned_device(self):
+        for fault in ("missing", "model", "torque", "mode", "fault", "commissioning"):
+            with self.subTest(fault=fault):
+                before = copy.deepcopy(self.config["servo"]["axes"])
+                self.packet.missing = {1} if fault == "missing" else set()
+                self.packet.model[1] = 42 if fault == "model" else 1200
+                self.packet.registers[1][64] = 1 if fault == "torque" else 0
+                self.packet.registers[1][11] = 3 if fault == "mode" else 4
+                self.packet.registers[1][70] = 1 if fault == "fault" else 0
+                self.config["servo"]["calibrated"] = fault != "commissioning"
+                with self.assertRaises(servo.DeviceUnavailable): self.controller.recalibrate()
+                self.assertEqual(before, self.config["servo"]["axes"])
+                self.assertFalse(self.zero_path.exists())
+                self.assertFalse(any(a == 116 or (a == 64 and v == 1) for _, a, v in self.packet.writes))
+
+    def test_recalibrate_requires_stationary_axes(self):
+        def movement(_):
+            self.packet.registers[1][132] += 20
+        with patch("spring_turret.servo.time.sleep", side_effect=movement):
+            with self.assertRaisesRegex(servo.DeviceUnavailable, "Hold both"):
+                self.controller.recalibrate()
+        self.assertFalse(self.zero_path.exists())
+
+    def test_recalibrate_failed_save_keeps_both_old_zeros_and_file(self):
+        self.controller.recalibrate()
+        previous_file = self.zero_path.read_bytes()
+        previous_config = copy.deepcopy(self.config["servo"])
+        self.packet.registers[1][132] = 3000
+        with patch("spring_turret.calibration.os.replace", side_effect=OSError("save denied")):
+            with self.assertRaisesRegex(servo.DeviceUnavailable, "save denied"):
+                self.controller.recalibrate()
+        self.assertEqual(self.zero_path.read_bytes(), previous_file)
+        self.assertEqual(self.config["servo"], previous_config)
+        self.assertEqual(list(self.zero_path.parent.iterdir()), [self.zero_path])
+
+    def test_saved_calibration_invalid_or_mismatched_axes_fail_closed(self):
+        self.controller.recalibrate()
+        saved = json.loads(self.zero_path.read_text())
+        for data in ({}, {**saved, "version": 2}, {**saved, "axes": {"x": saved["axes"]["x"]}},
+                     {**saved, "axes": {**saved["axes"], "y": {**saved["axes"]["y"], "id": 2}}},
+                     {**saved, "axes": {**saved["axes"], "y": {**saved["axes"]["y"], "center_position": True}}}):
+            self.zero_path.write_text(json.dumps(data))
+            with self.assertRaises(ValueError): servo.ServoController(copy.deepcopy(self.config["servo"]))
 
     def test_arm_holds_both_then_moves_only_selected_axis(self):
         with self.assertRaises(servo.ServoDisarmed): self.controller.move("x", 10)
@@ -425,6 +508,7 @@ class ControllerTests(unittest.TestCase):
                     self.packet.registers[sid][132] = round(current + .7 * (goal - 17 - current))
                     angles[name] = servo.to_degrees(self.config["servo"]["axes"][name], self.packet.registers[sid][132])
                 cx, cy = .5 + (20 - angles["x"]) / 160, .5 - (15 - angles["y"]) / 90
+                self.controller._tick_locked()  # Simulate the independent encoder monitor.
                 data.update(frame_sequence=index + 1, frame_age_ms=0, captured_at=now[0],
                             frame_pose=self.controller.sample_pose(), boxes=[{"prompt": "cup", "score": .9,
                             "xyxy": [cx - .03, cy - .03, cx + .03, cy + .03]}])
@@ -454,14 +538,65 @@ class ControllerTests(unittest.TestCase):
         self.controller.arm()
         lease = self.controller.last_keepalive
         self.packet.registers[2][132] = 2100
-        pose = self.controller.sample_pose()
+        self.controller._tick_locked()
+        # Inference can sample while another thread owns the serial bus.
+        with self.controller.lock, patch.object(self.controller, "_read", side_effect=AssertionError("serial I/O")):
+            pose = self.controller.sample_pose()
         self.assertAlmostEqual(pose["axes"]["x"]["degrees"], 4.57)
         self.assertEqual(pose["axes"]["x"]["goal_degrees"], 0)
         self.assertEqual(self.controller.last_keepalive, lease)
+        pose["axes"]["x"]["degrees"] = 999
+        self.assertAlmostEqual(self.controller.sample_pose()["axes"]["x"]["degrees"], 4.57)
         self.packet.registers[1][70] = 4
+        with self.assertRaises(servo.DeviceUnavailable):
+            self.controller.point({"x": 1, "y": 1})
         self.assertIsNone(self.controller.sample_pose())
         self.assertFalse(self.controller.armed)
         self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+
+    def test_cached_pose_expires_and_stop_invalidates_it(self):
+        self.controller.arm()
+        self.controller._tick_locked()
+        pose = self.controller.sample_pose()
+        self.assertIsNotNone(pose)
+        with patch("time.monotonic", return_value=pose["sampled_at"] + .101):
+            self.assertIsNone(self.controller.sample_pose())
+        self.controller.disable()
+        self.assertIsNone(self.controller.cached_pose)
+        self.assertIsNone(self.controller.sample_pose())
+
+    def test_pose_includes_bus_read_duration_and_rejects_slow_reads(self):
+        self.controller.arm()
+        with patch("time.monotonic", side_effect=[10.0, 10.101]):
+            self.controller._poll_locked()
+        self.assertIsNone(self.controller.cached_pose)
+        with patch("time.monotonic", side_effect=[11.0, 11.05]):
+            self.controller._poll_locked()
+        self.assertEqual(self.controller.cached_pose["sampled_at"], 11.0)
+        self.assertEqual(self.controller.cached_pose["read_completed_at"], 11.05)
+
+    def test_pose_history_uses_completed_read_before_frame_and_clears_on_stop(self):
+        self.controller.arm()
+        with patch("time.monotonic", side_effect=[10.0, 10.03]):
+            self.controller._poll_locked()
+        self.packet.registers[2][132] = 2100
+        with patch("time.monotonic", side_effect=[10.04, 10.07]):
+            self.controller._poll_locked()
+        with patch("time.monotonic", return_value=10.08):
+            self.assertEqual(self.controller.sample_pose()["sampled_at"], 10.04)
+            old = self.controller.sample_pose(10.05)
+            self.assertEqual(old["sampled_at"], 10.0)
+            self.assertEqual(old["axes"]["x"]["degrees"], 0)
+            old["axes"]["x"]["degrees"] = 999
+            self.assertEqual(self.controller.sample_pose(10.05)["axes"]["x"]["degrees"], 0)
+            self.assertIsNone(self.controller.sample_pose(10.02))
+            self.assertIsNone(self.controller.sample_pose(10.09))  # Future frame.
+        with patch("time.monotonic", return_value=10.2):
+            self.assertIsNone(self.controller.sample_pose(10.05))  # Stale frame.
+            self.assertIsNone(self.controller.sample_pose())  # Stale encoders.
+        self.assertEqual(self.controller.pose_history.maxlen, 16)
+        self.controller.disable()
+        self.assertEqual(len(self.controller.pose_history), 0)
 
     def test_camera_sample_pairs_timestamp_and_waits_until_after_pose_read(self):
         camera = server.CameraStream(self.config["camera"])
@@ -514,6 +649,7 @@ class ControllerTests(unittest.TestCase):
         try:
             self.assertEqual(request("/api/servo/position", {"axis": "x", "degrees": 10})[0], 409)
             self.assertEqual(request("/api/servo/arm")[0], 200)
+            self.assertEqual(request("/api/servo/recalibrate", {})[0], 409)
             code, body = request("/api/servo/position", {"axis": "x", "degrees": 10})
             self.assertEqual(code, 200)
             self.assertEqual(body["servo"]["axes"]["x"]["goal"], 2162)
@@ -523,6 +659,13 @@ class ControllerTests(unittest.TestCase):
                 self.assertEqual(request("/api/servo/position", payload)[0], 400)
             self.assertEqual(request("/api/servo/keepalive")[0], 200)
             self.assertFalse(request("/api/servo/disable")[1]["servo"]["armed"])
+            for payload in (None, {"x": 0}, {"calibration_file": "/tmp/untrusted"}):
+                self.assertEqual(request("/api/servo/recalibrate", payload)[0], 400)
+            code, body = request("/api/servo/recalibrate", {})
+            self.assertEqual(code, 200)
+            self.assertFalse(body["servo"]["armed"])
+            self.assertIsNone(body["tracking"]["target"])
+            self.assertTrue(self.zero_path.exists())
         finally:
             httpd.shutdown()
             httpd.server_close()

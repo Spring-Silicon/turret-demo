@@ -6,9 +6,11 @@ import logging
 import math
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 from spring_turret.servo import DeviceUnavailable, ServoDisarmed
+from spring_turret.geometry import Geometry
 
 LOGGER = logging.getLogger("spring-turret.tracking")
 DEFAULTS = {
@@ -17,6 +19,7 @@ DEFAULTS = {
     "x_degrees_per_frame": 160.0, "y_degrees_per_frame": 90.0,
     "deadband": 0.012,
     "max_frame_age_seconds": 0.75,
+    "geometry_file": None,
 }
 
 
@@ -24,6 +27,8 @@ def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(config, dict) or set(config) - set(DEFAULTS):
         raise ValueError("tracking contains unsupported settings")
     merged = {**DEFAULTS, **config}
+    if merged["geometry_file"] is not None and (type(merged["geometry_file"]) is not str or not Path(merged["geometry_file"]).is_absolute()):
+        raise ValueError("tracking.geometry_file must be an absolute path or null")
     if type(merged["calibrated"]) is not bool:
         raise ValueError("tracking.calibrated must be a boolean")
     for axis in ("x", "y"):
@@ -65,6 +70,7 @@ class TrackingController:
     def __init__(self, config: dict, detection: Any, servo: Any, camera: Any):
         validate_config(config)
         self.config = {**DEFAULTS, **config}
+        self.geometry = Geometry.load(self.config["geometry_file"]) if self.config["geometry_file"] else None
         self.detection, self.servo, self.camera = detection, servo, camera
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
@@ -172,6 +178,16 @@ class TrackingController:
             self.goal_degrees = None
             self.servo.disable()
 
+    def recalibrate(self) -> None:
+        with self.lock:
+            self.servo.recalibrate()
+            self.target = self.instance_id = None
+            self.moving = False
+            self._pause("off")
+            self.last_frame = None
+            self.ignore_before = time.monotonic()
+            self.error = None
+
     def manual_move(self, axis: str, degrees: float) -> None:
         with self.lock:
             self.servo.move(axis, degrees)
@@ -186,6 +202,7 @@ class TrackingController:
                     "state": self.state, "error": self.error,
                     "box": self.box, "frame": list(self.frame) if self.frame else None,
                     "error_pixels": self.error_pixels, "mode": "absolute-angle",
+                    "mapping": "fisheye-kinematics" if self.geometry else "linear",
                     "goal_degrees": self.goal_degrees}
 
     def _tick(self) -> None:
@@ -242,6 +259,15 @@ class TrackingController:
             if not self._valid_pose(pose, captured_at):
                 self._pause("waiting")
                 return
+            geometric = None
+            if self.geometry:
+                try:
+                    self.geometry.check_binding(camera, servo, self.config)
+                    geometric = self.geometry.goals((x1+x2)/2*camera["width"], (y1+y2)/2*camera["height"], pose, servo)
+                except ValueError as error:
+                    self._pause("uncalibrated")
+                    self.error = str(error)
+                    return  # Never silently switch a commissioned device to guessed geometry.
             goals = {}
             for axis, error in errors.items():
                 sample = pose["axes"][axis]
@@ -257,6 +283,11 @@ class TrackingController:
                 scale = self.config[f"{axis}_degrees_per_frame"]
                 correction = error * scale * self.config[f"{axis}_direction"]
                 centered = abs(error) <= self.config["deadband"]
+                if geometric is not None:
+                    correction = geometric[axis] - sample["degrees"]
+                    # Coupled geometry can require BOTH motors even if only
+                    # one image coordinate is outside the centering deadband.
+                    centered = all(abs(e) <= self.config["deadband"] for e in errors.values())
                 goals[axis] = sample["degrees"] + (0.0 if centered else correction) + self.hold_bias[axis]
                 # Keep a settled holding goal inside the image deadband, but
                 # brake at the observed center if an older goal would overshoot.

@@ -2,8 +2,8 @@
 """SAM 3.1 text-grounding worker for Intel XPU.
 
 The HTTP and hardware process deliberately keeps the multi-gigabyte model in a
-separate process.  Requests and responses are newline-delimited JSON on stdin
-and stdout; model diagnostics go to stderr.
+separate process. Requests use a JSON header plus raw JPEG bytes (legacy base64
+JSON is also accepted); responses are JSON lines and diagnostics go to stderr.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import gc
 import io
 import json
 import os
+import signal
 import sys
 import time
 import types
@@ -25,9 +26,19 @@ from typing import Any
 if __package__:
     from .prompts import COLORS, normalize_prompts
     from .sam31_graph import CompiledStage
+    from .sam31_native import NativeImageStage
+    from .sam31_w8a8 import W8A8ImageStage, PackedHeadStage, packed_profile, configure_source as configure_w8a8_source
+    from .sam31_preprocess import ExactImagePreprocessor
+    from .worker_protocol import JPEG_BYTES, iter_requests
+    from .prefetch import LatestPreparation, RequestInbox
 else:
     from prompts import COLORS, normalize_prompts
     from sam31_graph import CompiledStage
+    from sam31_native import NativeImageStage
+    from sam31_w8a8 import W8A8ImageStage, PackedHeadStage, packed_profile, configure_source as configure_w8a8_source
+    from sam31_preprocess import ExactImagePreprocessor
+    from worker_protocol import JPEG_BYTES, iter_requests
+    from prefetch import LatestPreparation, RequestInbox
 
 _PROTOCOL_OUTPUT: Any = None
 
@@ -389,6 +400,23 @@ def validate_detections(
     }
 
 
+def check_detection_candidate(torch, reference, actual, confidence, *, report_only=False):
+    """Report numerical failures only with explicit W8A8 development opt-in.
+
+    The reference and tolerances are unchanged. Shape/dtype errors, NaNs,
+    native faults and graph qualification failures are never waived.
+    """
+    if report_only and (len(reference) != len(actual) or any(
+            a.shape != b.shape or a.dtype != b.dtype for a, b in zip(reference, actual))):
+        raise RuntimeError("SAM detection output shape/dtype changed")
+    try:
+        return {"passed": True, **validate_detections(torch, reference, actual, confidence)}
+    except AssertionError as error:
+        if not report_only:
+            raise
+        return {"passed": False, "policy": "report-only-development", "error": str(error)}
+
+
 class Sam31Engine:
     def __init__(
         self,
@@ -398,7 +426,23 @@ class Sam31Engine:
         confidence: float,
         use_sycl_graph: bool,
         grounding_batch_size: int = 1,
+        native_bundle: Path | None = None,
+        w8a8_development_bundle: Path | None = None,
+        allow_unqualified_w8a8: bool = False,
     ) -> None:
+        if type(allow_unqualified_w8a8) is not bool or (allow_unqualified_w8a8 and w8a8_development_bundle is None):
+            raise ValueError("Unqualified execution requires an explicit W8A8 development bundle")
+        self.allow_unqualified_w8a8 = allow_unqualified_w8a8
+        self.packed_bundle = (w8a8_development_bundle if w8a8_development_bundle is not None
+                              and packed_profile(w8a8_development_bundle) else None)
+        if self.packed_bundle is not None and grounding_batch_size != 1:
+            raise ValueError("Retained packed heads require batch size 1; multiple prompts still share one image")
+        if native_bundle is not None and w8a8_development_bundle is not None:
+            raise ValueError("Select only one SAM image bundle")
+        if w8a8_development_bundle is not None:
+            if precision != "float16":
+                raise ValueError("W8A8 requires FP16 autocast with FP32 masters")
+            configure_w8a8_source(w8a8_development_bundle, checkpoint)
         import torch
         from PIL import Image
         from sam3.model.data_misc import FindStage
@@ -413,6 +457,8 @@ class Sam31Engine:
         self.Image = Image
         self.device = torch.device(f"xpu:{device_index}")
         self.dtype = torch.float16 if precision == "float16" else torch.bfloat16
+        if native_bundle is not None and precision != "float16":
+            raise ValueError("native SAM requires float16 autocast with FP32 master weights")
         self.confidence = confidence
         if not use_sycl_graph:
             raise ValueError("shared-feature inference requires SYCL graphs")
@@ -472,8 +518,12 @@ class Sam31Engine:
         # Independent full-pass reference used only during correctness checks.
         self.wrapper = wrapper_type(model).to(self.device).eval()
         image_type, text_type, head_type = _shared_wrappers(torch, FindStage, Prompt)
-        self.image_stage = CompiledStage(
-            torch, image_type(model).eval(), "image", self._progress
+        self.image_stage = (
+            W8A8ImageStage(torch, image_type(model).eval(), w8a8_development_bundle, self.device, self._progress)
+            if w8a8_development_bundle is not None else
+            NativeImageStage(torch, native_bundle, checkpoint, self.device, self._progress)
+            if native_bundle is not None else
+            CompiledStage(torch, image_type(model).eval(), "image", self._progress)
         )
         self.text_stage = CompiledStage(
             torch, text_type(model).eval(), "text", self._progress
@@ -488,13 +538,18 @@ class Sam31Engine:
                 v2.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
             ]
         )
+        self.preprocessor = (None if getattr(self.image_stage, "accepts_cpu", False)
+                             else ExactImagePreprocessor(torch, self.device, self._progress))
 
     def _inputs(self, jpeg: bytes, prompt: str) -> tuple[Any, Any]:
         return self._pixels(jpeg), self._tokens(prompt)
 
     def _pixels(self, jpeg: bytes) -> Any:
+        if self.preprocessor is not None:
+            return self.preprocessor(jpeg)
         image = self.Image.open(io.BytesIO(jpeg)).convert("RGB")
-        return self.transform(image).unsqueeze(0).to(self.device)
+        pixels = self.transform(image).unsqueeze(0)
+        return pixels if getattr(self.image_stage, "accepts_cpu", False) else pixels.to(self.device)
 
     def _tokens(self, prompt: str) -> Any:
         return self.tokenizer([prompt], context_length=32).to(self.device)
@@ -538,8 +593,11 @@ class Sam31Engine:
             memory = torch.cat([value[0] for value in group], dim=1)
             mask = torch.cat([value[1] for value in group], dim=0)
             if batch not in self.grounding_stages:
-                self.grounding_stages[batch] = CompiledStage(
-                    torch, self.head, f"grounding-{batch}", self._progress
+                packed = getattr(self, "packed_bundle", None)
+                self.grounding_stages[batch] = (
+                    PackedHeadStage(torch, self.head, f"packed-grounding-{batch}", self._progress, packed)
+                    if packed is not None else
+                    CompiledStage(torch, self.head, f"grounding-{batch}", self._progress)
                 )
             outputs = self.grounding_stages[batch](*features, memory, mask)
             # Later chunks reuse the same static graph outputs. Own the useful
@@ -554,12 +612,13 @@ class Sam31Engine:
             actual = self._run_heads(self.image_stage(pixels), embeddings)
             self._progress("validating", "shared features versus full passes")
             for index, prompt in enumerate(prompts):
-                expected = self.wrapper(pixels, self._tokens(prompt))
-                self.validation[prompt] = validate_detections(
+                expected = self.wrapper(pixels.to(self.device), self._tokens(prompt))
+                self.validation[prompt] = check_detection_candidate(
                     self.torch,
                     expected,
                     tuple(value[index : index + 1] for value in actual),
                     self.confidence,
+                    report_only=getattr(self, "allow_unqualified_w8a8", False),
                 )
             self.validated_batches.update(batches)
         self.graph_active = True
@@ -568,13 +627,15 @@ class Sam31Engine:
     def detect(self, jpeg: bytes, prompt: str) -> dict[str, Any]:
         return self.detect_many(jpeg, [prompt])
 
-    def detect_many(self, jpeg: bytes, prompts: list[str]) -> dict[str, Any]:
+    def detect_many(self, jpeg: bytes, prompts: list[str], *, client_overlay=False,
+                    prepared_pixels=None) -> dict[str, Any]:
         prompts = normalize_prompts(prompts)
         if not prompts:
             raise ValueError("at least one nonempty prompt is required")
         torch = self.torch
         worker_started = time.perf_counter()
-        pixels = self._pixels(jpeg)
+        pixels = (self._pixels(jpeg) if prepared_pixels is None
+                  else self.preprocessor(jpeg, prepared=prepared_pixels))
         torch.xpu.synchronize()
         preprocess_ms = (time.perf_counter() - worker_started) * 1000
         detections = []
@@ -613,6 +674,11 @@ class Sam31Engine:
             "torch": torch.__version__,
             "device": torch.xpu.get_device_name(self.device),
             "torch_compile": True,
+            "image_backend": getattr(self.image_stage, "backend", "torch.compile"),
+            "native_image_validation": getattr(self.image_stage, "proof", None),
+            "accuracy_policy": "report-only-development" if getattr(self, "allow_unqualified_w8a8", False) else "enforced",
+            "preprocess_validation": getattr(getattr(self, "preprocessor", None), "validation", None),
+            "preprocess_prefetched": prepared_pixels is not None,
             "sycl_graph": self.graph_active,
             "sycl_graph_error": self.graph_error,
             "validation": self.validation,
@@ -621,6 +687,7 @@ class Sam31Engine:
             "grounding_batch_size": self.grounding_batch_size,
             "timing": {
                 "preprocess_ms": round(preprocess_ms, 2),
+                "cpu_prepare_ms": round(getattr(getattr(self, "preprocessor", None), "last_cpu_ms", 0), 2),
                 "prompt_setup_ms": round(prompt_setup_ms, 2),
                 "image_encoder_ms": round((image_done - started) * 1000, 2),
                 "grounding_ms": round((grounding_done - image_done) * 1000, 2),
@@ -630,7 +697,12 @@ class Sam31Engine:
             },
         }
         annotation_started = time.perf_counter()
-        result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
+        native_ms = getattr(self.image_stage, "last_execution_ms", None)
+        if native_ms is not None:
+            result["timing"]["native_image_replay_ms"] = round(native_ms, 2)
+        result["client_overlay"] = client_overlay
+        if not client_overlay:
+            result["jpeg"] = base64.b64encode(annotate(jpeg, result["boxes"])).decode()
         result["timing"]["annotation_ms"] = round(
             (time.perf_counter() - annotation_started) * 1000, 2
         )
@@ -700,12 +772,20 @@ def main() -> None:
     )
     parser.add_argument("--confidence", type=float, default=0.5)
     parser.add_argument("--no-sycl-graph", action="store_true")
+    parser.add_argument("--native-bundle", type=Path)
+    parser.add_argument("--w8a8-development-bundle", type=Path)
+    parser.add_argument("--allow-unqualified-w8a8", action="store_true")
     args = parser.parse_args()
     if not args.checkpoint.is_file():
         raise SystemExit(f"checkpoint not found: {args.checkpoint}")
     if not 0 < args.confidence < 1:
         raise SystemExit("confidence must be between zero and one")
 
+    engine = preparation = None
+    # A normal model switch/stop must reap the resident native runner as well.
+    def terminate(signum, frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, terminate)
     try:
         engine = Sam31Engine(
             checkpoint=args.checkpoint,
@@ -713,23 +793,34 @@ def main() -> None:
             precision=args.precision,
             confidence=args.confidence,
             use_sycl_graph=not args.no_sycl_graph,
+            native_bundle=args.native_bundle,
+            w8a8_development_bundle=args.w8a8_development_bundle,
+            allow_unqualified_w8a8=args.allow_unqualified_w8a8,
         )
         _emit(
             {
                 "type": "ready",
-                "engine": "sam3.1/torch.compile/inductor-xpu",
+                "engine": "sam3.1/israel-w8a8-development" if args.w8a8_development_bundle else
+                          "sam3.1/native-image+inductor-xpu" if args.native_bundle else "sam3.1/torch.compile/inductor-xpu",
                 "torch_compile": False,
                 "sycl_graph_requested": not args.no_sycl_graph,
+                "request_transport": JPEG_BYTES,
+                "cpu_prefetch": engine.preprocessor is not None,
             }
         )
-        for line in sys.stdin:
-            request: dict[str, Any] = {}
+        if engine.preprocessor is not None:
+            preparation = LatestPreparation(engine.preprocessor.prepare_cpu)
+            requests = RequestInbox(sys.stdin.buffer, preparation)
+        else:
+            requests = iter_requests(sys.stdin.buffer)
+        for request in requests:
             try:
-                request = json.loads(line)
                 request_id = int(request["id"])
                 prompts = normalize_prompts(request["prompts"])
-                jpeg = base64.b64decode(request["jpeg"], validate=True)
-                result = engine.detect_many(jpeg, prompts)
+                jpeg = request["jpeg"]
+                prepared = preparation.take(request.get("prepared_token"), jpeg) if preparation else None
+                result = engine.detect_many(jpeg, prompts, client_overlay=request.get("client_overlay") is True,
+                                            prepared_pixels=prepared)
                 _emit({"type": "result", "id": request_id, **result})
             except Exception as error:
                 _emit(
@@ -742,6 +833,11 @@ def main() -> None:
     except Exception as error:
         _emit({"type": "fatal", "error": str(error)})
         raise
+    finally:
+        if preparation is not None:
+            preparation.close()
+        if engine is not None and isinstance(engine.image_stage, (NativeImageStage, W8A8ImageStage)):
+            engine.image_stage.close()
 
 
 if __name__ == "__main__":

@@ -7,7 +7,9 @@ import json
 import math
 import os
 import selectors
+import signal
 import subprocess
+import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -17,6 +19,7 @@ from typing import Any
 from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
 from spring_turret.models import MODELS, model_prompts
+from spring_turret.worker_protocol import JPEG_BYTES, encode_request
 
 
 def validate_config(config: dict[str, Any]) -> None:
@@ -42,6 +45,20 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
+    if type(config.get("sam31_cpu_prefetch", True)) is not bool:
+        raise ValueError("inference.sam31_cpu_prefetch must be a boolean")
+    if "sam31_native_bundle" in config and "sam31_w8a8_development_bundle" in config:
+        raise ValueError("Select only one SAM image bundle")
+    if type(config.get("sam31_allow_unqualified_w8a8", False)) is not bool:
+        raise ValueError("inference.sam31_allow_unqualified_w8a8 must be a boolean")
+    if config.get("sam31_allow_unqualified_w8a8") and not config.get("sam31_w8a8_development_bundle"):
+        raise ValueError("Unqualified execution requires a W8A8 development bundle")
+    for key in ("sam31_native_bundle", "sam31_w8a8_development_bundle"):
+        if key in config:
+            if not isinstance(config[key], str) or not Path(config[key]).is_absolute():
+                raise ValueError(f"inference.{key} must be an absolute path")
+            if config.get("precision", "float16") != "float16":
+                raise ValueError("native SAM requires inference.precision=float16")
     if isinstance(config.get("device", 0), bool) or int(config.get("device", 0)) < 0:
         raise ValueError("inference.device must be a nonnegative integer")
 
@@ -52,11 +69,23 @@ class WorkerClient:
         self.process: subprocess.Popen | None = None
         self.pending = b""
         self.cancelled = threading.Event()
+        self.native_temp: Any = None
+        self.request_transport = "json-base64"
+        self.prefetch_supported = False
+        self.previous_prompts = None
 
     def launch(self) -> None:
+        from .sam31_w8a8 import packed_profile, verify_graphics
+        sam_bundle = self.config.get("sam31_w8a8_development_bundle")
+        packed = (self.config.get("model", "sam3.1") == "sam3.1" and sam_bundle is not None
+                  and packed_profile(Path(sam_bundle)))
         cache = Path(self.config["cache_dir"])
         if self.config.get("model") == "yolo26x":
             cache /= "yolo26x"
+        elif self.config.get("sam31_w8a8_development_bundle"):
+            cache /= "sam31-israel-w8a8-packed" if packed else "sam31-israel-w8a8"
+        elif self.config.get("sam31_native_bundle"):
+            cache /= "sam31-native"
         cache.mkdir(parents=True, exist_ok=True)
         (cache / "ultralytics").mkdir(exist_ok=True)
         env = {
@@ -70,6 +99,17 @@ class WorkerClient:
             "YOLO_AUTOINSTALL": "false",
             "YOLO_OFFLINE": "true",
         }
+        if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_w8a8_development_bundle"):
+            # Custom ops use Torch's SYCL ABI, not the dense graphs runner's
+            # isolated oneAPI runtime. No system-wide library changes.
+            env["LD_LIBRARY_PATH"] = str(Path(self.config["python"]).parent.parent / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
+            if packed:
+                env["LD_LIBRARY_PATH"] = str(verify_graphics(Path(sam_bundle))) + ":" + env["LD_LIBRARY_PATH"]
+        if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_native_bundle"):
+            # Parent-owned so an interrupted/killed compile cannot leak shared
+            # buffers in /dev/shm. Each worker gets an isolated directory.
+            self.native_temp = tempfile.TemporaryDirectory(prefix="turret-native-", dir="/dev/shm")
+            env["SPRING_NATIVE_IPC_DIR"] = self.native_temp.name
         self.process = subprocess.Popen(
             [
                 self.config["python"],
@@ -83,10 +123,19 @@ class WorkerClient:
                 self.config.get("precision", "float16"),
                 "--confidence",
                 str(self.config.get("confidence", 0.5)),
+                *(["--native-bundle", self.config["sam31_native_bundle"]]
+                  if self.config.get("model", "sam3.1") == "sam3.1"
+                  and self.config.get("sam31_native_bundle") else []),
+                *(["--w8a8-development-bundle", self.config["sam31_w8a8_development_bundle"]]
+                  if self.config.get("model", "sam3.1") == "sam3.1"
+                  and self.config.get("sam31_w8a8_development_bundle") else []),
+                *(["--allow-unqualified-w8a8"] if self.config.get("model", "sam3.1") == "sam3.1"
+                  and self.config.get("sam31_allow_unqualified_w8a8") else []),
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             env=env,
+            start_new_session=True,
         )
         if self.cancelled.is_set():
             self.cancel()
@@ -97,11 +146,11 @@ class WorkerClient:
         process = self.process
         if process and process.poll() is None:
             try:
-                process.terminate()
+                os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
 
-    def receive(self, timeout: float, progress: Any = None) -> dict[str, Any]:
+    def receive(self, timeout: float, progress: Any = None, tick: Any = None) -> dict[str, Any]:
         assert self.process and self.process.stdout
         deadline = time.monotonic() + timeout
         with selectors.DefaultSelector() as selector:
@@ -116,12 +165,21 @@ class WorkerClient:
                         continue
                     if message.get("type") in ("fatal", "error"):
                         raise RuntimeError(message.get("error", "Model worker failed"))
+                    if message.get("type") == "ready":
+                        self.request_transport = (JPEG_BYTES if message.get("request_transport") == JPEG_BYTES
+                                                  else "json-base64")
+                        self.prefetch_supported = (self.request_transport == JPEG_BYTES
+                            and message.get("cpu_prefetch") is True and self.config.get("sam31_cpu_prefetch", True))
                     return message
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not selector.select(remaining):
+                if remaining <= 0:
                     raise TimeoutError(
                         "Model worker timed out; submit the prompt to retry"
                     )
+                if not selector.select(min(remaining, .005) if tick else remaining):
+                    if tick:
+                        tick()
+                    continue
                 chunk = os.read(self.process.stdout.fileno(), 65536)
                 if not chunk:
                     raise RuntimeError("Model worker exited; check the service log")
@@ -130,34 +188,73 @@ class WorkerClient:
                     raise RuntimeError("Model worker response exceeded 4 MiB")
 
     def detect(
-        self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any
+        self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any,
+        *, prepared_token=None, prepare_next=None,
     ) -> dict[str, Any]:
         assert self.process and self.process.stdin
         body = {
             "id": request_id,
-            "jpeg": base64.b64encode(jpeg).decode(),
             "prompts": prompts,
+            "client_overlay": True,
+            "prepared_token": prepared_token,
         }
-        self.process.stdin.write(json.dumps(body).encode() + b"\n")
+        self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
         self.process.stdin.flush()
-        result = self.receive(900, progress)
+        sent = 0
+        last_token = None
+        prepared_sent_at = None
+        def prefetch():
+            nonlocal sent, prepared_sent_at, last_token
+            if self.cancelled.is_set():
+                return
+            candidate = prepare_next()
+            if candidate is not None and candidate["token"] != last_token:
+                self.process.stdin.write(encode_request({"kind":"prepare", "token":candidate["token"]},
+                                                         candidate["jpeg"], self.request_transport))
+                self.process.stdin.flush()
+                prepared_sent_at = time.monotonic()
+                last_token = candidate["token"]
+                sent += 1
+        # Only steady, validated prompt batches: no background Torch operations
+        # during initial compilation/capture or a changed prompt batch's setup.
+        tick = (prefetch if self.prefetch_supported and prepare_next is not None
+                and self.previous_prompts == tuple(prompts) else None)
+        result = self.receive(900, progress, tick)
         if result.get("type") != "result" or result.get("id") != request_id:
             raise RuntimeError("Model worker returned an unexpected response")
+        self.previous_prompts = tuple(prompts)
+        result["request_transport"] = self.request_transport
+        result["prefetch_candidate_matched"] = prepared_token is not None
+        result["prefetch_sent"] = bool(sent)
+        result["prefetch_frames_sent"] = sent
+        result["prefetch_window_ms"] = (round((time.monotonic() - prepared_sent_at) * 1000, 2)
+                                         if prepared_sent_at is not None else None)
         return result
 
     def stop(self) -> None:
         process = self.process
         if process is not None:
             if process.poll() is None:
-                process.terminate()
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=3)
+            # Reap surviving descendants even if the worker itself exited early.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             for stream in (process.stdin, process.stdout):
                 if stream:
                     stream.close()
+        if self.native_temp is not None:
+            self.native_temp.cleanup()
+            self.native_temp = None
 
 
 class DetectionController:
@@ -266,6 +363,19 @@ class DetectionController:
         with self.condition:
             return self.frames.get(key)
 
+    def _cache_frame(self, key: str, jpeg: bytes, boxes: list, captured_at: float) -> None:
+        """Called under condition; retain click metadata for the full freshness window."""
+        self.frames[key] = jpeg
+        self.frame_selections[key] = {"boxes": boxes, "captured_at": captured_at}
+        while len(self.frames) > 8:
+            self.frames.popitem(last=False)
+        # JPEG eviction must not invalidate a fresh displayed frame at 30+ FPS.
+        # Metadata is tiny; its independent hard cap also bounds memory usage.
+        now = time.monotonic()
+        while self.frame_selections and (len(self.frame_selections) > 128 or
+                now - next(iter(self.frame_selections.values()))["captured_at"] > .75):
+            self.frame_selections.popitem(last=False)
+
     def selection(self, revision: int, sequence: int, instance_id: int) -> dict:
         if any(type(v) is not int or v < 0 for v in (revision, sequence, instance_id)):
             raise ValueError("selection requires integer revision, frame_sequence and instance_id")
@@ -302,6 +412,7 @@ class DetectionController:
     def _run(self) -> None:
         failed_revision = -1
         last_camera_sequence = 0
+        prefetched = None
         try:
             while not self.stop_event.is_set():
                 with self.condition:
@@ -319,12 +430,14 @@ class DetectionController:
                     self.worker.stop()  # Exit/reap the old process before allocating the new model.
                     with self.condition:
                         self.worker, self.worker_model = None, None
+                        prefetched = None
                 if not prompts:
                     continue
-                pose = self.pose_provider() if self.pose_provider else None
+                cycle_started = time.monotonic()
                 sequence, jpeg, captured_at = self.camera.wait_for_sample(
-                    last_camera_sequence, 1, after=pose["sampled_at"] if pose else 0.0
+                    last_camera_sequence, 1
                 )
+                camera_ready = time.monotonic()
                 if (
                     jpeg is None
                     or sequence == last_camera_sequence
@@ -334,10 +447,14 @@ class DetectionController:
                     self.stop_event.wait(0.1)
                     continue
                 last_camera_sequence = sequence
+                # Use bounded encoder history to match this latest frame. Do not
+                # discard it just because a newer encoder poll has completed.
+                pose = self.pose_provider(captured_at) if self.pose_provider else None
                 started = time.monotonic()
                 # This is a receipt-time pose estimate, not a hardware exposure
                 # timestamp. Never associate a delayed camera frame with an old pose.
-                if pose and not 0 <= captured_at - pose["sampled_at"] <= 0.1:
+                if pose and (not 0 <= captured_at - pose["sampled_at"] <= 0.1
+                             or pose.get("read_completed_at", pose["sampled_at"]) > captured_at):
                     pose = None
                 try:
                     if self.worker is None:
@@ -357,35 +474,61 @@ class DetectionController:
                         if revision != self.revision:
                             continue
                     self.sequence += 1
+                    prepared_token = None
+                    if (prefetched is not None and prefetched["revision"] == revision
+                            and prefetched["id"] == self.sequence and prefetched["camera_sequence"] == sequence
+                            and prefetched["jpeg"] == jpeg and 0 <= time.monotonic() - captured_at <= .1):
+                        prepared_token = prefetched["token"]
+                    prefetched = None
+                    def prepare_next():
+                        nonlocal prefetched
+                        with self.condition:
+                            if self.stop_event.is_set() or revision != self.revision:
+                                return None
+                            next_sequence, next_jpeg, next_at = self.camera.wait_for_sample(sequence, 0)
+                            if next_sequence == sequence or next_jpeg is None or not 0 <= time.monotonic() - next_at <= .1:
+                                return None
+                            if prefetched is not None and prefetched["camera_sequence"] == next_sequence:
+                                return None
+                            prefetched = {"revision":revision, "id":self.sequence+1,
+                                "camera_sequence":next_sequence, "jpeg":next_jpeg,
+                                "token":f"{revision}:{self.sequence+1}:{next_sequence}"}
+                            return prefetched
+                    extra = ({"prepared_token":prepared_token, "prepare_next":prepare_next}
+                             if getattr(self.worker, "prefetch_supported", False) else {})
                     result = self.worker.detect(
                         self.sequence,
                         jpeg,
                         prompts,
                         lambda stage: self._progress(revision, stage),
+                        **extra,
                     )
                     if not result.get("torch_compile") or not result.get("sycl_graph"):
                         raise RuntimeError(
                             "Model worker did not verify compiled SYCL graph execution"
                         )
-                    annotated = base64.b64decode(result.pop("jpeg"), validate=True)
+                    worker_done = time.monotonic()
+                    annotated = jpeg if result.get("client_overlay") is True else base64.b64decode(result.pop("jpeg"), validate=True)
                     result.pop("type", None)
                     result.pop("id", None)
                     key = f"{revision}-{self.sequence}"
                     with self.condition:
                         if revision != self.revision:
                             continue  # Never display boxes from an obsolete prompt.
-                        self.frames[key] = annotated
                         result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
-                        self.frame_selections[key] = {"boxes": result["boxes"], "captured_at": captured_at}
-                        while len(self.frames) > 8:
-                            removed, _ = self.frames.popitem(last=False)
-                            self.frame_selections.pop(removed, None)
+                        self._cache_frame(key, annotated, result["boxes"], captured_at)
                         self.result = {
                             **result,
                             "frame_sequence": self.sequence,
                             "frame_url": f"/api/detection/frame/{key}.jpg",
                             "captured_at": captured_at,
                             "frame_pose": pose,
+                            "pipeline_timing": {
+                                "pose_ms": round((started-camera_ready)*1000, 2),
+                                "capture_wait_ms": round((camera_ready-cycle_started)*1000, 2),
+                                "worker_roundtrip_ms": round((worker_done-started)*1000, 2),
+                                "cycle_ms": round((time.monotonic()-cycle_started)*1000, 2),
+                            },
                         }
                         self.completed_at = captured_at
                         self.state = "running"
@@ -400,6 +543,7 @@ class DetectionController:
                             self.frame_selections.clear()
                             self.instances.clear()
                         worker, self.worker = self.worker, None
+                        prefetched = None
                     if worker:
                         worker.stop()
                     failed_revision = revision

@@ -1,0 +1,97 @@
+{
+  "person": {
+    "timing": {
+      "preprocess_ms": 12.75,
+      "prompt_setup_ms": 0.02,
+      "image_encoder_ms": 107.02,
+      "grounding_ms": 15.5,
+      "postprocess_ms": 0.42,
+      "native_image_replay_ms": 87.14,
+      "annotation_ms": 8.05,
+      "worker_total_ms": 145.73,
+      "json_roundtrip_ms": 148.12
+    },
+    "categories": [
+      {
+        "prompt": "person",
+        "color": "#55e8ce",
+        "count": 2
+      }
+    ],
+    "validation": {
+      "person": {
+        "max_confidence_error": 0.000477,
+        "max_all_query_score_error": 0.018699,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 5.8e-05
+      }
+    }
+  },
+  "person + cup": {
+    "timing": {
+      "preprocess_ms": 12.88,
+      "prompt_setup_ms": 0.02,
+      "image_encoder_ms": 107.05,
+      "grounding_ms": 29.22,
+      "postprocess_ms": 0.64,
+      "native_image_replay_ms": 87.12,
+      "annotation_ms": 8.32,
+      "worker_total_ms": 158.24,
+      "json_roundtrip_ms": 160.79
+    },
+    "categories": [
+      {
+        "prompt": "person",
+        "color": "#55e8ce",
+        "count": 2
+      },
+      {
+        "prompt": "cup",
+        "color": "#ffb86b",
+        "count": 0
+      }
+    ],
+    "validation": {
+      "person": {
+        "max_confidence_error": 0.000477,
+        "max_all_query_score_error": 0.018699,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 5.8e-05
+      }
+    }
+  },
+  "cup + person": {
+    "timing": {
+      "preprocess_ms": 12.96,
+      "prompt_setup_ms": 0.02,
+      "image_encoder_ms": 107.06,
+      "grounding_ms": 29.16,
+      "postprocess_ms": 0.57,
+      "native_image_replay_ms": 87.18,
+      "annotation_ms": 8.21,
+      "worker_total_ms": 158.53,
+      "json_roundtrip_ms": 160.96
+    },
+    "categories": [
+      {
+        "prompt": "cup",
+        "color": "#55e8ce",
+        "count": 0
+      },
+      {
+        "prompt": "person",
+        "color": "#ffb86b",
+        "count": 2
+      }
+    ],
+    "validation": {
+      "person": {
+        "max_confidence_error": 0.000477,
+        "max_all_query_score_error": 0.018699,
+        "compared_boxes": 2,
+        "max_box_coordinate_error": 5.8e-05
+      }
+    }
+  },
+  "ipc_cleaned": true
+}

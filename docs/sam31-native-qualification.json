@@ -1,0 +1,220 @@
+{
+  "artifact": "c98974a61db4e8e0a73b825c60b85862406d934cd8631c7189df8eb2b77c051a",
+  "checks": [
+    {
+      "image": 0,
+      "prompt": "person",
+      "max_confidence_error": 0.006196,
+      "max_all_query_score_error": 0.015303,
+      "compared_boxes": 4,
+      "max_box_coordinate_error": 3.9e-05
+    },
+    {
+      "image": 0,
+      "prompt": "car",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 0,
+      "prompt": "truck",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 0,
+      "prompt": "bottle",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.00017,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 1,
+      "prompt": "person",
+      "max_confidence_error": 0.000488,
+      "max_all_query_score_error": 0.002087,
+      "compared_boxes": 4,
+      "max_box_coordinate_error": 3.7e-05
+    },
+    {
+      "image": 1,
+      "prompt": "car",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 1,
+      "prompt": "truck",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 1,
+      "prompt": "bottle",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.000337,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 2,
+      "prompt": "person",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.000578,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 2,
+      "prompt": "car",
+      "max_confidence_error": 0.002976,
+      "max_all_query_score_error": 0.002976,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 3.9e-05
+    },
+    {
+      "image": 2,
+      "prompt": "truck",
+      "max_confidence_error": 0.00173,
+      "max_all_query_score_error": 0.006364,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 1.6e-05
+    },
+    {
+      "image": 2,
+      "prompt": "bottle",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 5e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 3,
+      "prompt": "person",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.001414,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 3,
+      "prompt": "car",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 1e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 3,
+      "prompt": "truck",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 3,
+      "prompt": "bottle",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 1e-06,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 4,
+      "prompt": "person",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 1.4e-05,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 4,
+      "prompt": "car",
+      "max_confidence_error": 0.0,
+      "max_all_query_score_error": 0.005885,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 1.8e-05
+    },
+    {
+      "image": 4,
+      "prompt": "truck",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 1.2e-05,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 4,
+      "prompt": "bottle",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.000154,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 0,
+      "prompt": "person",
+      "max_confidence_error": 0.006196,
+      "max_all_query_score_error": 0.015303,
+      "compared_boxes": 4,
+      "max_box_coordinate_error": 3.9e-05
+    },
+    {
+      "image": 0,
+      "prompt": "car",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 0,
+      "prompt": "truck",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.0,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    },
+    {
+      "image": 0,
+      "prompt": "bottle",
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.00017,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    }
+  ],
+  "timing": {
+    "1": {
+      "image_with_ipc_ms": 106.54209199128672,
+      "grounding_ms": 18.69153200823348,
+      "model_with_ipc_ms": 125.26318000163883
+    },
+    "2": {
+      "image_with_ipc_ms": 106.2896679941332,
+      "grounding_ms": 32.77277400775347,
+      "model_with_ipc_ms": 138.97058001020923
+    },
+    "4": {
+      "image_with_ipc_ms": 107.52834800223354,
+      "grounding_ms": 61.213790002511814,
+      "model_with_ipc_ms": 168.8530100072967
+    }
+  },
+  "passed": true,
+  "native_replay": {
+    "artifact": "c98974a61db4e8e0a73b825c60b85862406d934cd8631c7189df8eb2b77c051a",
+    "command_graph_count": 1,
+    "direct_replay_passed": true
+  }
+}

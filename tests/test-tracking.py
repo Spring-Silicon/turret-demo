@@ -48,6 +48,9 @@ class Servo:
                              "axes": {a: {"goal_degrees": v} for a, v in self.goals.items()}}
     def arm(self): self.armed = True
     def disable(self): self.armed = False
+    def recalibrate(self):
+        if self.armed: raise ServoDisarmed("Stop first")
+        self.goals = {"x": 0, "y": 0}
     def track(self, offsets):
         if not self.armed: raise ServoDisarmed("stopped")
         self.calls.append(dict(offsets))
@@ -57,6 +60,46 @@ class Servo:
 
 
 class TrackingTests(unittest.TestCase):
+    def test_geometry_is_used_and_bad_camera_binding_holds(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location("geometry_test",Path(__file__).with_name("test-geometry.py"))
+        module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        self.tracker.geometry=module.Geometry(module.fixture())
+        old_status=self.servo.status
+        def servo_status():
+            s=old_status()
+            for k,v in module.fixture()["axes"].items(): s["axes"][k].update(v)
+            return s
+        self.servo.status=servo_status
+        self.camera.status=lambda:{"online":True,**module.fixture()["camera"]}
+        self.start()
+        self.frame([box(cx=.7,cy=.5)],x=10,y=35)
+        self.assertEqual(self.tracker.status()["mapping"],"fisheye-kinematics")
+        expected=self.tracker.geometry.goals(.7*1280,.5*720,self.detection.data["frame_pose"],self.servo.status())
+        for name in expected: self.assertAlmostEqual(self.servo.calls[-1][name],expected[name])
+        self.camera.status=lambda:{"online":True,**module.fixture()["camera"],"identity":"different"}
+        self.frame([box(cx=.8)])
+        self.assertEqual(self.tracker.state,"uncalibrated")
+        self.assertIn("identity",self.tracker.error)
+        self.assertEqual(self.servo.calls[-1],{"x":0,"y":0})
+
+    def test_recalibration_clears_old_coordinate_tracking_without_moving(self):
+        self.start()
+        self.frame([box()])
+        self.tracker.instance_id = 42
+        with self.assertRaises(ServoDisarmed): self.tracker.recalibrate()
+        self.assertEqual(self.tracker.target, "cup")
+        self.servo.armed = False
+        before = self.servo.calls.copy()
+        self.tracker.recalibrate()
+        self.assertEqual(self.servo.calls, before)
+        self.assertIsNone(self.tracker.target)
+        self.assertIsNone(self.tracker.instance_id)
+        self.assertIsNone(self.tracker.previous_pose)
+        self.assertIsNone(self.tracker.last_frame)
+        self.assertEqual(self.tracker.state, "off")
+        self.assertFalse(self.servo.armed)
+
     def test_model_change_clears_tracking_and_holds_without_arming(self):
         self.start()
         self.frame([box()])

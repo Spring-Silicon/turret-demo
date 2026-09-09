@@ -3,6 +3,12 @@
 Camera feed, switchable SAM 3.1 / YOLO26x bounding boxes, and manual or opt-in automatic
 X/Y camera framing.
 
+Optional qualified native SAM image execution from `sleepy-joe` is documented
+in [the native image setup](docs/sam31-native.md). Text/grounding and the default
+compiled image path remain available; activation is an explicit device setting.
+The faster, **accuracy-unqualified** Israel W8A8 candidate has a separate
+explicit [development setup](docs/sam31-w8a8.md); dense-reference gates remain unchanged.
+
 ## Current hardware status
 
 - Arducam 1080P Low Light (`0c45:0261`, serial `UC684`): 1280x720 MJPEG at
@@ -38,7 +44,34 @@ tilt axis can fall under gravity; support the camera before disconnecting power.
 Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
 **triangle/square Start/Stop** button, and a **Y degree slider**. Sliders move
 their respective axes while running; requests are coalesced during a drag.
-Errors appear only when needed. Enter
+Errors appear only when needed.
+
+The status line shows **detection FPS**, **model** time and full processing
+**loop** time (capture wait, pose lookup, worker and result publication; not
+network/browser display time). FPS is measured
+from completed-frame sequence changes over a rolling two-second browser-time
+window, including frames completed between polls. It includes pipeline overhead
+and is not `1000 / model_ms`, the camera's capture rate, or browser rendering FPS.
+It resets on model/prompt changes and shows `—` during startup/unavailable data.
+
+**Recalibrate zeros** saves the current pan and tilt encoder positions as X=0°,
+Y=0°. Stop the motors, support the camera and position it at the intended zero,
+then click and confirm. No motion or EEPROM writes occur. Both fresh readings
+must be stationary and torque-off; an active motor, missing axis or failed save
+rejects the operation. Tracking selection is cleared and Start remains manual.
+The numeric angle limits, axis directions and motor settings are unchanged;
+the allowed physical travel is now relative to the new zero.
+
+For persistent zeros, set `servo.calibration_file` to a writable state path,
+for example `/var/lib/spring-turret-demo/servo-zeros.json`. A systemd service can
+provide this directory with `StateDirectory=spring-turret-demo` and
+`StateDirectoryMode=0750`. Both zeros are atomically saved in that file and
+loaded on restart; no write access to `/etc` is needed. Existing commissioned
+zeros remain the fallback until the first save. Invalid saved data or changed
+axis IDs/directions fail closed; the button does not replace initial hardware
+commissioning (`servo.calibrated` must already be true).
+
+Enter
 one object category per row (for example `person`, `cup`, `keyboard`). Each row
 shows its detected instance count and a trash button. The single **+** below
 the list adds another row. Counts show `—` while unavailable or for unapplied
@@ -73,6 +106,11 @@ detections it holds, then reacquires automatically when that class returns; it
 does not remain stuck on an expired ID. Updating prompts clears a pending
 retarget. The server validates a click against the exact displayed
 JPEG's cached detections and rejects stale frames or fabricated object IDs.
+Click metadata is kept independently of the eight-JPEG cache for the full 750 ms
+freshness window. Pointer presses stay attached to the stable overlay if a box
+changes ID before release. Ambiguous old IDs are retired, so one crossing cannot
+cause continuous ID churn after objects separate. Rejected-click errors remain
+visible for five seconds rather than disappearing on the next video frame.
 
 Selecting a class never starts stopped motors. Stop/Escape still releases both
 motors; a manual slider move cancels automatic tracking. Editing/removing the
@@ -86,8 +124,9 @@ new inference result wakes the controller immediately, including frames captured
 during a preceding move. Absolute pointing goals are clamped only to the X/Y angle
 limits. `inference.max_fps: 0` (the default) runs inference as fast as the pipeline
 can process fresh camera frames, without an added FPS throttle. The controller
-estimates the full correction as normalized image error times the calibrated
-degrees-per-frame scale, then commands **sampled camera angle + correction**.
+uses qualified fisheye/servo geometry when `tracking.geometry_file` is configured;
+otherwise it estimates the full correction as normalized image error times the
+degrees-per-frame scale. Both command **sampled camera angle + correction**.
 It does not repeatedly add delayed image errors to the previous goal. Fresh
 frames refine that absolute destination; a stationary, unchanged goal allows
 learning the small load/stiction holding bias. The 1.2% centering deadband remains.
@@ -112,13 +151,101 @@ for another camera rather than copying these blindly. `deadband` and
 `max_frame_age_seconds` also remain configurable. The old `x_gain`, `y_gain`,
 `max_step_degrees` and `settle_seconds` settings have been removed.
 
-Inference pairs each JPEG with fresh X/Y encoder readback just before its receipt
-(at most 100 ms apart), and carries that pose through the model. Missing or stale
+Inference matches the latest camera frame to a bounded 16-snapshot X/Y history
+from the independent hardware monitor, using the newest read completed before
+that frame's receipt timestamp;
+it does not block on the serial bus. Every published snapshot has passed the
+same position, torque and hardware-fault checks for both axes. A JPEG must arrive
+after those reads complete and within 100 ms of their start, including bus time.
+The snapshot is carried through the model. Missing or stale
 pose pairing holds motion rather than guessing from the current motor position.
 JPEG receipt time is not a hardware exposure timestamp: bus/camera buffering,
 model latency and physical travel still matter. At high speed this pose is an
-estimate, with subsequent frames providing feedback. Pairing can wait up to one
-camera frame in the normal 30 FPS pipeline; there is no added motion-settling wait.
+estimate, with subsequent frames providing feedback. A newer encoder poll no
+longer forces the detector to discard a fresh frame and wait for the next one.
+It waits for capture only when no unprocessed camera frame is available; no
+added motion-settling wait or relaxed pose-age/fault gate is introduced.
+
+SAM's Torch/W8A8 path decodes RGB/grayscale JPEG directly into a tensor, with
+pixel parity against the original PIL reference (CMYK/non-JPEG diagnostics
+retain PIL). It keeps torchvision's uint8 antialiased resize, then uploads
+bytes directly into the graph input and performs float32 normalization with
+a compiled GPU lookup table and SYCL replay. This avoids CPU float32 passes and
+the four-times-larger float32 upload. All 256 input values map to the original
+CPU float32 bits; first-frame exact parity is a hard gate, independent of the
+W8A8 development accuracy opt-in. `preprocess_validation` reports that check.
+The separate dense native runner retains its CPU-input path. Run
+`tests/qualify-sam31-preprocess.py --jpeg /path/to/camera.jpg` in the inference
+venv with an idle XPU for exhaustive byte-value and changed-frame parity tests.
+
+SAM advertises `jpeg-bytes-v1` in its worker handshake: a bounded JSON header
+with `jpeg_length`, followed by exactly that many unmodified JPEG bytes.
+Responses stay JSON lines, and legacy base64 JSON requests remain accepted.
+YOLO/older workers retain the base64 path unless they advertise the capability.
+This removes base64 encoding/decoding and its 33% payload expansion from SAM's
+local input pipe; it does not reorder inference requests/results.
+
+The Torch/W8A8 worker overlaps CPU JPEG decode/resize with GPU inference. During
+steady, validated prompt batches the parent checks for a new camera frame every
+5 ms while awaiting the GPU result, sends each candidate only once, and keeps a
+bounded, latest-only preparation buffer, not a FIFO of inference frames. Cold
+compilation and changed-prompt setup do not start new background preparation.
+On the next pass the controller still chooses the newest camera frame;
+reuse requires matching revision, request/sequence, JPEG bytes and the existing
+100 ms freshness bound. A newer frame, changed prompt or late preparation falls
+back immediately to preparing the actual latest frame. GPU operations remain
+on the inference thread; pose pairing, angle limits and motor stop behavior are
+unchanged. Set `inference.sam31_cpu_prefetch: false` to disable this optimization.
+`preprocess_prefetched` reports reuse; `timing.cpu_prepare_ms` measures CPU work
+even when overlapped, so it must not be added again to `worker_total_ms`.
+
+### Pattern-free fisheye calibration
+
+Version 0.14 supports a qualified equidistant fisheye model with two radial terms,
+unequal focal lengths, optical-center offset and a measured camera-to-tilt mount
+rotation. Pixel rays are transformed through the sampled pan/tilt pose, and both
+joint angles are solved together to place the target at the **image center**.
+This is not simply `atan(pixel_error/focal_length)` or advertised diagonal FOV
+divided by image width. Instance motion prediction uses the same camera model.
+
+Set `tracking.geometry_file` to an absolute path to a **device-specific qualified**
+JSON file. An invalid/unqualified file prevents startup. A camera serial,
+resolution, motor ID or direction mismatch holds tracking with a visible error;
+it does not silently revert to the linear mapping. The old linear path remains
+available when no geometry file is configured. The API reports `tracking.mapping`
+as `fisheye-kinematics` or `linear` and `camera.identity` as USB vendor:product:serial.
+Changing servo zeros preserves the physical mapping by translating angles back
+to the calibration's encoder-origin reference. Moving the camera mount, changing
+its lens/focus, or modifying mechanical axes requires new calibration.
+
+The tools below target the commissioned +X/right, +Y/up, positive-encoder pan/tilt
+assembly. They use **measured**, settled encoder angles, not requested angles.
+`capture-scene.py` and `check-scene-pointing.py` move motors: only run after an
+operator clears the mechanism and explicitly authorizes the small sweeps. They
+start with motors off, clear automatic tracking, restrict excursions to ±8° pan
+and ±6° tilt around the start, issue steps no larger than 3°, abort on Stop or goal
+changes, return home on success, then disable torque. On an abort they stop
+without overriding the operator with a return move. They do not change zeros,
+limits, EEPROM, model or prompts. Do not interact with sliders while they run.
+
+```bash
+# Service must be running on localhost:8080; output path must not exist.
+python3 tools/capture-scene.py --output /path/to/new-capture --allow-motion
+# Use the inference venv (OpenCV + numpy + scipy); this step never moves motors.
+python tools/fit-scene.py /path/to/new-capture --output /path/to/candidate.json
+# Only after fit passed, with operator clearance still valid:
+python tools/check-scene-pointing.py --geometry /path/to/candidate.json \
+  --output /path/to/new-pointing-check.json --allow-motion
+```
+
+Fitting uses spatially distributed, reciprocal SIFT matches from a static room.
+Eight poses train the model; six other poses test it. Median/p90 held-out feature
+prediction errors must improve on the old mapping and pass absolute pixel-error
+gates. Reject inconclusive calibration rather than relaxing the gates. This is
+a rotational approximation: camera/axis offsets create depth-dependent parallax,
+moving objects and backlash can add error, and small local sweeps do not establish
+accuracy throughout the full ±90° mechanical range. Keep visual feedback active.
+See [the measured qualification](docs/geometry-qualification.md).
 
 On spring-edge-2, version 0.8.1 passed separate 6° commanded-offset checks against
 a blue bag: first centered detection at 1.05 s (pan) and 0.86 s (tilt) after class
@@ -297,7 +424,10 @@ Implementation:
   can differ with mixed precision. Graph replay is additionally compared to
   uncaptured compiled raw outputs at `atol=rtol=0.001`.
 - The inference subprocess consumes only the latest available camera frame;
-  there is no frame backlog. Boxes are drawn into their exact source JPEG. A
+  there is no frame backlog. The browser draws boxes over their exact source
+  JPEG only after that image loads (`client_overlay: true`), avoiding another
+  JPEG decode/encode and base64 return trip in the worker. Standalone engine
+  calls still return annotated JPEGs by default. A
   prompt change/clear invalidates prior results immediately. Stale output is
   replaced by the raw feed. Submitting an empty list stops new inference; the
   model remains loaded for the next prompt. An in-flight compilation/inference
@@ -309,6 +439,17 @@ Implementation:
   each stage and `worker_total_ms`, which includes those worker-side overheads
   (including cold compile/validation when applicable). HTTP delivery, camera
   buffering and browser display remain outside the worker timing.
+- `pipeline_timing` measures pose lookup, camera wait, worker round-trip and the
+  complete detection cycle. A persistent event stream delivers detection metadata
+  and its original JPEG together, independently of the 200 ms hardware-status
+  refresh. This avoids two network round-trips per frame. Slow clients skip to
+  latest on the server, and the browser holds only one pending image while
+  decoding; JPEGs and boxes remain frame-matched. Stream disconnects reconnect
+  automatically, with metadata long-polling and individual JPEGs as fallback.
+- The connected Arducam advertises at most 30 FPS, including at smaller sizes.
+  A 15 ms forward pass alone does not imply 60 distinct camera detections/second;
+  capture, preprocessing, IPC and delivery also contribute. Do not count repeats
+  of the same camera sample as additional detections.
 
 Opt-in GPU validation (never controls the servo):
 
@@ -338,12 +479,17 @@ JPEG with two detected people; preprocessing/annotation excluded):
 Batch-one is the deployment default. The image stage is about 124 ms/frame;
 each grounding replay about 13 ms. Three-category worker time including JPEG
 preprocessing and annotation was about 188 ms, versus the old implementation's
-432 ms **inference alone**. Browser/network overhead and the 5 FPS cap are unchanged.
+432 ms **inference alone**. These are historical measurements; the later native
+image backend and frame-driven delivery are separate improvements.
 
 ## API
 
 - `GET /stream.mjpg`
 - `GET /api/status`
+- `GET /api/detection/events` streams JSON events with metadata and base64 `jpeg`
+  together for each new frame; idle/progress heartbeats omit the image.
+- `GET /api/detection/status?revision=1&sequence=25` waits up to one second for
+  newer detection metadata, without acquiring hardware-status locks.
 - `POST /api/servo/arm`
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` at least once a second while running

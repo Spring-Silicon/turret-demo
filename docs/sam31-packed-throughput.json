@@ -1,0 +1,178 @@
+{
+  "unique_samples": 331,
+  "detector_fps": 10.98,
+  "delivered_fps": 10.98,
+  "timing": {
+    "preprocess_ms": {
+      "mean": 3.7,
+      "median": 5.79,
+      "p95": 6.45
+    },
+    "cpu_prepare_ms": {
+      "mean": 8.44,
+      "median": 5.4,
+      "p95": 12.92
+    },
+    "prompt_setup_ms": {
+      "mean": 0.02,
+      "median": 0.02,
+      "p95": 0.02
+    },
+    "image_encoder_ms": {
+      "mean": 74.07,
+      "median": 74.07,
+      "p95": 74.25
+    },
+    "grounding_ms": {
+      "mean": 12.24,
+      "median": 12.24,
+      "p95": 12.32
+    },
+    "postprocess_ms": {
+      "mean": 0.48,
+      "median": 0.45,
+      "p95": 0.76
+    },
+    "annotation_ms": {
+      "mean": 0,
+      "median": 0,
+      "p95": 0
+    },
+    "worker_total_ms": {
+      "mean": 90.6,
+      "median": 92.57,
+      "p95": 93.31
+    }
+  },
+  "pipeline_timing": {
+    "pose_ms": {
+      "mean": 0.01,
+      "median": 0.01,
+      "p95": 0.01
+    },
+    "capture_wait_ms": {
+      "mean": 0,
+      "median": 0,
+      "p95": 0.01
+    },
+    "worker_roundtrip_ms": {
+      "mean": 91.08,
+      "median": 92.99,
+      "p95": 93.83
+    },
+    "cycle_ms": {
+      "mean": 91.15,
+      "median": 93.03,
+      "p95": 93.9
+    }
+  },
+  "frame_age_ms": {
+    "mean": 107.83,
+    "median": 107,
+    "p95": 122
+  },
+  "prefetched_fraction": 0.465,
+  "prefetch_sent_fraction": 1,
+  "prefetch_matched_fraction": 0.894,
+  "prefetch_frames_sent": {
+    "mean": 2.63,
+    "median": 3,
+    "p95": 3
+  },
+  "prefetch_window_ms": {
+    "mean": 16.13,
+    "median": 16.19,
+    "p95": 32.48
+  },
+  "by_prefetched": {
+    "True": {
+      "samples": 154,
+      "preprocess_ms": {
+        "mean": 0.93,
+        "median": 0.93,
+        "p95": 0.98
+      },
+      "worker_total_ms": {
+        "mean": 87.91,
+        "median": 87.91,
+        "p95": 88.13
+      }
+    },
+    "False": {
+      "samples": 177,
+      "preprocess_ms": {
+        "mean": 6.11,
+        "median": 6.09,
+        "p95": 6.58
+      },
+      "worker_total_ms": {
+        "mean": 92.93,
+        "median": 92.9,
+        "p95": 93.43
+      }
+    }
+  },
+  "validation": {
+    "face": {
+      "passed": true,
+      "max_confidence_error": 0.011206,
+      "max_all_query_score_error": 0.040166,
+      "compared_boxes": 1,
+      "max_box_coordinate_error": 0.000109
+    }
+  },
+  "camera": {
+    "online": true,
+    "device": "/dev/spring-turret-camera",
+    "identity": "0c45:0261:UC684",
+    "width": 1280,
+    "height": 720,
+    "framerate": 30,
+    "frame_age_ms": 24,
+    "error": null
+  },
+  "servo": {
+    "online": true,
+    "ready": true,
+    "can_recalibrate": true,
+    "device": "/dev/spring-turret-servo",
+    "protocol": "dynamixel-2.0",
+    "baudrate": 57600,
+    "armed": false,
+    "error": null,
+    "axes": {
+      "x": {
+        "online": true,
+        "model": 1200,
+        "position": 2480,
+        "goal": null,
+        "torque": false,
+        "origin": 2010,
+        "id": 2,
+        "direction": 1,
+        "degrees": 41.31,
+        "goal_degrees": null,
+        "min_degrees": -90,
+        "max_degrees": 90
+      },
+      "y": {
+        "online": true,
+        "model": 1200,
+        "position": 1053,
+        "goal": null,
+        "torque": false,
+        "origin": 962,
+        "id": 1,
+        "direction": 1,
+        "degrees": 8,
+        "goal_degrees": null,
+        "min_degrees": -90,
+        "max_degrees": 90
+      }
+    }
+  },
+  "model": "sam3.1",
+  "prompts": [
+    "face"
+  ]
+}

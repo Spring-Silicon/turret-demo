@@ -6,8 +6,11 @@ import logging
 import math
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
+
+from spring_turret.calibration import load_zeros, save_zeros
 
 LOGGER = logging.getLogger("spring-turret.servo")
 XL330_PROTOCOL_VERSION = 2.0
@@ -43,6 +46,11 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("unsupported XL330 baudrate")
     if type(config.get("calibrated")) is not bool:
         raise ValueError("servo.calibrated must be a boolean")
+    if "calibration_file" in config and (
+        not isinstance(config["calibration_file"], str)
+        or not Path(config["calibration_file"]).is_absolute()
+    ):
+        raise ValueError("servo.calibration_file must be an absolute path")
     axes = config.get("axes", {})
     if set(axes) != {"x", "y"}:
         raise ValueError("servo.axes must contain x and y")
@@ -87,7 +95,11 @@ def nearest_center(axis: dict, position: int) -> int:
 class ServoController:
     def __init__(self, config: dict[str, Any]):
         self.config = config
+        load_zeros(config)
         self.lock = threading.Lock()
+        self.pose_lock = threading.Lock()
+        self.cached_pose: dict | None = None
+        self.pose_history: deque[dict] = deque(maxlen=16)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._monitor, name="servo", daemon=True)
         self.port: Any = None
@@ -149,6 +161,9 @@ class ServoController:
     def _disable_all_locked(self) -> list[str]:
         """Never let a failed first motor prevent attempting to stop the second."""
         self.armed = False
+        with self.pose_lock:
+            self.cached_pose = None
+            self.pose_history.clear()
         errors = []
         for name, state in self.axes.items():
             self._recovery_boundary[name] = None
@@ -184,6 +199,11 @@ class ServoController:
         self._disconnect_locked()
 
     def _poll_locked(self) -> None:
+        sampled_at = time.monotonic()
+        if not self.armed:
+            with self.pose_lock:
+                self.cached_pose = None
+                self.pose_history.clear()
         if self.packet is None:
             errors = self._disable_all_locked()
             if errors:
@@ -201,6 +221,17 @@ class ServoController:
             if state["torque"] != self.armed:
                 raise DeviceUnavailable(f"{name.upper()}: unexpected torque state")
             state["online"] = True
+        completed_at = time.monotonic()
+        if self.armed and completed_at - sampled_at <= 0.1:
+            with self.pose_lock:
+                self.cached_pose = {"sampled_at": sampled_at, "read_completed_at": completed_at,
+                    "axes": {name: {
+                        "origin": state["origin"], "id": self.config["axes"][name]["id"],
+                        "direction": self.config["axes"][name]["direction"],
+                        "degrees": to_degrees(self._axis_config(name), state["position"]),
+                        "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
+                    } for name, state in self.axes.items()}}
+                self.pose_history.append(self.cached_pose)
 
     def _axis_config(self, name: str) -> dict:
         return {**self.config["axes"][name], "center_position": self.axes[name]["origin"]}
@@ -246,7 +277,7 @@ class ServoController:
                     self.error = ""
                 except Exception as error:
                     self._fault_locked(error)
-            self.stop_event.wait(0.2 if self.packet is not None else 2)
+            self.stop_event.wait((0.01 if self.armed else 0.2) if self.packet is not None else 2)
 
     def arm(self) -> None:
         with self.lock:
@@ -296,6 +327,46 @@ class ServoController:
             for state in self.axes.values():
                 state["goal"] = None
 
+    def recalibrate(self) -> None:
+        """Save both current encoders as zero, torque-off and without motion."""
+        with self.lock:
+            if self.armed:
+                raise ServoDisarmed("Stop motors before recalibrating servo zeros")
+            if not self.config["calibrated"]:
+                raise DeviceUnavailable("Commission the servo IDs and modes before setting zeros")
+            if not self.config.get("calibration_file"):
+                raise DeviceUnavailable("Persistent servo calibration storage is not configured")
+            try:
+                # Reconnect read-only: do not let the monitor's normal initial
+                # torque-off sequence conceal an unexpectedly enabled motor.
+                self._open_locked()
+                for name in self.axes:
+                    self._ping(name)
+                    if self._read(name, XL330_TORQUE_ENABLE, 1) != 0:
+                        raise DeviceUnavailable(f"{name.upper()}: stop motors before setting zeros")
+                self._poll_locked()  # Both readings must be fresh and torque-off.
+                positions = {name: state["position"] for name, state in self.axes.items()}
+                for name in self.axes:
+                    self._ping(name)
+                    for address, size, expected in ((11, 1, 4), (10, 1, 0), (12, 1, 255), (20, 4, 0)):
+                        if self._read(name, address, size) != expected:
+                            raise DeviceUnavailable(f"{name.upper()}: register {address} needs commissioning")
+                time.sleep(0.05)
+                self._poll_locked()
+                if any(abs(self.axes[name]["position"] - value) > 2 for name, value in positions.items()):
+                    raise DeviceUnavailable("Hold both axes still while setting servo zeros")
+                positions = {name: state["position"] for name, state in self.axes.items()}
+                # Commit both zeros together before changing either in memory.
+                save_zeros(self.config, positions)
+                for name, position in positions.items():
+                    self.config["axes"][name]["center_position"] = position % 4096
+                    self.axes[name].update(origin=position, goal=None)
+                    self._recovery_boundary[name] = None
+                self.error = ""
+            except Exception as error:
+                self._fault_locked(error)
+                raise DeviceUnavailable(self.error) from error
+
     def keepalive(self) -> None:
         with self.lock:
             if self.armed:
@@ -322,20 +393,23 @@ class ServoController:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error
 
-    def sample_pose(self) -> dict[str, Any] | None:
-        """Read the encoders for a camera sample; never arm or renew the lease."""
-        with self.lock:
-            if not self.armed:
+    def sample_pose(self, captured_at: float | None = None) -> dict[str, Any] | None:
+        """Nonblocking checked encoder snapshot; never performs serial I/O.
+
+        The monitor/command paths still check both axes and all faults. Pairing
+        rejects snapshots over 100 ms old, including time spent reading the bus.
+        For a camera frame, choose the newest fully completed read BEFORE its
+        receipt time, not a newer pose that would force waiting for another frame.
+        """
+        with self.pose_lock:
+            now = time.monotonic()
+            at = now if captured_at is None else captured_at
+            if not self.armed or not 0 <= now - at <= 0.1:
                 return None
-            try:
-                self._tick_locked()
-                return {"sampled_at": time.monotonic(), "axes": {
-                    name: {"degrees": to_degrees(self._axis_config(name), state["position"]),
-                           "goal_degrees": to_degrees(self._axis_config(name), state["goal"])}
-                    for name, state in self.axes.items()}}
-            except Exception as error:
-                self._fault_locked(error)
-                return None
+            for pose in reversed(self.pose_history):
+                if pose["read_completed_at"] <= at and 0 <= at - pose["sampled_at"] <= 0.1:
+                    return {**pose, "axes": {name: dict(axis) for name, axis in pose["axes"].items()}}
+            return None
 
     def point(self, degrees: dict[str, float]) -> dict[str, Any]:
         """Command an absolute camera pointing pose, with only angle clamping."""
@@ -399,10 +473,13 @@ class ServoController:
                            if outside and not self.armed else None)
             return {
                 "online": online, "ready": online and self.config["calibrated"] and (self.armed or not outside),
+                "can_recalibrate": bool(self.config.get("calibration_file")) and self.config["calibrated"]
+                    and online and not self.armed and all(state["torque"] is False for state in self.axes.values()),
                 "device": self.config["device"], "protocol": "dynamixel-2.0",
                 "baudrate": self.config["baudrate"], "armed": self.armed,
                 "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
                 "axes": {name: {**state, "id": self.config["axes"][name]["id"],
+                    "direction": self.config["axes"][name]["direction"],
                     "degrees": to_degrees(self._axis_config(name), state["position"]),
                     "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
                     "min_degrees": self.config["axes"][name]["min_degrees"],

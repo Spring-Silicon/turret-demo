@@ -28,6 +28,8 @@ class Element {
   append(child) { child.parent = this; this.children.push(child); }
   replaceChildren() { this.children = []; }
   focus() {}
+  setPointerCapture(id) { this.capturedPointer = id; }
+  releasePointerCapture(id) { if (this.capturedPointer === id) this.capturedPointer = null; }
   remove() { this.parent.children = this.parent.children.filter(child => child !== this); }
   querySelector(selector) {
     if (this.fields) return this.fields[selector === ".detection-prompt" ? "input" : selector];
@@ -55,6 +57,8 @@ const context = vm.createContext({
   performance: {now: () => 1000},
   fetch: () => new Promise(() => {}),
   AbortSignal,
+  EventSource: class {constructor(url) {this.url = url;}},
+  window: {confirm: () => false},
   setTimeout() { return 1; },
   setInterval() {},
 });
@@ -94,6 +98,24 @@ rows()[7].fields[".remove-prompt"].events.click();
 assert.equal(rows().length, 7);
 assert.equal(get("add-prompt").disabled, false);
 console.log("validated per-category counts, draft/stale states and single add button");
+
+run(`globalThis.fpsDetection = {state: "running", model: "sam3.1", revision: 1,
+  frame_sequence: 100, latency_ms: 1, frame_age_ms: 100};`);
+assert.equal(run('detectionFps(fpsDetection, 0)'), null);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 102}, 200)'), null);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 106}, 600)'), 10);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 106}, 800)'), 7.5); // Duplicate poll, not a new frame.
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 106}, 3000)'), 0); // Stalled worker.
+assert.equal(run('detectionFps({...fpsDetection, revision: 2, frame_sequence: 107}, 3200)'), null);
+assert.equal(run('detectionFps({...fpsDetection, model: "yolo26x", revision: 3, frame_sequence: 108}, 3400)'), null);
+assert.equal(run('detectionFps({...fpsDetection, model: "yolo26x", revision: 3, frame_sequence: 118}, 4400)'), 10);
+assert.equal(run('detectionFps({...fpsDetection, state: "compiling"}, 4600)'), null);
+assert.equal(run('fpsSamples.length'), 0);
+assert.equal(run('detectionFps({...fpsDetection, frame_age_ms: 6000}, 4800)'), null);
+assert.equal(run('detectionFps(fpsDetection, 5000)'), null);
+assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 99}, 5600)'), null); // Restarted sequence.
+run('detectionFps(null);');
+console.log("validated measured detection FPS, skipped/duplicate polls, stalls and model/prompt resets");
 
 run(`status.servo = {online: true, ready: true, armed: false, axes: {
   x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
@@ -197,17 +219,52 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(get("box-targets").children.length, 2);
   assert.equal(get("box-targets").hidden, false);
   const clickBox = get("box-targets").children[0];
-  clickBox.events.pointerdown();
+  run('frameDetection.client_overlay = true; renderBoxTargets();');
+  assert.equal(clickBox.children[0].textContent, "cup 90%");
+  run('frameDetection.client_overlay = false; renderBoxTargets();');
+  assert.equal(clickBox.children[0].textContent, ""); // No duplicate labels on baked overlays.
+  const pointer = {button: 0, isPrimary: true, pointerId: 1, clientX: 100, clientY: 200};
+  clickBox.events.pointerdown(pointer);
   run('status.detection = {...status.detection, frame_sequence: 12};');
-  await clickBox.events.click();
+  await get("box-targets").events.pointerup(pointer);
   assert.equal(run('JSON.stringify(targetRequests.at(-1))'),
     '["/api/tracking/instance",{"revision":4,"frame_sequence":11,"instance_id":7}]');
   assert.equal(run('status.servo.armed'), false);
-  await get("box-targets").children[1].events.click();
+  await get("box-targets").children[1].events.click({detail: 0});
   assert.equal(run('status.tracking.instance_id'), 8);
+  const beforeGesture = run('targetRequests.length');
+  await clickBox.events.click({detail: 1}); // No duplicate after pointerup.
+  clickBox.events.pointerdown({...pointer, button: 2});
+  await get("box-targets").events.pointerup(pointer);
+  clickBox.events.pointerdown(pointer);
+  get("box-targets").events.pointercancel(pointer);
+  await get("box-targets").events.pointerup(pointer);
+  clickBox.events.pointerdown(pointer);
+  await get("box-targets").events.pointerup({...pointer, clientX: 150}); // Drag, not click.
+  assert.equal(run('targetRequests.length'), beforeGesture);
+  clickBox.events.pointerdown(pointer);
+  run(`frameDetection = {...frameDetection, frame_sequence: 13,
+    boxes: frameDetection.boxes.map(b => ({...b, instance_id: b.instance_id + 10}))}; renderBoxTargets();`);
+  assert.equal(get("box-targets").children.includes(clickBox), false);
+  assert.equal(get("box-targets").capturedPointer, 1); // Stable overlay survives button replacement.
+  await get("box-targets").events.pointerup(pointer);
+  assert.equal(run('JSON.stringify(targetRequests.at(-1))'),
+    '["/api/tracking/instance",{"revision":4,"frame_sequence":11,"instance_id":7}]');
+  assert.equal(get("box-targets").capturedPointer, null);
+  const freshBox = get("box-targets").children[0];
+  freshBox.events.pointerdown(pointer);
+  run('pressedBox.expiresAt = 999;');
+  await get("box-targets").events.pointerup(pointer);
+  assert.match(get("message").textContent, /stale/);
+  assert.equal(run('targetRequests.length'), beforeGesture + 1);
+  freshBox.events.pointerdown(pointer);
+  run('frameDetection = {...frameDetection, revision: 5}; status.detection.revision = 5;');
+  await get("box-targets").events.pointerup(pointer);
+  assert.equal(run('targetRequests.length'), beforeGesture + 1); // Prompt revision changed mid-press.
+  run('frameDetection.revision = 4; status.detection.revision = 4;');
   const before = run('targetRequests.length');
   run('frameDetection.receivedAt = 0; renderTracking();');
-  await clickBox.events.click();
+  await clickBox.events.click({detail: 0});
   assert.equal(run('targetRequests.length'), before);
   assert.equal(get("box-targets").hidden, true);
   run(`loadingDetection = {...status.detection, frame_sequence: 12, receivedAt: 1000};
@@ -217,7 +274,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run('loadingDetection'), null);
   get("camera-feed").events.error();
   assert.equal(get("box-targets").hidden, true);
-  console.log("validated clickable instances, exact displayed-frame selection, stale clicks and no auto-start");
+  console.log("validated clickable instances, 30 FPS button replacement, keyboard/cancel/drag, exact frame and no auto-start");
   run(`displayedDetection = null; activeModel = null; draftInitialized = false;
     status.detection = {enabled: true, model: "sam3.1", revision: 10, state: "idle", prompts: ["face"]};
     renderDetection(status.detection);`);
@@ -249,4 +306,68 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   get("detection-form").events.keydown({key: "Enter", target: {tagName: "SELECT"}, preventDefault() {}});
   assert.equal(run("submissions"), 1);
   console.log("validated model selection, fixed class choices, independent drafts and Enter submission");
+  run(`globalThis.zeroRequests = [];
+    status.servo.can_recalibrate = true; status.servo.ready = false;
+    status.servo.armed = false; renderMotors();
+    request = async (path, options) => {zeroRequests.push([path, options]); return status;};`);
+  assert.equal(get("recalibrate").disabled, false); // Outside range is precisely why zeros may need resetting.
+  await get("recalibrate").events.click();
+  assert.equal(run('zeroRequests.length'), 0); // Cancel leaves calibration untouched.
+  run('window.confirm = () => true;');
+  await get("recalibrate").events.click();
+  assert.equal(run('JSON.stringify(zeroRequests)'), '[["/api/servo/recalibrate",{"method":"POST","body":"{}"}]]');
+  assert.equal(run('status.servo.armed'), false);
+  run('status.servo.can_recalibrate = false; renderMotors();');
+  assert.equal(get("recalibrate").disabled, true);
+  await get("recalibrate").events.click();
+  assert.equal(run('zeroRequests.length'), 1);
+  run('status.servo.can_recalibrate = true; recalibrating = true; renderMotors();');
+  assert.equal(get("recalibrate").disabled, true);
+  assert.equal(get("motor-toggle").disabled, true);
+  await get("recalibrate").events.click();
+  assert.equal(run('zeroRequests.length'), 1);
+  console.log("validated zero calibration confirmation, no auto-arm and pending-request exclusion");
+  run(`cameraFeed.parentElement = {style: {}};
+    status.camera = {online: true, width: 1280, height: 720};
+    status.detection = {...status.detection, frame_sequence: 200, revision: 20};
+    render({...status, servo: {...status.servo, armed: false},
+      detection: {...status.detection, frame_sequence: 199}});`);
+  assert.equal(run('status.detection.frame_sequence'), 200);
+  assert.equal(run('status.servo.armed'), false);
+  run(`render({...status, detection: {...status.detection, revision: 19, frame_sequence: 999}});`);
+  assert.equal(run('status.detection.revision'), 20);
+  run('showMessage("That camera frame is stale", true); render(status);');
+  assert.equal(get("message").textContent, "That camera frame is stale");
+  run('messageExpiresAt = 999; render(status);');
+  assert.equal(get("message").hidden, true);
+  console.log("validated client overlays and out-of-order status without losing motor updates");
+  run(`render({...status, detection: {...status.detection, state: "running", frame_age_ms: 10, latency_ms: 100,
+    pipeline_timing: {cycle_ms: 121.4}, boxes: [], image_backend: "israel-w8a8-development"}});`);
+  assert.match(get("detection-status").textContent, /W8A8 dev \(accuracy unqualified\)/);
+  run(`render({...status, detection: {...status.detection,
+    image_backend: "israel-w8a8-packed-development"}});`);
+  assert.match(get("detection-status").textContent, /W8A8 dev \(accuracy unqualified\)/);
+  assert.match(get("detection-status").textContent, /100 ms model · 121 ms loop/);
+  run('render({...status, detection: {...status.detection, pipeline_timing: undefined}});');
+  assert.doesNotMatch(get("detection-status").textContent, /ms loop|NaN/);
+  run('status.detection.image_backend = "torch.compile";');
+  run(`loadingDetection = null; feedSource = "";
+    detectionEvents.onopen();
+    detectionEvents.onmessage({data: JSON.stringify({...status.detection, state: "running",
+      frame_age_ms: 10, latency_ms: 9, frame_url: "/api/detection/frame/20-201.jpg",
+      frame_sequence: 201, boxes: [], jpeg: "YWJj"})});`);
+  assert.equal(get("camera-feed").src, "data:image/jpeg;base64,YWJj");
+  assert.equal(run('status.detection.jpeg'), undefined);
+  run(`detectionEvents.onmessage({data: JSON.stringify({...status.detection,
+    frame_sequence: 202, frame_url: "/api/detection/frame/20-202.jpg", jpeg: "ZGVm"})});`);
+  assert.equal(get("camera-feed").src, "data:image/jpeg;base64,YWJj"); // Decode one at a time.
+  get("camera-feed").events.load();
+  assert.equal(run('frameDetection.frame_sequence'), 201); // Boxes remain on the displayed image.
+  assert.equal(run('loadingDetection.frame_sequence'), 202);
+  assert.equal(get("camera-feed").src, "data:image/jpeg;base64,ZGVm");
+  get("camera-feed").events.load();
+  assert.equal(run('frameDetection.frame_sequence'), 202);
+  run('detectionEvents.onerror();');
+  assert.equal(run('detectionStreamOpen'), false);
+  console.log("validated paired image streaming, bounded decode queue and reconnect fallback");
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -2,6 +2,7 @@
 
 const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };
 const motorToggle = document.getElementById("motor-toggle");
+const recalibrateButton = document.getElementById("recalibrate");
 const message = document.getElementById("message");
 const editingAxes = new Set();
 const pendingAngles = new Map();
@@ -9,6 +10,7 @@ let movingAxis = null;
 let moveTimer = null;
 let arming = false;
 let stopping = false;
+let recalibrating = false;
 let keepaliveSending = false;
 let status = null;
 let detectionSending = false;
@@ -32,6 +34,33 @@ const boxTargets = document.getElementById("box-targets");
 const boxButtons = new Map();
 let frameDetection = null;
 let loadingDetection = null;
+let streamFrame = null;
+let detectionStreamOpen = false;
+let fpsRevision = null;
+let fpsSamples = [];
+let pressedBox = null;
+let messageExpiresAt = 0;
+
+function detectionFps(detection, now = performance.now()) {
+  if (!isDetectionFresh(detection) || !Number.isInteger(detection.frame_sequence)) {
+    fpsRevision = null;
+    fpsSamples = [];
+    return null;
+  }
+  const revision = `${detection.model}:${detection.revision}`;
+  const sequence = detection.frame_sequence;
+  if (revision !== fpsRevision || sequence < fpsSamples.at(-1)?.sequence) {
+    fpsRevision = revision;
+    fpsSamples = [];
+  }
+  // Count completed worker frames, including those between browser polls.
+  // Repeated responses add no frames; their elapsed time lets stalls reach 0.
+  fpsSamples.push({time: now, sequence});
+  while (fpsSamples.length > 1 && fpsSamples[1].time <= now - 2000) fpsSamples.shift();
+  const first = fpsSamples[0];
+  const elapsed = now - first.time;
+  return elapsed >= 500 ? 1000 * (sequence - first.sequence) / elapsed : null;
+}
 
 function clickableFrame() {
   return frameDetection?.state === "running" && status?.camera?.online &&
@@ -55,6 +84,24 @@ async function selectInstance(selection) {
   }
 }
 
+// Capture on the stable overlay, not an individual box: IDs and buttons may
+// change between pointerdown/up at camera rate. Keep the exact down-frame.
+boxTargets.addEventListener("pointerup", (event) => {
+  if (!pressedBox || pressedBox.pointerId !== event.pointerId) return;
+  const picked = pressedBox;
+  pressedBox = null;
+  boxTargets.releasePointerCapture(event.pointerId);
+  if (Math.hypot(event.clientX - picked.x, event.clientY - picked.y) > 12) return;
+  if (!clickableFrame() || picked.selection.revision !== frameDetection.revision ||
+      performance.now() > picked.expiresAt) {
+    showMessage("That camera frame is stale; click a box in a fresh frame", true);
+    return;
+  }
+  return selectInstance(picked.selection);
+});
+boxTargets.addEventListener("pointercancel", () => { pressedBox = null; });
+boxTargets.addEventListener("lostpointercapture", () => { pressedBox = null; });
+
 function renderBoxTargets() {
   boxTargets.hidden = !clickableFrame();
   if (boxTargets.hidden) return;
@@ -68,17 +115,22 @@ function renderBoxTargets() {
       button = document.createElement("button");
       button.type = "button";
       button.className = "box-target";
-      let pressedSelection = null;
+      const label = document.createElement("span");
+      label.className = "box-label";
+      button.append(label);
       const selection = () => ({revision: frameDetection.revision,
         frame_sequence: frameDetection.frame_sequence, instance_id: id});
-      button.addEventListener("pointerdown", () => { pressedSelection = clickableFrame() ? selection() : null; });
-      button.addEventListener("pointercancel", () => { pressedSelection = null; });
-      button.addEventListener("keydown", () => { pressedSelection = null; });
-      button.addEventListener("click", () => {
-        if (!clickableFrame() || button.disabled) { pressedSelection = null; return; }
-        const picked = pressedSelection || selection();
-        pressedSelection = null;
-        return selectInstance(picked);
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || !event.isPrimary || button.disabled || !clickableFrame()) return;
+        pressedBox = {selection: selection(), pointerId: event.pointerId,
+          x: event.clientX, y: event.clientY,
+          expiresAt: frameDetection.receivedAt + 750 - frameDetection.frame_age_ms};
+        boxTargets.setPointerCapture(event.pointerId);
+      });
+      button.addEventListener("click", (event) => {
+        // Pointer activation was handled above. Retain keyboard/assistive clicks.
+        if (event.detail !== 0 || !clickableFrame() || button.disabled) return;
+        return selectInstance(selection());
       });
       boxButtons.set(id, button);
       boxTargets.append(button);
@@ -91,6 +143,10 @@ function renderBoxTargets() {
     button.setAttribute("aria-label", `Track ${box.prompt} object ${id}`);
     button.setAttribute("aria-pressed", String(status?.tracking?.instance_id === id));
     button.title = `Track this ${box.prompt}`;
+    button.classList.toggle("client-overlay", frameDetection.client_overlay === true);
+    button.style.setProperty("--box-color", box.color || "#55e8ce");
+    button.children[0].textContent = frameDetection.client_overlay === true
+      ? `${box.prompt.slice(0, 48)} ${Math.round(box.score * 100)}%` : "";
   }
   for (const [id, button] of boxButtons) if (!ids.has(id)) {
     button.remove();
@@ -104,6 +160,8 @@ cameraFeed.addEventListener("load", () => {
   frameDetection = loadingDetection;
   loadingDetection = null;
   renderTracking();
+  // If a newer pair arrived during JPEG decoding, load it immediately.
+  if (detectionStreamOpen && streamFrame && status?.camera) renderDetection(status.detection);
 });
 cameraFeed.addEventListener("error", () => {
   loadingDetection = frameDetection = null;
@@ -293,16 +351,26 @@ function renderDetection(detection) {
     compiling: `Compiling ${name}…`, validating: "Validating detector…", capturing: "Capturing SYCL graph…",
     waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
+  const fps = detectionFps(detection);
+  const imageMode = ["israel-w8a8-development", "israel-w8a8-packed-development"].includes(detection?.image_backend)
+    ? "W8A8 dev (accuracy unqualified) · torch.compile"
+    : detection?.image_backend === "graphs-native-sycl" ? "native image + compiled grounding" : "torch.compile";
+  const loopMs = detection?.pipeline_timing?.cycle_ms;
+  const loopTiming = Number.isFinite(loopMs) ? ` · ${Math.round(loopMs)} ms loop` : "";
   detectionMessage.textContent = promptError || detection?.error || (fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${detection.latency_ms} ms · torch.compile + SYCL graphs`
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? "box" : "boxes"} · ${fps === null ? "—" : fps.toFixed(1)} FPS · ${detection.latency_ms} ms model${loopTiming} · ${imageMode} + SYCL graphs`
     : labels[detection?.state] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   const source = fresh ? detection.frame_url : "/stream.mjpg";
+  const streamed = streamFrame?.frame_url === source && streamFrame?.revision === detection?.revision;
+  // Full hardware polls may be ahead of the stream. Wait for the paired JPEG
+  // instead of downloading it again; disconnected streams retain HTTP fallback.
+  if (fresh && detectionStreamOpen && !streamed) return;
   if (source !== feedSource && (!loadingDetection || !fresh)) {
     feedSource = source;
     loadingDetection = fresh ? {...detection, receivedAt: performance.now()} : null;
     if (!fresh) frameDetection = null;
-    cameraFeed.src = source;
+    cameraFeed.src = streamed ? streamFrame.dataUrl : source;
   }
 }
 
@@ -322,7 +390,9 @@ function renderMotors() {
     }
   }
   const stop = servo.armed || Object.values(servo.axes).some(axis => axis.torque !== false);
-  motorToggle.disabled = arming || stopping || (!stop && !servo.ready);
+  motorToggle.disabled = arming || stopping || (!stop && (recalibrating || !servo.ready));
+  recalibrateButton.disabled = arming || stopping || recalibrating || !servo.can_recalibrate;
+  recalibrateButton.textContent = recalibrating ? "Saving zeros…" : "Recalibrate zeros";
   motorToggle.setAttribute("aria-label", stop ? "Stop motors" : "Start motors");
   motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors";
   motorToggle.classList.toggle("stopping", stop);
@@ -341,10 +411,16 @@ function showMessage(text, error = false) {
   message.textContent = text;
   message.hidden = !text;
   message.classList.toggle("error", error);
+  messageExpiresAt = error && text ? performance.now() + 5000 : 0;
 }
 
 function render(next) {
-  if (status?.detection && next.detection?.revision < status.detection.revision) return;
+  if (status?.detection && next.detection && (
+      next.detection.revision < status.detection.revision ||
+      (next.detection.revision === status.detection.revision &&
+       next.detection.frame_sequence < status.detection.frame_sequence))) {
+    next = {...next, detection: status.detection};
+  }
   status = next;
   renderDetection(next.detection);
   const { camera, servo } = next;
@@ -355,7 +431,9 @@ function render(next) {
   if (!servo.armed) pendingAngles.clear();
   renderMotors();
   renderTracking();
-  showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
+  // A 30 FPS detection update must not erase a rejected click's error instantly.
+  if (servo.error || camera.error || performance.now() >= messageExpiresAt)
+    showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
 }
 
 async function request(path, options = {}) {
@@ -372,7 +450,7 @@ async function request(path, options = {}) {
 }
 
 async function startMotors() {
-  if (arming || stopping || !status?.servo?.ready) return;
+  if (arming || stopping || recalibrating || !status?.servo?.ready) return;
   arming = true;
   renderMotors();
   try {
@@ -384,6 +462,24 @@ async function startMotors() {
     renderMotors();
   }
 }
+
+async function recalibrateZeros() {
+  if (arming || stopping || recalibrating || !status?.servo?.can_recalibrate) return;
+  if (!window.confirm("Set the current X and Y positions as 0°? Position the camera at your intended zero first. Motors stay off; angle limits remain relative to the new zero.")) return;
+  recalibrating = true;
+  pendingAngles.clear();
+  editingAxes.clear();
+  renderMotors();
+  try {
+    await request("/api/servo/recalibrate", {method: "POST", body: "{}"});
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    recalibrating = false;
+    renderMotors();
+  }
+}
+recalibrateButton.addEventListener("click", recalibrateZeros);
 
 async function stopMotors() {
   if (stopping) return;
@@ -466,6 +562,9 @@ async function poll() {
   } catch (error) {
     showMessage(error.message, true);
     updatePromptCounts(null);
+    detectionFps(null);
+    detectionMessage.textContent = "Detector connection lost";
+    detectionMessage.classList.add("error");
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
     boxTargets.hidden = true;
   } finally {
@@ -492,6 +591,35 @@ async function setPrompts() {
     updatePromptControls();
   }
 }
+async function pollDetection() {
+  try {
+    const current = status?.detection;
+    if (current?.enabled && !detectionStreamOpen) {
+      const response = await fetch(`/api/detection/status?revision=${current.revision}&sequence=${current.frame_sequence ?? -1}`, {
+        cache: "no-store", signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error("Detection stream unavailable");
+      const detection = await response.json();
+      render({...status, detection});
+    }
+    setTimeout(pollDetection, current?.enabled && !detectionStreamOpen ? 0 : 250);
+  } catch (_) {
+    // The normal status poll reports failures and keeps controls responsive.
+    setTimeout(pollDetection, 1000);
+  }
+}
+const detectionEvents = new EventSource("/api/detection/events");
+detectionEvents.onopen = () => { detectionStreamOpen = true; };
+detectionEvents.onerror = () => { detectionStreamOpen = false; }; // Automatic reconnect; HTTP fallback meanwhile.
+detectionEvents.onmessage = (event) => {
+  const detection = JSON.parse(event.data);
+  if (detection.jpeg) {
+    streamFrame = {frame_url: detection.frame_url, revision: detection.revision,
+      dataUrl: `data:image/jpeg;base64,${detection.jpeg}`};
+    delete detection.jpeg;
+  }
+  if (status) render({...status, detection});
+};
 function readPromptRows() {
   return [...promptRows.querySelectorAll(".detection-prompt")].map(input => input.value.trim());
 }
@@ -534,3 +662,4 @@ addPromptButton.addEventListener("click", () => {
 setPromptRows([]);
 poll();
 setInterval(poll, 200);
+pollDetection();

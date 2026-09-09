@@ -145,7 +145,7 @@ class Yolo26Engine:
         pixels = pixels.to(f"xpu:{self.device}", dtype=self.torch.float32).div_(255).contiguous()
         return pixels, width, height, resized, padding
 
-    def detect_many(self, jpeg, prompts):
+    def detect_many(self, jpeg, prompts, *, client_overlay=False):
         prompts = model_prompts("yolo26x", prompts)
         torch = self.torch
         started = time.perf_counter()
@@ -173,7 +173,7 @@ class Yolo26Engine:
             validated_at = time.perf_counter()
         boxes = decode(rows, prompts, width, height, resized, padding, self.confidence)
         decoded = time.perf_counter()
-        annotated = annotate(jpeg, boxes)
+        annotated = None if client_overlay else annotate(jpeg, boxes)
         done = time.perf_counter()
         return {
             "boxes": boxes,
@@ -193,7 +193,8 @@ class Yolo26Engine:
                        "postprocess_ms": round((decoded-validated_at+decoded_at-inferred)*1000, 2),
                        "annotation_ms": round((done-decoded)*1000, 2),
                        "worker_total_ms": round((done-started)*1000, 2)},
-            "jpeg": base64.b64encode(annotated).decode(),
+            "client_overlay": client_overlay,
+            **({"jpeg": base64.b64encode(annotated).decode()} if annotated is not None else {}),
         }
 
 
@@ -214,7 +215,8 @@ def main():
             request = {}
             try:
                 request = json.loads(line)
-                result = engine.detect_many(base64.b64decode(request["jpeg"], validate=True), request["prompts"])
+                result = engine.detect_many(base64.b64decode(request["jpeg"], validate=True), request["prompts"],
+                                           client_overlay=request.get("client_overlay") is True)
                 emit({"type": "result", "id": request["id"], **result})
             except Exception as error:
                 emit({"type": "error", "id": request.get("id"), "error": str(error)})

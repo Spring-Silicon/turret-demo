@@ -1,0 +1,152 @@
+--- a/cli/src/runner.rs
++++ b/cli/src/runner.rs
+@@ -189,6 +189,7 @@
+             outputs: &output_specs,
+             input_bytes: input_bytes as u64,
+             output_bytes: output_bytes as u64,
++            command_graph_count: run.session.command_graph_count(),
+         },
+     )?;
+     writer.write_all(b"\n")?;
+@@ -199,7 +200,9 @@
+         input_buffer.seek(SeekFrom::Start(0))?;
+         input_buffer.read_exact(&mut payload)?;
+         run.write_frame(&input_specs, &payload)?;
++        let image_started = Instant::now();
+         run.execute()?;
++        let image_execution_ms = image_started.elapsed().as_secs_f64() * 1000.0;
+         output_buffer.seek(SeekFrom::Start(0))?;
+         let mut executed_outputs = Vec::with_capacity(output_specs.len());
+         for (binding, spec) in run
+@@ -233,6 +236,8 @@
+         output_buffer.flush()?;
+         let metadata = serde_json::to_vec(&ServeResponse {
+             outputs: executed_outputs,
++            command_graph_count: run.session.command_graph_count(),
++            image_execution_ms,
+         })?;
+         writer.write_all(&RESPONSE_MAGIC)?;
+         writer.write_all(&sequence.to_le_bytes())?;
+@@ -655,6 +660,39 @@
+         return Ok(Cow::Owned(stored));
+     }
+     let mut stored = vec![0; host_len(buffer.extent, slot)?];
++    // Dense channels-last FP32 inputs: avoid a checked division/modulo walk
++    // for every byte-sized element. Singleton batch strides are immaterial.
++    if let [n, c, h, w] = buffer.tensor.shape.as_ref() {
++        let strides = buffer.tensor.layout.strides.as_ref();
++        if width == 4 && *n > 0 && *c > 0 && *h > 0 && *w > 0
++            && strides.len() == 4 && strides[1] == 1
++            && strides[3] == *c && w.checked_mul(*c) == Some(strides[2])
++            && (*n == 1 || h.checked_mul(strides[2]) == Some(strides[0]))
++        {
++            let n = *n as usize;
++            let c = *c as usize;
++            let spatial = (*h as usize) * (*w as usize);
++            let offset = usize::try_from(buffer.tensor.layout.storage_offset)
++                .ok().and_then(|x| x.checked_mul(4))
++                .ok_or_else(|| RunnerError::Contract(format!("tensor {slot:?} offset overflows")))?;
++            let end = offset.checked_add(bytes.len())
++                .ok_or_else(|| RunnerError::Contract(format!("tensor {slot:?} size overflows")))?;
++            let destination = stored.get_mut(offset..end)
++                .ok_or_else(|| RunnerError::Contract(format!("tensor {slot:?} layout exceeds storage")))?;
++            for batch in 0..n {
++                for channel in 0..c {
++                    let source_base = (batch * c + channel) * spatial * 4;
++                    let dest_base = (batch * spatial * c + channel) * 4;
++                    for pixel in 0..spatial {
++                        let source = source_base + pixel * 4;
++                        let target = dest_base + pixel * c * 4;
++                        destination[target..target + 4].copy_from_slice(&bytes[source..source + 4]);
++                    }
++                }
++            }
++            return Ok(Cow::Owned(stored));
++        }
++    }
+     for (logical, chunk) in bytes.chunks_exact(width).enumerate() {
+         let offset = physical_byte_offset(buffer, buffer.tensor.shape.as_ref(), logical, slot)?;
+         stored
+@@ -685,6 +723,16 @@
+     }
+     let elements = element_count(logical_shape, slot)?;
+     let width = host_width(buffer.tensor.dtype);
++    // Fully dense outputs need one byte copy, not per-element division/modulo.
++    // Dynamic sub-shapes still use the general strided path below.
++    if logical_shape == buffer.tensor.shape.as_ref() {
++        if let Some(offset) = contiguous_byte_offset(buffer, width, slot)? {
++            let end = elements.checked_mul(width).and_then(|bytes| offset.checked_add(bytes))
++                .ok_or_else(|| RunnerError::Contract(format!("tensor {slot:?} size overflows")))?;
++            return stored.get(offset..end).map(<[u8]>::to_vec)
++                .ok_or_else(|| RunnerError::Contract(format!("tensor {slot:?} layout exceeds storage")));
++        }
++    }
+     let mut compact = Vec::with_capacity(elements * width);
+     for logical in 0..elements {
+         let offset = physical_byte_offset(buffer, logical_shape, logical, slot)?;
+@@ -907,11 +955,65 @@
+     outputs: &'a [TensorSpec],
+     input_bytes: u64,
+     output_bytes: u64,
++    command_graph_count: usize,
+ }
+ 
+ #[derive(Serialize)]
+ struct ServeResponse {
+     outputs: Vec<ExecutedTensorSpec>,
++    command_graph_count: usize,
++    image_execution_ms: f64,
++}
++
++#[cfg(test)]
++mod dense_output_tests {
++    use super::*;
++
++    fn buffer(shape: &[u64], strides: &[u64], offset: u64) -> RuntimeBuffer {
++        serde_json::from_value(serde_json::json!({
++            "id": 0, "role": "output",
++            "tensor": {"dtype": "u8", "shape": shape,
++                "layout": {"strides": strides, "storage_offset": offset},
++                "device": {"target": {"ordinal": 0}}},
++            "storage": {"external": {"slot": "output.0", "stability": "stable"}},
++            "extent": 64, "alignment": 1, "mutability": "mutable"
++        })).unwrap()
++    }
++
++    #[test]
++    fn dense_preserves_bytes_offset_and_bounds() {
++        let slot = ExternalSlotId::from("output.0".to_owned());
++        let b = buffer(&[2, 3], &[3, 1], 2);
++        let bytes: Vec<u8> = (0..12).collect();
++        assert_eq!(unpack_shape(&b, &[2, 3], &bytes, &slot).unwrap(), bytes[2..8]);
++        assert!(unpack_shape(&b, &[2, 3], &bytes[..7], &slot).is_err());
++        assert_eq!(unpack_shape(&buffer(&[0], &[1], 0), &[0], &[], &slot).unwrap(), Vec::<u8>::new());
++    }
++
++    #[test]
++    fn transposed_and_dynamic_shapes_still_use_strides() {
++        let slot = ExternalSlotId::from("output.0".to_owned());
++        let bytes: Vec<u8> = (0..12).collect();
++        assert_eq!(unpack_shape(&buffer(&[2, 3], &[1, 2], 0), &[2, 3], &bytes, &slot).unwrap(), [0, 2, 4, 1, 3, 5]);
++        assert_eq!(unpack_shape(&buffer(&[2, 3], &[3, 1], 0), &[2, 2], &bytes, &slot).unwrap(), [0, 1, 3, 4]);
++        assert!(unpack_shape(&buffer(&[2, 3], &[3, 1], 0), &[3, 3], &bytes, &slot).is_err());
++    }
++
++    #[test]
++    fn channels_last_pack_is_bitwise_with_offsets_and_batch() {
++        let slot = ExternalSlotId::from("output.0".to_owned());
++        for n in [1, 2] {
++            let mut b = buffer(&[n, 3, 2, 4], &[if n == 1 { 3 } else { 24 }, 1, 12, 3], 2);
++            b.tensor.dtype = DType::F32;
++            b.extent = ByteSize((n * 24 + 2) * 4);
++            let bytes: Vec<u8> = (0..n * 24 * 4).map(|x| x as u8).collect();
++            let packed = pack_compact(&b, &bytes, &slot).unwrap();
++            assert_eq!(unpack_shape(&b, &[n, 3, 2, 4], &packed, &slot).unwrap(), bytes);
++            assert_eq!(&packed[..8], &[0; 8]);
++            b.extent = ByteSize(1);
++            assert!(pack_compact(&b, &bytes, &slot).is_err());
++        }
++    }
+ }
+ 
+ #[derive(Serialize)]
