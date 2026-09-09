@@ -1,7 +1,8 @@
 """One device-independent target policy. No Torch, CUDA, XPU or serial imports."""
 
-POLICY_VERSION = "sam-shared-v1"
+POLICY_VERSION = "sam-shared-v2"
 DEAD_BAND = .003
+DETECTION_LOSS_GRACE_SECONDS = .2
 TRACK_RETENTION_SECONDS = 5.0
 TRACK_RETENTION_FRAMES = 16
 

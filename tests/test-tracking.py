@@ -62,6 +62,122 @@ class Servo:
 
 
 class TrackingTests(unittest.TestCase):
+    def fast_frame(self, boxes, interval=.07):
+        self.now -= .4 - interval
+        self.frame(boxes)
+
+    def test_single_mask_dropout_does_not_brake_or_invent_a_detection(self):
+        self.detection.data['model'] = 'sam3.1-mask'
+        self.start()
+        target = {**box(), 'mask_centroid': [.7,.5], 'instance_id': 7}
+        self.frame([target])
+        calls = len(self.servo.calls)
+        goal = dict(self.tracker.goal_degrees)
+        self.fast_frame([])
+        self.assertEqual(len(self.servo.calls), calls)
+        self.assertEqual(self.tracker.goal_degrees, goal)
+        self.assertTrue(self.tracker.moving)
+        self.assertIsNone(self.tracker.box)
+        self.assertIsNone(self.tracker.frame)
+        self.assertEqual(self.tracker.status()['hold_reason'], 'brief-detection-gap')
+        self.fast_frame([target])
+        self.assertEqual(len(self.servo.calls), calls+1)
+        self.assertNotEqual(self.servo.calls[-1], {'x':0.,'y':0.})
+        self.assertIsNone(self.tracker.loss_deadline)
+
+    def test_missing_frames_do_not_extend_the_last_detection_deadline(self):
+        self.start()
+        self.frame([box()])
+        accepted = self.now
+        calls = len(self.servo.calls)
+        self.fast_frame([])
+        deadline = self.tracker.loss_deadline
+        self.fast_frame([])
+        self.assertEqual(self.tracker.loss_deadline, deadline)
+        self.assertAlmostEqual(deadline, accepted+.2)
+        self.assertEqual(len(self.servo.calls), calls)
+        self.fast_frame([])
+        self.assertEqual(self.servo.calls[-1], {'x':0.,'y':0.})
+        self.assertEqual(len(self.servo.calls), calls+1)
+        for _ in range(5): self.fast_frame([])
+        self.assertEqual(len(self.servo.calls), calls+1)
+
+    def test_loss_expires_without_another_frame_at_both_inference_rates(self):
+        for period in (.07,.13):
+            self.start()
+            self.frame([box()])
+            accepted = self.now
+            calls = len(self.servo.calls)
+            self.fast_frame([], interval=period)
+            self.assertEqual(len(self.servo.calls), calls)
+            self.now = accepted+.201
+            self.tracker._tick()  # Same frame; the inference worker stalled.
+            self.assertEqual(len(self.servo.calls), calls+1)
+            self.assertEqual(self.servo.calls[-1], {'x':0.,'y':0.})
+            self.assertIsNone(self.tracker.loss_deadline)
+            self.now += 1
+            self.tracker._tick()
+            self.assertEqual(len(self.servo.calls), calls+1)
+            self.tracker.set_target(None)
+
+    def test_stop_during_gap_cancels_pending_motion_and_resume(self):
+        self.start()
+        self.frame([box()])
+        self.fast_frame([])
+        self.tracker.disable()
+        calls = len(self.servo.calls)
+        self.assertIsNone(self.tracker.loss_deadline)
+        self.assertIsNone(self.tracker.last_detection_at)
+        self.now += 1
+        self.tracker._tick()
+        self.fast_frame([box()])
+        self.assertEqual(len(self.servo.calls), calls)
+        self.assertFalse(self.servo.armed)
+
+    def test_camera_or_inference_fault_bypasses_detection_grace(self):
+        for failure in ('camera','inference'):
+            self.camera.online = True
+            self.start()
+            self.frame([box()])
+            self.fast_frame([])
+            calls = len(self.servo.calls)
+            if failure == 'camera': self.camera.online = False
+            else: self.detection.data['state'] = 'error'
+            self.tracker._tick()
+            self.assertEqual(len(self.servo.calls), calls+1)
+            self.assertEqual(self.servo.calls[-1], {'x':0.,'y':0.})
+            self.assertIsNone(self.tracker.loss_deadline)
+            self.tracker.set_target(None)
+
+    def test_new_selection_cannot_inherit_an_old_gap(self):
+        self.start()
+        self.frame([box()])
+        self.fast_frame([])
+        self.tracker.set_target('bottle')
+        calls = len(self.servo.calls)
+        self.assertIsNone(self.tracker.loss_deadline)
+        self.assertIsNone(self.tracker.last_detection_at)
+        self.fast_frame([])
+        self.assertEqual(len(self.servo.calls), calls)
+        self.assertFalse(self.tracker.moving)
+
+    def test_brief_gap_preserves_filter_but_expired_loss_resets_it(self):
+        from spring_turret.bearing_filter import BearingFilter
+        self.persistent_setup()
+        self.tracker.bearing_filter = BearingFilter(.5,40)
+        self.start()
+        target = {**box(), 'instance_id':7, 'mask_centroid':[.7,.5]}
+        self.frame([target])
+        before = self.tracker.bearing_filter.timestamp
+        self.fast_frame([])
+        self.assertEqual(self.tracker.bearing_filter.timestamp, before)
+        self.fast_frame([target])
+        self.assertGreater(self.tracker.bearing_filter.timestamp, before)
+        self.fast_frame([])
+        self.now += .21
+        self.tracker._tick()
+        self.assertIsNone(self.tracker.bearing_filter.timestamp)
+
     def test_mask_dropout_reacquires_moved_target_without_old_bearing_gate(self):
         self.persistent_setup()
         self.detection.data.update(model="sam3.1-mask", temporal_tracking=False)

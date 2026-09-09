@@ -163,10 +163,13 @@ visible for five seconds rather than disappearing on the next video frame.
 
 Selecting a class never starts stopped motors. Stop/Escape still releases both
 motors; a manual slider move cancels automatic tracking. Editing/removing the
-selected prompt also cancels tracking. No target, a camera/inference fault, or
-a prompt change pauses corrections and holds position;
+selected prompt also cancels tracking. A brief detection miss retains the last
+bounded goal for at most 200 ms after the last accepted result, without issuing
+new goals or displaying an old detection. Sustained loss then holds measured
+position once. Camera/inference faults and prompt changes hold immediately;
 there is no automatic search/sweep. New frames resume tracking while Start is
 still active, including when the browser is backgrounded or disconnected.
+See [moving-target jitter diagnosis and tuning](docs/moving-target-jitter.md).
 
 Tracking has no step-size cap, encoder-to-goal lead cap, or settling delay. Each
 new inference result wakes the controller immediately, including frames captured
