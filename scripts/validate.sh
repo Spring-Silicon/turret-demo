@@ -34,6 +34,7 @@ python3 tests/test-track-lifetime.py
 python3 tests/test-shared-policy.py
 python3 tests/test-recovery.py
 python3 tests/test-startup.py
+python3 tests/test-deployment-bundle.py
 python3 tests/test-tracking-graphs.py
 python3 tests/test-tracking-masks.py
 python3 tests/test-geometry.py

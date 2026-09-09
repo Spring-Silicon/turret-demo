@@ -1,5 +1,9 @@
 # NVIDIA Thor deployment
 
+For the current **agxthor-5** installation and frozen recovery image, use
+[Reproduce both devices](reproduce.md). The agxthor-4 build and benchmark details
+below are historical qualification, not the current host's recovery recipe.
+
 This is the same camera, two-axis controls, calibrated pointing, click retargeting,
 multi-category boxes, counts and FPS UI, using dense SAM 3.1 on CUDA instead of
 the Intel native/W8A8 implementation. No TensorRT export or additional quantization.

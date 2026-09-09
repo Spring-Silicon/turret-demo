@@ -3,6 +3,11 @@
 Camera feed, switchable SAM 3.1 / SAM 3.1 Mask / SAM 3.1 Tracking, and manual or opt-in automatic
 X/Y camera framing.
 
+For the current **spring-edge-turret (Arc) + agxthor-5** pair, start with the
+[reproducible deployment and recovery guide](docs/reproduce.md). It pins the
+actual runtimes, private model artifacts, physical calibration, wired networking
+and boot services. Older host-specific qualification notes below are historical.
+
 Optional qualified native SAM image execution from `sleepy-joe` is documented
 in [the native image setup](docs/sam31-native.md). Text/grounding and the default
 compiled image path remain available; activation is an explicit device setting.
