@@ -168,6 +168,14 @@ assert.equal(run('detectionFps(fpsDetection, 5000)'), null);
 assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 99}, 5600)'), null); // Restarted sequence.
 run('detectionFps(null);');
 console.log("validated measured detection FPS, skipped/duplicate polls, stalls and model/prompt resets");
+run('renderFps(14.36);');
+assert.equal(get('fps-value').textContent, '14.4');
+assert.equal(get('fps-counter').getAttribute('aria-label'), '14.4 frames per second');
+run('renderFps(0);');
+assert.equal(get('fps-value').textContent, '0.0');
+run('renderFps(null);');
+assert.equal(get('fps-value').textContent, '—');
+assert.equal(get('fps-counter').getAttribute('aria-label'), 'Frames per second unavailable');
 
 run(`status.servo = {online: true, ready: true, armed: false, axes: {
   x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
@@ -296,6 +304,8 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   const clickBox = get("box-targets").children[0];
   run('frameDetection.client_overlay = true; renderBoxTargets();');
   assert.equal(clickBox.children[0].textContent, "cup 90%");
+  assert.equal(clickBox.style.left, "70%"); // Original x=.1–.3 appears at mirrored x=.7–.9.
+  assert.ok(Math.abs(parseFloat(clickBox.style.width) - 20) < 1e-10);
   run('frameDetection.client_overlay = false; renderBoxTargets();');
   assert.equal(clickBox.children[0].textContent, ""); // No duplicate labels on baked overlays.
   const pointer = {button: 0, isPrimary: true, pointerId: 1, clientX: 100, clientY: 200};
@@ -444,7 +454,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   console.log("validated client overlays and out-of-order status without losing motor updates");
   run(`render({...status, detection: {...status.detection, model: "sam3.1", state: "running", frame_age_ms: 10, latency_ms: 100,
     timing: {model_ms:100}, pipeline_timing: {cycle_ms: 121.4}, boxes: [], image_backend: "israel-w8a8-development"}});`);
-  assert.match(get("detection-status").textContent, /^0 boxes · [\d.—]+ FPS · 100 ms model · 121 ms total$/);
+  assert.match(get("detection-status").textContent, /^0 boxes · 100 ms model · 121 ms total$/);
   run(`render({...status, detection: {...status.detection,
     image_backend: "israel-w8a8-packed-development"}});`);
   assert.doesNotMatch(get("detection-status").textContent, /W8A8|accuracy unqualified|torch\.compile|graphs/);
@@ -453,7 +463,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.doesNotMatch(get("detection-status").textContent, /ms total|NaN/);
   run('status.detection.image_backend = "torch.compile";');
   run('render({...status, detection: {...status.detection, cuda_graph: true, sycl_graph: false}});');
-  assert.match(get("detection-status").textContent, /^0 boxes · [\d.—]+ FPS · 100 ms model$/);
+  assert.match(get("detection-status").textContent, /^0 boxes · 100 ms model$/);
   assert.equal(run('detectionTiming({model:"sam3.1-tracking",latency_ms:220,timing:{tracking_ms:218.2,model_ms:null},pipeline_timing:{cycle_ms:240}})'),
     ' · 218.2 ms tracking · 240 ms total');
   assert.equal(run('detectionTiming({model:"sam3.1-mask",latency_ms:90,timing:{model_ms:89.8}})'), ' · 89.8 ms model');
@@ -468,7 +478,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   console.log('validated common progress vocabulary and truthful model versus tracking versus total timings');
   assert.doesNotMatch(get("detection-status").textContent, /CUDA|SYCL|torch\.compile|graphs/);
   run('render({...status, detection: {...status.detection, cuda_graph: false, sycl_graph: true}});');
-  assert.match(get("detection-status").textContent, /^0 boxes · [\d.—]+ FPS · 100 ms model$/);
+  assert.match(get("detection-status").textContent, /^0 boxes · 100 ms model$/);
   run(`loadingFrame = null; feedSource = "";
     detectionEvents.onopen();
     detectionEvents.onmessage({data: JSON.stringify({...status.detection, state: "running",
@@ -593,19 +603,23 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     const stableCanvas = get('camera-feed'), frameKey = stableCanvas.getAttribute('data-frame-key');
     const requestsBefore = run('targetRequests.length');
     get('box-targets').rect = {left: 20, top: 30, width: 800, height: 400};
-    const mouse = {button:0,isPrimary:true,pointerId:10,clientX:520,clientY:130};
+    const mouse = {button:0,isPrimary:true,pointerId:10,clientX:320,clientY:130};
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:20,y:130})'), null); // Mirrored leftmost pixel is background.
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:819.9,y:130})'), 7);
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:19.9,y:130})'), null);
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:820,y:130})'), null);
     get('box-targets').events.pointermove(mouse);
     assert.deepEqual(pixel(2), [255,132,142,144]);
     assert.deepEqual(pixel(0), [255,32,48,144]); // Hover cannot lighten the selected target.
     assert.equal(get('camera-feed'), stableCanvas);
     assert.equal(stableCanvas.getAttribute('data-frame-key'), frameKey); // Same processed frame, no raw camera refresh.
     assert.equal(run('targetRequests.length'), requestsBefore); // Hover never moves motors.
-    get('box-targets').events.pointermove({...mouse,clientX:320}); // Transparent pixel inside both boxes.
+    get('box-targets').events.pointermove({...mouse,clientX:520}); // Transparent pixel inside both boxes.
     assert.deepEqual(pixel(2), [65,191,144,112]);
-    get('box-targets').events.pointerdown({...mouse,clientX:320});
-    await get('box-targets').events.pointerup({...mouse,clientX:320});
+    get('box-targets').events.pointerdown({...mouse,clientX:520});
+    await get('box-targets').events.pointerup({...mouse,clientX:520});
     assert.equal(run('targetRequests.length'), requestsBefore);
-    get('box-targets').events.pointermove({...mouse,clientX:120});
+    get('box-targets').events.pointermove({...mouse,clientX:720});
     assert.deepEqual(pixel(0), [255,32,48,144]);
     get('box-targets').events.pointerleave();
     get('box-targets').children[1].events.focus();
@@ -645,11 +659,13 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run('frameDetection.frame_sequence'), 8);
   assert.match(get('detection-status').textContent, /Preparing tracking graph.*showing last result/);
   assert.doesNotMatch(get('detection-status').textContent, /FPS|Waiting for detection/);
+  assert.equal(get('fps-value').textContent, '—');
   run(`status.detection = {...status.detection, frame_sequence:9, frame_url:'/32-9.jpg',
     frame_age_ms:100, progress_stage:null}; renderDetection(status.detection);`);
   completeFrame();
   assert.equal(get('camera-feed').src, '/32-9.jpg');
-  assert.match(get('detection-status').textContent, /FPS/);
+  assert.doesNotMatch(get('detection-status').textContent, /FPS/);
+  assert.match(get('fps-value').textContent, /^[\d.—]+$/);
   run(`status.detection = {...status.detection, revision:33, frame_sequence:null, frame_url:null,
     state:'compiling_tracker_text_encoder', progress_stage:'compiling_tracker_text_encoder'};
     renderDetection(status.detection);`);
@@ -768,7 +784,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
       model:'sam3.1-tracking', state:'running',progress:{phase:'running',stage:'running'},
       frame_sequence:3,frame_age_ms:5,frame_url:'/api/detection/frame/2-3.jpg',
       latency_ms:220,timing:{model_ms:null,tracking_ms:218},pipeline_timing:{cycle_ms:240},mask_overflow:{}})});
-    assert.match(devices[id].element('detection-status').textContent, /^0 masks · [\d.—]+ FPS · 218 ms tracking · 240 ms total$/);
+    assert.match(devices[id].element('detection-status').textContent, /^0 masks · 218 ms tracking · 240 ms total$/);
   }
   console.log('validated identical Arc/Thor phase and timing labels from different worker states');
   console.log('validated side-by-side panel isolation: prompts, streams, image URLs, Start/Stop and focused Escape');

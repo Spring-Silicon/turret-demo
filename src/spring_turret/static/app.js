@@ -25,6 +25,8 @@ const promptRows = document.getElementById("prompt-rows");
 const addPromptButton = document.getElementById("add-prompt");
 const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
+const fpsCounter = document.getElementById("fps-counter");
+const fpsValue = document.getElementById("fps-value");
 const modelSelector = document.getElementById("detection-model");
 let activeModel = null;
 let renderedModel = null;
@@ -73,6 +75,13 @@ function detectionFps(detection, now = performance.now()) {
   const first = fpsSamples[0];
   const elapsed = now - first.time;
   return elapsed >= 500 ? 1000 * (sequence - first.sequence) / elapsed : null;
+}
+
+function renderFps(fps) {
+  const value = fps === null ? "—" : fps.toFixed(1);
+  if (fpsValue.textContent === value) return;
+  fpsValue.textContent = value;
+  fpsCounter.setAttribute("aria-label", fps === null ? "Frames per second unavailable" : `${value} frames per second`);
 }
 
 function clickableFrame() {
@@ -146,9 +155,11 @@ function prepareMaskSurface(pending) {
 function maskInstanceAt(surface, point) {
   if (!surface || !point) return null;
   const rect = boxTargets.getBoundingClientRect();
-  const x = Math.floor((point.x - rect.left) / rect.width * surface.canvas.width);
+  const displayX = Math.floor((point.x - rect.left) / rect.width * surface.canvas.width);
   const y = Math.floor((point.y - rect.top) / rect.height * surface.canvas.height);
-  if (x < 0 || y < 0 || x >= surface.canvas.width || y >= surface.canvas.height) return null;
+  if (displayX < 0 || y < 0 || displayX >= surface.canvas.width || y >= surface.canvas.height) return null;
+  // CSS mirrors the camera, while mask labels keep their original image coordinates.
+  const x = surface.canvas.width - 1 - displayX;
   return surface.boxes[surface.labels[y * surface.canvas.width + x] - 1]?.instance_id ?? null;
 }
 
@@ -214,7 +225,7 @@ function presentProcessedFrame(pending) {
     canvas.id = "camera-feed";
     canvas.width = width; canvas.height = height;
     canvas.setAttribute("role", "img");
-    canvas.setAttribute("aria-label", "Processed turret camera frame");
+    canvas.setAttribute("aria-label", "Mirrored processed turret camera frame");
     const context = canvas.getContext("2d", {alpha: false});
     if (!context) throw new Error("Cannot render camera frame");
     context.globalCompositeOperation = "copy";
@@ -370,7 +381,7 @@ function renderBoxTargets() {
       boxTargets.append(button);
     }
     const [x1, y1, x2, y2] = box.xyxy;
-    Object.assign(button.style, {left: `${x1*100}%`, top: `${y1*100}%`,
+    Object.assign(button.style, {left: `${(1-x2)*100}%`, top: `${y1*100}%`,
       width: `${(x2-x1)*100}%`, height: `${(y2-y1)*100}%`,
       zIndex: String(Math.round(1000000*(1-(x2-x1)*(y2-y1))))});
     button.disabled = !clickableFrame() || targetSending || detectionSending || modelSending || sharedBusy;
@@ -596,9 +607,9 @@ function renderDetection(detection) {
     preparing: detection?.model === "sam3.1-tracking" ? "Preparing tracking graph…" : "Preparing model graph…",
     validating: "Validating model…", capturing: "Capturing model graph…", waiting_for_camera: "Waiting for camera…" };
   const fresh = isDetectionFresh(detection);
-  const fps = detectionFps(detection);
   const phase = detectionPhase(detection);
   const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
+  renderFps(detectionFps(preparing ? null : detection));
   const holdResult = preparing && detection.state === "running" &&
     Boolean(detection.frame_url) && Number.isInteger(detection.frame_sequence);
   const countNoun = ["sam3.1-mask", "sam3.1-tracking"].includes(detection?.model) ? "mask" : "box";
@@ -607,7 +618,7 @@ function renderDetection(detection) {
   const capacityNotice = omitted > 0 ? ` · ${omitted} over mask cap` : "";
   detectionMessage.textContent = promptError || detection?.error || (preparing
     ? `${labels[phase]}${holdResult ? " · showing last result" : ""}` : fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? countNoun : pluralNoun} · ${fps === null ? "—" : fps.toFixed(1)} FPS${detectionTiming(detection)}${capacityNotice}`
+    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? countNoun : pluralNoun}${detectionTiming(detection)}${capacityNotice}`
     : labels[phase] || "Waiting for detection…");
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   // The viewer is a sink for completed worker results, never the raw camera.
@@ -832,7 +843,7 @@ async function poll() {
     showMessage(error.message, true);
     options.onOffline?.(error);
     updatePromptCounts(null);
-    detectionFps(null);
+    renderFps(detectionFps(null));
     detectionMessage.textContent = "Detector connection lost";
     detectionMessage.classList.add("error");
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
