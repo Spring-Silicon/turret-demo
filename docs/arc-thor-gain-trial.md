@@ -73,3 +73,16 @@ Latest footage, raw telemetry, plots and analysis scripts are retained under
 `cued-baseline-20260909`. The frontend-only FPS/mirror deployment is separate:
 commit `4e71d45` restarted only Arc's frontend and refreshed the existing Firefox
 window; Arc backend/viewer/model PIDs were verified unchanged.
+
+## Deployment state
+
+The candidate was applied to Arc from `40d3976`. Its backend was restarted;
+P400/I0/D0 was read-verified by normal arming on both axes. SAM3.1 Mask / `ball`
+resumed with advancing frames, the prior Start intent and no servo error. All
+protected source/calibration/zero hashes and the expected full configuration
+matched. Receipt and original baseline backup:
+`/home/spring/.local/share/turret-demo/thor-gains-trial-40d3976-20260909T065820/deployment-receipt.json`.
+
+Candidate recording has not started. A new explicit readiness reply is required;
+plan 60 seconds with a longer final stationary segment. Physical smoothness and
+centering remain unvalidated for this deployment.
