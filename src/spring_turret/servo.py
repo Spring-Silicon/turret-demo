@@ -407,6 +407,10 @@ class ServoController:
                         if self._read_gains_locked(name) != previous:
                             raise DeviceUnavailable("Gain rollback readback mismatch")
                 except Exception as rollback:
+                    # Recovery must reapply the last observed P/D before torque
+                    # returns, even on installations without configured gains.
+                    if previous is not None:
+                        self.gain_settings.values[name] = {key: previous[key] for key in ("p", "d")}
                     self._fault_locked(rollback)
                     raise DeviceUnavailable(f"Gain update failed; rollback unconfirmed: {rollback}") from error
                 raise DeviceUnavailable(f"Gain update failed: {error}") from error

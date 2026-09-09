@@ -150,6 +150,12 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.controller.armed)
         self.assertTrue(self.controller.run_requested)
 
+        self.packet.fail = None
+        self.controller._tick_locked()
+        self.assertTrue(self.controller.armed)
+        self.assertEqual(self.packet.registers[2][84],400)
+        self.assertEqual(self.packet.registers[2][80],0)
+
     def test_saved_gain_identity_validation_and_baseline_survive_restart(self):
         self.controller._poll_locked()
         self.controller.set_gains('x',900,50)
