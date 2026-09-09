@@ -169,3 +169,19 @@ from the backup, then restart GDM or reboot. Restore the backed-up GRUB/Plymouth
 files and initramfs to undo the boot visuals. Disable `spring-native-logo.service`
 if it was not enabled before installation. The saved receipt records exact paths
 and hashes; do not replace the current A/B grubenv with an old copy.
+
+## Firefox updates require an explicit action
+
+Arc's Firefox snap is held indefinitely with
+`sudo snap refresh --hold=forever firefox`. Verify `snap list firefox` reports
+`held` before any viewer maintenance. The hold survives browser restarts and
+boots. A targeted `snap refresh firefox` can override it, so do not issue that
+command or remove the hold without an explicit user request.
+
+On September 9, Snap pre-downloaded revision8863 at12:02 EDT and applied it
+at12:36 when a viewer restart released revision7766. Firefox changed from147.0.3
+to155.0.1 even though the deployment did not request a browser update. The hold
+was added following the user's explicit request to prevent a repeat. The active
+browser was retained; no downgrade or browser restart was needed for the hold.
+The new launcher requires both GTK3 and GDK3 explicitly and was verified on
+Firefox155 in a separate X11/Openbox session before staging it for the next boot.
