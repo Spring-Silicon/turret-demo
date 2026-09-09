@@ -243,7 +243,6 @@ function presentProcessedFrame(pending) {
   frameDetection = pending.detection;
   frameBackendPid = pending.backendPid;
   visibleFrame = pending;
-  document.getElementById("camera-offline").hidden = true;
   renderTracking();
 }
 
@@ -418,7 +417,7 @@ function updatePromptControls() {
     const disabled = !status?.detection?.models?.find(model => model.id === option.value)?.available;
     if (option.disabled !== disabled) option.disabled = disabled;
   }
-  updatePromptCounts(displayedDetection || status?.detection);
+  updatePromptColors(displayedDetection || status?.detection);
   updateTargetControls();
 }
 
@@ -475,11 +474,8 @@ function nearestDisplayedBox(detection, target) {
 function renderTracking() {
   const tracking = status?.tracking, target = tracking?.target;
   const element = document.getElementById("tracking-status");
-  const labels = { stopped: "press Start", waiting: "waiting for fresh detections", lost: "not found",
-    holding: "holding · target lost", reacquiring: "reacquiring target",
-    centered: "centered", tracking: "tracking", limited: "angle limit", uncalibrated: "camera directions not calibrated" };
-  element.hidden = !target && !tracking?.error;
-  element.textContent = tracking?.error || (target ? `${target}${tracking.selection === "retarget" ? " · selected instance" : ""} · ${tracking.state === "uncalibrated" ? labels.uncalibrated : status?.servo?.recovering ? "reconnecting" : !status?.servo?.armed ? "press Start" : labels[tracking.state] || "waiting"}` : "");
+  element.hidden = !tracking?.error;
+  element.textContent = tracking?.error || "";
   element.classList.toggle("error", Boolean(tracking?.error));
   document.getElementById("frame-center").toggleAttribute("hidden", !target);
   const detection = frameDetection;
@@ -510,34 +506,13 @@ function detectionPhase(detection) {
   return stage;
 }
 
-function detectionTiming(detection) {
-  const timing = detection?.timing || {};
-  const temporal = detection?.model === "sam3.1-tracking";
-  const value = Number.isFinite(timing.model_ms) ? timing.model_ms
-    : temporal && Number.isFinite(timing.tracking_ms) ? timing.tracking_ms : detection?.latency_ms;
-  const label = Number.isFinite(timing.model_ms) ? "model" : temporal ? "tracking" : "inference";
-  const measured = Number.isFinite(value) ? ` · ${Number(value.toFixed(1))} ms ${label}` : "";
-  const cycle = detection?.pipeline_timing?.cycle_ms;
-  return measured + (Number.isFinite(cycle) ? ` · ${Math.round(cycle)} ms total` : "");
-}
-
-function updatePromptCounts(detection) {
+function updatePromptColors(detection) {
   if (sharedControls) return;
-  const fresh = isDetectionFresh(detection);
   [...promptRows.children].forEach((row, index) => {
     const prompt = row.querySelector(".detection-prompt").value.trim();
     // Match the category, not its old row index: drafts can remove/edit rows
     // without applying them to the detector yet.
     const category = detection?.categories?.find((item) => item.prompt === prompt);
-    const count = fresh && category && Number.isInteger(category.count) && category.count >= 0
-      ? category.count : null;
-    const output = row.querySelector(".prompt-count");
-    output.textContent = count === null ? "—" : String(count);
-    output.setAttribute("aria-label", count === null ? `${prompt || "Object"}: count unavailable` : `${prompt}: ${count} detected`);
-    output.title = count === null
-      ? (prompt && !detection?.prompts?.includes(prompt) ? "Update prompts to count this object" : "Waiting for detection")
-      : `${count} detected`;
-    output.classList.toggle("unavailable", count === null);
     row.style.setProperty("--prompt-color", category?.color || detection?.colors?.[index] || "#55e8ce");
   });
 }
@@ -550,7 +525,7 @@ function addPromptRow(value = "", focus = false) {
     if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
     draftVersion += 1;
     promptError = "";
-    updatePromptCounts(displayedDetection);
+    updatePromptColors(displayedDetection);
     updateTargetControls();
   });
   row.querySelector(".remove-prompt").addEventListener("click", () => {
@@ -612,14 +587,13 @@ function renderDetection(detection) {
   renderFps(detectionFps(preparing ? null : detection));
   const holdResult = preparing && detection.state === "running" &&
     Boolean(detection.frame_url) && Number.isInteger(detection.frame_sequence);
-  const countNoun = ["sam3.1-mask", "sam3.1-tracking"].includes(detection?.model) ? "mask" : "box";
-  const pluralNoun = countNoun === "mask" ? "masks" : "boxes";
   const omitted = Object.values(detection?.mask_overflow || {}).reduce((sum, count) => sum + count, 0);
-  const capacityNotice = omitted > 0 ? ` · ${omitted} over mask cap` : "";
+  const capacityNotice = omitted > 0 ? `${omitted} over mask cap` : "";
   detectionMessage.textContent = promptError || detection?.error || (preparing
     ? `${labels[phase]}${holdResult ? " · showing last result" : ""}` : fresh
-    ? `${detection.boxes.length} ${detection.boxes.length === 1 ? countNoun : pluralNoun}${detectionTiming(detection)}${capacityNotice}`
+    ? capacityNotice
     : labels[phase] || "Waiting for detection…");
+  detectionMessage.hidden = !detectionMessage.textContent;
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   // The viewer is a sink for completed worker results, never the raw camera.
   // Hold the last pair during loading, stalls, camera loss and model changes.
@@ -674,12 +648,6 @@ function renderMotors() {
   document.getElementById("stop-icon").toggleAttribute("hidden", !stop);
 }
 
-function showDevice(id, name, online) {
-  const element = document.getElementById(id);
-  element.textContent = `${name}: ${online ? "online" : "offline"}`;
-  element.classList.toggle("online", online);
-}
-
 function showMessage(text, error = false) {
   message.textContent = text;
   message.hidden = !text;
@@ -709,11 +677,6 @@ function render(next) {
   renderDetection(next.detection);
   const { camera, servo } = next;
   if (!frameDetection) cameraFeed.parentElement.style.aspectRatio = `${camera.width} / ${camera.height}`;
-  showDevice("camera-status", "Camera", camera.online);
-  showDevice("servo-status", "X/Y", servo.online);
-  // A transient device/status outage must not cover the last good picture
-  // with the black offline panel. The camera status/error still reports it.
-  document.getElementById("camera-offline").hidden = camera.online || Boolean(frameDetection);
   if (!servo.armed) pendingAngles.clear();
   renderMotors();
   renderTracking();
@@ -842,9 +805,10 @@ async function poll() {
   } catch (error) {
     showMessage(error.message, true);
     options.onOffline?.(error);
-    updatePromptCounts(null);
+    updatePromptColors(null);
     renderFps(detectionFps(null));
     detectionMessage.textContent = "Detector connection lost";
+    detectionMessage.hidden = false;
     detectionMessage.classList.add("error");
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
     boxTargets.hidden = true;

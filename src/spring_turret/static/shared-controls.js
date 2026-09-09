@@ -39,13 +39,6 @@ function mountSharedControls(document, devices) {
       });
       return fanOut(client => client.command('/api/tracking/target', {target: stop ? null : prompt}));
     });
-    const counts = row.querySelector('.prompt-count');
-    counts.setAttribute('aria-label', 'Detected counts by device');
-    counts.replaceChildren();
-    for (const device of devices) {
-      const count = document.createElement('span');
-      count.dataset.device = device.id; counts.append(count);
-    }
     rows.append(row);
     return input;
   }
@@ -64,7 +57,7 @@ function mountSharedControls(document, devices) {
         initialized = true; setRows(first.detection.prompts || []);
       }
     }
-    // Once initialized, polls only update counts/availability. Never overwrite
+    // Once initialized, polls only update availability. Never overwrite
     // a user's draft with another device's result or auto-resubmit on mismatch.
     const ready = initialized && detections().some(d => d?.enabled);
     const disabled = !ready || busy;
@@ -106,16 +99,6 @@ function mountSharedControls(document, devices) {
       target.setAttribute('aria-pressed', String(Boolean(selected)));
       target.setAttribute('aria-label', label);
       target.title = applied ? label : 'Apply this prompt to both devices first';
-      const counts = row.querySelector('.prompt-count');
-      [...counts.children].forEach((element, i) => {
-        const device = devices[i], d = states.get(device.id)?.detection;
-        const category = d?.categories?.find(c => c.prompt === prompt);
-        const fresh = !offline.has(device.id) && d?.model === model && d.state === 'running' &&
-          d.frame_age_ms < Math.max(5000, 2 * d.latency_ms + 1000);
-        const count = fresh && Number.isInteger(category?.count) && category.count >= 0 ? category.count : '—';
-        element.textContent = `${device.label}: ${count}`;
-        element.setAttribute('aria-label', `${device.label}, ${prompt || 'object'}: ${count === '—' ? 'count unavailable' : count + ' detected'}`);
-      });
       row.style.setProperty('--prompt-color', detections().find(d => d?.model === model)?.colors?.[index] || '#55e8ce');
     });
     const mismatched = initialized && devices.filter(device => {
@@ -123,11 +106,10 @@ function mountSharedControls(document, devices) {
       return d && (d.model !== model || !same(d.prompts, normalized(readRows())));
     });
     const notices = [];
-    if (offline.size) notices.push(`${devices.filter(d => offline.has(d.id)).map(d => d.label).join(', ')} offline`);
     if (!busy && mismatched?.length) notices.push(dirty ? 'Unapplied changes' : 'Device settings differ; Update prompts applies this selection to both');
     message.textContent = error || notices.join(' · ');
     message.hidden = !message.textContent;
-    message.classList.toggle('error', Boolean(error || offline.size));
+    message.classList.toggle('error', Boolean(error));
   }
 
   async function fanOut(action) {

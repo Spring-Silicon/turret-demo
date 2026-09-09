@@ -23,8 +23,6 @@ header {
 }
 
 h1 { margin: 0; font-size: 18px; font-weight: 600; }
-.device-status { display: flex; gap: 16px; color: var(--muted); font-size: 12px; }
-.device-status .online { color: var(--accent); }
 
 main {
   max-width: 1440px;
@@ -68,8 +66,6 @@ select:focus { outline: 1px solid var(--accent); }
 .prompt-row { display: flex; gap: 8px; }
 .detection-prompt { flex: 1; min-width: 0; border: 1px solid var(--line); border-left: 3px solid var(--prompt-color, var(--accent)); background: #151919; color: inherit; padding: 10px; font: inherit; }
 .prompt-row button { flex: 0 0 40px; display: grid; place-items: center; }
-.prompt-count { flex: 0 0 40px; display: grid; place-items: center; color: var(--prompt-color, var(--accent)); font-size: 18px; font-variant-numeric: tabular-nums; }
-.prompt-count.unavailable { color: var(--muted); }
 .prompt-actions { display: flex; justify-content: space-between; gap: 8px; }
 #add-prompt { width: 40px; font-size: 22px; }
 .remove-prompt svg { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
@@ -97,7 +93,6 @@ select:focus { outline: 1px solid var(--accent); }
 .detection-prompt:focus { outline: 1px solid var(--accent); }
 #detection-status { min-height: 18px; margin: 10px 0; color: var(--muted); font-size: 12px; }
 #detection-status.error { color: var(--error); }
-.feed p { position: absolute; inset: 0; margin: 0; display: grid; place-items: center; background: #000; color: var(--muted); }
 
 .controls { display: grid; grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr); gap: 16px; align-items: center; }
 .axis-control { min-width: 0; }
@@ -120,6 +115,5 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 }
 
 @media (max-width: 480px) {
-  .device-status { gap: 8px; flex-direction: column; }
   .controls { gap: 10px; }
 }

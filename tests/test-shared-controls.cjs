@@ -30,7 +30,7 @@ class Element {
   focus() {}
   cloneNode() {
     const row = new Element();
-    row.fields = Object.fromEntries(['.detection-prompt', '.target-prompt', '.remove-prompt', '.prompt-count'].map(s => [s, new Element()]));
+    row.fields = Object.fromEntries(['.detection-prompt', '.target-prompt', '.remove-prompt'].map(s => [s, new Element()]));
     row.fields['.detection-prompt'].tagName = 'INPUT';
     row.fields['.detection-prompt'].replaceWith = replacement => {row.fields['.detection-prompt'] = replacement;};
     return row;
@@ -87,7 +87,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   controller.update('arc', structuredClone(states.arc));
   assert.deepEqual(values(),['hand']);
   assert.equal(calls.length,0); // No live configuration/motion on page load.
-  assert.deepEqual(rows()[0].querySelector('.prompt-count').children.map(c=>c.textContent),['Arc: 2','Thor: 5']);
   const menu = get('detection-model'), menuWrites = [];
   for (const [node, properties] of [[menu,['value','disabled']],...menu.options.map(o=>[o,['disabled','title']])]) {
     for (const property of properties) {
@@ -106,7 +105,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   input(0).value='cup'; input(0).events.input();
   controller.update('thor', structuredClone(states.thor));
   assert.deepEqual(values(),['cup']); // Polls cannot overwrite a shared draft.
-  assert.deepEqual(rows()[0].querySelector('.prompt-count').children.map(c=>c.textContent),['Arc: —','Thor: —']);
   assert.equal(calls.length,0);
   await submit();
   assert.deepEqual(states.arc.detection.prompts,['cup']);
@@ -115,7 +113,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.ok(calls.every(c=>c.route==='/api/detection/prompts'));
   assert.ok(states.arc.servo.armed && states.thor.servo.armed);
   assert.equal(get('shared-message').hidden,true);
-  console.log('validated single draft, independent counts, explicit two-device submission and no motor writes');
+  console.log('validated single draft, prompt controls, explicit two-device submission and no motor writes');
 
   get('add-prompt').events.click(); input(1).value='bottle'; input(1).events.input();
   await submit();
