@@ -814,8 +814,13 @@ async function poll() {
   }
 }
 
-async function setPrompts(startAfter = false) {
-  if (detectionSending || modelSending) return;
+async function setPrompts(startAfter = false, targetPrompt) {
+  if (detectionSending || modelSending || targetSending) return;
+  if (targetPrompt === '') {
+    promptError = 'Enter an object to target';
+    updatePromptControls();
+    return;
+  }
   const submittedVersion = draftVersion;
   const prompts = readPromptRows();
   detectionSending = true;
@@ -824,6 +829,11 @@ async function setPrompts(startAfter = false) {
   try {
     const body = await request("/api/detection/prompts", { method: "POST", body: JSON.stringify({ prompts }) });
     if (draftVersion === submittedVersion) setPromptRows(body.detection.prompts);
+    if (targetPrompt !== undefined) {
+      const target = body.detection.prompts.find(prompt => prompt.toLowerCase() === targetPrompt.toLowerCase());
+      if (!target) throw new Error('The target prompt was not applied');
+      await request('/api/tracking/target', {method: 'POST', body: JSON.stringify({target})});
+    }
     if (startAfter) await startMotors();
   } catch (error) {
     promptError = error.message;
@@ -892,12 +902,12 @@ modelSelector.addEventListener("change", async () => {
 document.getElementById("detection-form").addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.repeat && !event.isComposing && ["SELECT", "INPUT"].includes(event.target.tagName)) {
     event.preventDefault();
-    setPrompts(true);
+    return setPrompts(true, event.target.tagName === 'INPUT' ? event.target.value.trim() : undefined);
   }
 });
 document.getElementById("detection-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  setPrompts();
+  return setPrompts();
 });
 addPromptButton.addEventListener("click", () => {
   if (addPromptButton.disabled) return;

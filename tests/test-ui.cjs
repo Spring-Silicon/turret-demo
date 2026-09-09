@@ -405,10 +405,51 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run("JSON.stringify(targetRequests.at(-1))"), '["/api/detection/model",{"model":"sam3.1-mask"}]');
   assert.equal(rows()[0].fields.input.value, "cup"); // Mask draft preserved too.
   assert.equal(run("status.servo.armed"), false);
-  run(`globalThis.submissions = 0; setPrompts = () => { submissions++; };`);
-  get("detection-form").events.keydown({key: "Enter", target: {tagName: "SELECT"}, preventDefault() {}});
-  assert.equal(run("submissions"), 1);
-  console.log("validated model selection, free-text SAM prompts, independent drafts and Enter submission");
+  run(`globalThis.promptCalls = []; globalThis.rejectTarget = false;
+    status.servo.ready=true; status.servo.armed=false; status.servo.run_requested=false;
+    request = async (path, options) => {
+      const body = JSON.parse(options.body || '{}'); promptCalls.push([path, body]);
+      if (path === '/api/detection/prompts')
+        status.detection.prompts = [...new Map(body.prompts.filter(Boolean).map(p=>[p.toLowerCase(),p])).values()];
+      if (path === '/api/tracking/target') {
+        if (rejectTarget) throw new Error('Target rejected');
+        status.tracking = {target:body.target,instance_id:null};
+      }
+      if (path === '/api/servo/arm') status.servo.armed = status.servo.run_requested = true;
+      return status;
+    };
+    setPromptRows(['person','cup']);`);
+  const promptEnter = value => get('detection-form').events.keydown({key:'Enter',
+    target:{tagName:'INPUT',value},preventDefault(){}});
+  await promptEnter(' cup ');
+  assert.equal(run('status.tracking.target'),'cup');
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),
+    '["/api/detection/prompts","/api/tracking/target","/api/servo/arm"]');
+  run('promptCalls=[];');
+  await promptEnter('person');
+  assert.equal(run('status.tracking.target'),'person');
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),
+    '["/api/detection/prompts","/api/tracking/target"]');
+  run('promptCalls=[];');
+  await promptEnter(' ');
+  assert.equal(run('promptCalls.length'),0);
+  assert.equal(run('promptError'),'Enter an object to target');
+  for (const extra of [{repeat:true},{isComposing:true}])
+    await get('detection-form').events.keydown({key:'Enter',target:{tagName:'INPUT',value:'person'},preventDefault(){},...extra});
+  assert.equal(run('promptCalls.length'),0);
+  run('status.servo.armed=false; status.servo.run_requested=false; rejectTarget=true;');
+  await promptEnter('cup');
+  assert.equal(run('status.servo.armed'),false);
+  assert.equal(run('promptError'),'Target rejected');
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),
+    '["/api/detection/prompts","/api/tracking/target"]');
+  run('promptCalls=[]; rejectTarget=false;');
+  await get('detection-form').events.submit({preventDefault(){}});
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),'["/api/detection/prompts"]');
+  run('promptCalls=[];');
+  await get('detection-form').events.keydown({key:'Enter',target:{tagName:'SELECT'},preventDefault(){}});
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),'["/api/detection/prompts","/api/servo/arm"]');
+  console.log('validated Enter applies prompts, selects the edited class before Start, and leaves button submission unchanged');
   run(`globalThis.enterCalls = []; status.servo.armed=false; status.servo.run_requested=false;
     request = async path => {enterCalls.push(path); status.servo.armed=true; status.servo.run_requested=true; return status;};`);
   documentEvents.keydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});

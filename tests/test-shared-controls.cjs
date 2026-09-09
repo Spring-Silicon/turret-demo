@@ -47,7 +47,7 @@ const ctx = vm.createContext({document});
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../src/spring_turret/static/shared-controls.js'), 'utf8'), ctx);
 const devices = [{id:'arc', label:'Arc'}, {id:'thor', label:'Thor'}];
 const controller = ctx.mountSharedControls(document, devices);
-const states = {}, clients = {}, calls = [], failures = new Map(), blocks = new Map();
+const states = {}, clients = {}, calls = [], failures = new Map(), blocks = new Map(), routeFailures = new Map();
 for (const {id} of devices) {
   states[id] = {detection:{enabled:true, model:'sam3.1-tracking', prompts:['hand'], max_prompts:8,
     models:['sam3.1','sam3.1-tracking','sam3.1-mask'].map(id => ({id,available:true})),
@@ -59,6 +59,7 @@ for (const {id} of devices) {
       calls.push({id,route,body:structuredClone(body)});
       if (blocks.has(id)) await blocks.get(id);
       if (failures.has(id)) throw new Error(failures.get(id));
+      if (routeFailures.has(`${id}:${route}`)) throw new Error(routeFailures.get(`${id}:${route}`));
       const state = states[id];
       if (route === '/api/detection/model') {
         state.detection.model = body.model;
@@ -158,7 +159,41 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(states.arc.servo.armed, true);
   assert.equal(states.thor.servo.armed, true);
   for (const id of ['arc','thor']) assert.deepEqual(calls.slice(beforeEnter).filter(c=>c.id===id).map(c=>c.route),
-    ['/api/detection/prompts','/api/servo/arm']);
+    ['/api/detection/prompts','/api/tracking/target','/api/servo/arm']);
+  assert.equal(states.arc.tracking.target,'person');
+  assert.equal(states.thor.tracking.target,'person');
+  get('add-prompt').events.click(); input(1).value='cup'; input(1).events.input();
+  const beforeRetarget=calls.length;
+  await get('detection-form').events.keydown({key:'Enter',target:input(1),preventDefault(){}});
+  for (const id of ['arc','thor']) {
+    assert.equal(states[id].tracking.target,'cup');
+    assert.deepEqual(calls.slice(beforeRetarget).filter(c=>c.id===id).map(c=>c.route),
+      ['/api/detection/prompts','/api/tracking/target']); // Already running: no duplicate Start.
+  }
+  input(0).value='CUP'; input(0).events.input();
+  await get('detection-form').events.keydown({key:'Enter',target:input(0),preventDefault(){}});
+  assert.deepEqual(states.arc.detection.prompts,['cup']);
+  assert.equal(states.arc.tracking.target,'cup'); // Canonical applied spelling, not a toggle off.
+  input(0).value=' '; input(0).events.input();
+  const beforeBlank=calls.length;
+  await get('detection-form').events.keydown({key:'Enter',target:input(0),preventDefault(){}});
+  assert.equal(calls.length,beforeBlank);
+  assert.match(get('shared-message').textContent,/Enter an object/);
+  input(0).value='person'; input(0).events.input();
+  for (const extra of [{repeat:true},{isComposing:true}])
+    await get('detection-form').events.keydown({key:'Enter',target:input(0),preventDefault(){},...extra});
+  assert.equal(calls.length,beforeBlank);
+  states.arc.servo.armed=states.thor.servo.armed=false;
+  routeFailures.set('thor:/api/tracking/target','Target rejected');
+  const beforeTargetFailure=calls.length;
+  await get('detection-form').events.keydown({key:'Enter',target:input(0),preventDefault(){}});
+  assert.equal(states.arc.servo.armed,true);
+  assert.equal(states.thor.servo.armed,false);
+  assert.deepEqual(calls.slice(beforeTargetFailure).filter(c=>c.id==='thor').map(c=>c.route),
+    ['/api/detection/prompts','/api/tracking/target']);
+  assert.match(get('shared-message').textContent,/Thor: Target rejected/);
+  routeFailures.clear();
+  await get('detection-form').events.keydown({key:'Enter',target:input(0),preventDefault(){}});
   await changeModel('sam3.1');
   assert.deepEqual(values(),['cup','bottle']);
   await changeModel('sam3.1-mask');

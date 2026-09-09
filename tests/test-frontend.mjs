@@ -33,6 +33,7 @@ test('named Arc, Thor and combined modes share the same launcher', async t => {
   ]);
   const combinedHtml=await (await fetch(combinedLocal)).text();
   assert.match(combinedHtml,/<title>Spring Silicon \+ NVIDIA Jetson Thor · Turret Demo<\/title>/);
+  assert.doesNotMatch(combinedHtml, /dashboard-header|<h1>/);
   assert.equal(both.backend,undefined);
   assert.equal(frontendOptions({backend:'http://host:8080'}).name,'Turret Demo');
   for (const invalid of [{},{backend:'http://host',thor:'http://thor'},

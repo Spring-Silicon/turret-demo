@@ -132,15 +132,22 @@ function mountSharedControls(document, devices) {
     }
   }
 
-  async function applySelection(startAfter = false) {
+  async function applySelection(startAfter = false, targetPrompt) {
     if (busy || !initialized || !available(model)) return;
+    if (targetPrompt === '') { error = 'Enter an object to target'; render(); return; }
     const selectedModel = model, prompts = normalized(readRows());
     drafts.set(model, prompts);
     const ok = await fanOut(async (client, device) => {
       if (states.get(device.id)?.detection?.model !== selectedModel)
         await client.command('/api/detection/model', {model: selectedModel});
-      const result = await client.command('/api/detection/prompts', {prompts});
+      let result = await client.command('/api/detection/prompts', {prompts});
       states.set(device.id, result); offline.delete(device.id);
+      if (targetPrompt !== undefined) {
+        const target = result.detection.prompts.find(prompt => prompt.toLowerCase() === targetPrompt.toLowerCase());
+        if (!target) throw new Error('The target prompt was not applied');
+        result = await client.command('/api/tracking/target', {target});
+        states.set(device.id, result);
+      }
       if (startAfter && !(result.servo?.run_requested ?? result.servo?.armed)) {
         const started = await client.command('/api/servo/arm', {});
         states.set(device.id, started);
@@ -172,7 +179,8 @@ function mountSharedControls(document, devices) {
   });
   document.getElementById('detection-form').addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.repeat && !event.isComposing && ['INPUT', 'SELECT'].includes(event.target.tagName)) {
-      event.preventDefault(); return applySelection(true);
+      event.preventDefault();
+      return applySelection(true, event.target.tagName === 'INPUT' ? event.target.value.trim() : undefined);
     }
   });
   document.addEventListener?.('keydown', event => {
