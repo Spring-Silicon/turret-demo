@@ -8,6 +8,8 @@ import sys
 import threading
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT/'src'))
@@ -25,6 +27,30 @@ def eventually(check):
 
 
 class PrefetchTests(unittest.TestCase):
+    def test_mask_preparation_checks_new_camera_frames_without_five_ms_delay(self):
+        for model,interval in (('sam3.1-mask',.001),('sam3.1-tracking',.005),('sam3.1',.005)):
+            worker=WorkerClient({'model':model})
+            worker.process=SimpleNamespace(stdout=object())
+            selector=MagicMock()
+            selector.__enter__.return_value=selector
+            selector.select.return_value=[]
+            def tick():
+                worker.pending=b'{"type":"result","id":1}\n'
+            with patch('spring_turret.detection.selectors.DefaultSelector',return_value=selector):
+                self.assertEqual(worker.receive(2,tick=tick)['id'],1)
+            selector.select.assert_called_once_with(interval)
+
+    def test_mask_wait_reuses_exact_inflight_work_and_mismatch_never_waits(self):
+        entered,release=threading.Event(),threading.Event()
+        p=LatestPreparation(lambda jpeg:(entered.set(),release.wait(1),jpeg)[2])
+        self.addCleanup(p.close);self.addCleanup(release.set)
+        p.submit('a',b'a');self.assertTrue(entered.wait(1))
+        started=time.monotonic()
+        self.assertIsNone(p.take('other',b'a',wait_seconds=.025))
+        self.assertLess(time.monotonic()-started,.02)
+        threading.Timer(.005,release.set).start()
+        self.assertEqual(p.take('a',b'a',wait_seconds=.025),b'a')
+
     def test_latest_only_nonblocking_exact_token_and_bytes_and_close(self):
         entered, release = threading.Event(), threading.Event()
         def prepare(jpeg):

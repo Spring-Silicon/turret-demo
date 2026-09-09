@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spring_turret.sam31_worker import Sam31Engine, validate_detections
-from spring_turret.sam31_w8a8 import packed_profile
+from spring_turret.sam31_w8a8 import packed_profile, cast_cache_profile
 from spring_turret.sam31_graph import CompiledStage
 
 
@@ -53,6 +53,12 @@ def main():
                     continue
                 prompts = cases[i]["prompts"]
                 outputs = engine._run_heads(features, engine._encode_prompts(prompts))
+                if cast_cache_profile(args.bundle):
+                    stage = engine.grounding_stages[1]
+                    last = tuple(value[-1:].clone() for value in outputs)
+                    direct = stage.cached_head(*stage.inputs)
+                    assert all(torch.equal(a, b) for a, b in zip(last, direct, strict=True))
+                    stage.cached_head.validate_cache()
                 for j, prompt in enumerate(prompts):
                     expected = tuple(v.to(engine.device) for v in frozen["refs"][i, j])
                     actual = tuple(v[j:j+1] for v in outputs)
@@ -154,6 +160,10 @@ def main():
                                      r["image_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()]
                             assert len(match) == 1
                             prior = tuple(x.to(engine.device) for x in match[0]["actual"])
+                            if cast_cache_profile(args.bundle):
+                                exact = [torch.equal(a, b) for a, b in zip(prior, observed, strict=True)]
+                                assert all(exact), f"Cast cache changed current outputs: {row}"
+                                row["deployed_baseline_bitwise_exact"] = exact
                             row["deployed_baseline_drift"] = validate_detections(torch, prior, observed, .5)
                             prior_scores, _ = unpack(prior)
                             assert torch.equal(prior_scores > .5, ac > .5), row
@@ -168,6 +178,10 @@ def main():
                     print(json.dumps({"camera": path.name, "checked_prompts": len(prompts)}), flush=True)
                 report["no_incremental_camera_failures"] = True
                 report["deployed_baseline_checked"] = baseline is not None
+            if cast_cache_profile(args.bundle):
+                stage = engine.grounding_stages[1]
+                report["cast_cache_proof"] = stage.cast_cache_proof
+                report["cache_lifetime_validation"] = stage.cached_head.validate_cache()
         if args.image:
             # Exercises unchanged LIVE dense startup gates; no validated_batches
             # injection or quantized reference substitution is allowed here.

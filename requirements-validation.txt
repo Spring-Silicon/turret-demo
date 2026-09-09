@@ -1,0 +1,3 @@
+# CPU-only validation; GPU/model qualification runs separately on the devices.
+numpy==2.5.3
+Pillow==12.3.0

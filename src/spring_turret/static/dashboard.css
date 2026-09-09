@@ -1,0 +1,17 @@
+:root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b0d0d; color: #edf2f1; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.dashboard-header { padding: 18px 24px; border-bottom: 1px solid #303535; }
+.dashboard-header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+#shared-controls { max-width: 850px; padding: 20px 20px 0; margin: auto; }
+#shared-controls .prompt-count { flex-basis: 124px; font-size: 13px; display: flex; gap: 8px; justify-content: center; white-space: nowrap; }
+#shared-message { margin: 10px 0 0; font-size: 12px; color: #98a09f; }
+#shared-message.error { color: #ff7a86; }
+#devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; max-width: 2200px; padding: 20px; margin: auto; align-items: start; }
+.device-panel { min-width: 0; border: 1px solid #303535; }
+#dashboard-error { margin: 24px; color: #ff7a86; }
+@media (max-width: 1050px) { #devices { grid-template-columns: 1fr; padding: 12px; gap: 12px; } }
+@media (max-width: 480px) {
+  #shared-controls { padding: 12px 12px 0; }
+  #shared-controls .prompt-count { flex-basis: 62px; flex-direction: column; gap: 2px; }
+}

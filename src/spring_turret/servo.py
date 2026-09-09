@@ -11,14 +11,19 @@ from pathlib import Path
 from typing import Any
 
 from spring_turret.calibration import load_zeros, save_zeros
+from spring_turret.pose_history import interpolate_pose
 
 LOGGER = logging.getLogger("spring-turret.servo")
 XL330_PROTOCOL_VERSION = 2.0
 XL330_TORQUE_ENABLE = 64
 XL330_GOAL_POSITION = 116
 XL330_PRESENT_POSITION = 132
+POSITION_GAIN_REGISTERS = {"p": 84, "i": 82, "d": 80}
+# RAM aliases: signed position, torque, fault, return-level sentinel, watchdog.
+# The sentinel detects a reset to the default (zero-valued) indirect-data table.
+FEEDBACK_REGISTERS = (132, 133, 134, 135, 64, 70, 68, 98)
+INDIRECT_ADDRESS = 168
 COUNTS_PER_DEGREE = 4096 / 360
-CONTROL_TIMEOUT = 3.0
 
 
 class TurretError(RuntimeError):
@@ -46,6 +51,8 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("unsupported XL330 baudrate")
     if type(config.get("calibrated")) is not bool:
         raise ValueError("servo.calibrated must be a boolean")
+    if type(config.get("packed_feedback", False)) is not bool:
+        raise ValueError("servo.packed_feedback must be a boolean")
     if "calibration_file" in config and (
         not isinstance(config["calibration_file"], str)
         or not Path(config["calibration_file"]).is_absolute()
@@ -72,6 +79,12 @@ def validate_config(config: dict[str, Any]) -> None:
         for field in ("profile_velocity", "profile_acceleration"):
             if not 0 <= axis[field] <= 32767:
                 raise ValueError(f"{name} {field} must be between 0 and 32767 (0 = uncapped)")
+        gains = axis.get("position_gains")
+        if gains is not None:
+            if (not isinstance(gains, dict) or set(gains) != set(POSITION_GAIN_REGISTERS)
+                    or any(type(v) is not int or not 0 <= v <= 16383 for v in gains.values())
+                    or gains["p"] == 0):
+                raise ValueError(f"{name} position_gains must contain integer p/i/d register values (p > 0)")
     if axes["x"]["id"] == axes["y"]["id"]:
         raise ValueError("X and Y must have different servo IDs")
 
@@ -96,20 +109,26 @@ class ServoController:
     def __init__(self, config: dict[str, Any]):
         self.config = config
         load_zeros(config)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.pose_lock = threading.Lock()
         self.cached_pose: dict | None = None
-        self.pose_history: deque[dict] = deque(maxlen=16)
+        self.pose_history: deque[dict] = deque(maxlen=256)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._monitor, name="servo", daemon=True)
         self.port: Any = None
         self.packet: Any = None
         self.comm_success = 0
+        self.read_retries = 0
+        self._feedback_bases: dict[str, int] = {}
+        self._saved_aliases: dict[str, list[int]] = {}
         self.axes = {name: {"online": False, "model": None, "position": None,
                             "goal": None, "torque": None, "origin": None} for name in ("x", "y")}
         self._recovery_boundary: dict[str, int | None] = {name: None for name in self.axes}
         self.armed = False
-        self.last_keepalive = 0.0
+        # Operator intent is independent of whether the hardware is connected.
+        # Faults drop torque; only an explicit Stop clears this latch.
+        self.run_requested = False
+        self.armed_at = None
         self.error = "Checking X/Y servos…"
 
     def start(self) -> None:
@@ -120,6 +139,7 @@ class ServoController:
         if self.thread.is_alive():
             self.thread.join(timeout=3)
         with self.lock:
+            self.run_requested = False
             self._disable_all_locked()
             self._disconnect_locked()
 
@@ -138,7 +158,8 @@ class ServoController:
 
     def _check(self, result: int, error: int, name: str, operation: str) -> None:
         if result != self.comm_success or error:
-            raise DeviceUnavailable(f"{name.upper()} (ID {self.config['axes'][name]['id']}): {operation} failed")
+            raise DeviceUnavailable(f"{name.upper()} (ID {self.config['axes'][name]['id']}): {operation} failed "
+                                    f"(communication={result}, device_error={error})")
 
     def _ping(self, name: str) -> None:
         model, result, error = self.packet.ping(self.port, self.config["axes"][name]["id"])
@@ -150,6 +171,14 @@ class ServoController:
     def _read(self, name: str, address: int, size: int) -> int:
         value, result, error = getattr(self.packet, f"read{size}ByteTxRx")(
             self.port, self.config["axes"][name]["id"], address)
+        # A read is idempotent. Reissue the SAME register once after a lost or
+        # corrupt response; the SDK clears RX before transmitting the request.
+        # Never retry device faults or writes, and never reuse a failed value.
+        if result in (-3001, -3002) and not error:
+            self.read_retries += 1
+            LOGGER.warning("%s register %d read communication=%d; retrying once", name, address, result)
+            value, result, error = getattr(self.packet, f"read{size}ByteTxRx")(
+                self.port, self.config["axes"][name]["id"], address)
         self._check(result, error, name, f"read register {address}")
         return value
 
@@ -157,6 +186,79 @@ class ServoController:
         result, error = getattr(self.packet, f"write{size}ByteTxRx")(
             self.port, self.config["axes"][name]["id"], address, value)
         self._check(result, error, name, f"write register {address}")
+
+    def _prepare_feedback_locked(self) -> None:
+        """Configure RAM only, after verifying BOTH models and torque-off states."""
+        if not self.config.get("packed_feedback", False) or self._feedback_bases:
+            return
+        if self.armed:
+            raise DeviceUnavailable("Cannot configure feedback while armed")
+        bases, saved = {}, {}
+        for name in self.axes:
+            self._ping(name)
+            if self._read(name, XL330_TORQUE_ENABLE, 1) != 0:
+                raise DeviceUnavailable(f"{name.upper()}: feedback setup requires torque off")
+            firmware = self._read(name, 6, 1)
+            if not 1 <= firmware <= 255 or self._read(name, 68, 1) != 2:
+                raise DeviceUnavailable(f"{name.upper()}: unsupported feedback configuration")
+            # XL330 firmware before V53 has 20 slots at 208, V53+ has 28 at 224.
+            bases[name] = 224 if firmware >= 53 else 208
+            saved[name] = [self._read(name, INDIRECT_ADDRESS + 2*i, 2)
+                           for i in range(len(FEEDBACK_REGISTERS))]
+        self._saved_aliases = saved  # Retain rollback even if a write fails midway.
+        for name in self.axes:
+            for i, address in enumerate(FEEDBACK_REGISTERS):
+                self._write(name, INDIRECT_ADDRESS + 2*i, 2, address)
+        self._verify_feedback_mapping_locked()
+        self._feedback_bases = bases
+
+    def _verify_feedback_mapping_locked(self) -> None:
+        for name in self._saved_aliases:
+            for i, address in enumerate(FEEDBACK_REGISTERS):
+                if self._read(name, INDIRECT_ADDRESS + 2*i, 2) != address:
+                    raise DeviceUnavailable(f"{name.upper()}: feedback mapping readback mismatch")
+
+    def _restore_feedback_locked(self) -> list[str]:
+        errors = []
+        for name, values in self._saved_aliases.items():
+            try:
+                self._ping(name)
+                if self._read(name, XL330_TORQUE_ENABLE, 1) != 0:
+                    raise DeviceUnavailable(f"{name.upper()}: feedback restore requires torque off")
+                for i, value in enumerate(values):
+                    self._write(name, INDIRECT_ADDRESS + 2*i, 2, value)
+                    if self._read(name, INDIRECT_ADDRESS + 2*i, 2) != value:
+                        raise DeviceUnavailable(f"{name.upper()}: feedback restore readback mismatch")
+            except Exception as error:
+                errors.append(str(error))
+        self._feedback_bases.clear()
+        self._saved_aliases.clear()
+        return errors
+
+    def _read_feedback_locked(self, name: str) -> tuple[int, int, int]:
+        """A new acknowledged packet per axis, never a cached validation.
+
+        Unlike the SDK GroupSyncRead helper, readTxRx retains the device-error
+        byte. A failed or short response never supplies position/history data.
+        """
+        address = self._feedback_bases[name]
+        args = (self.port, self.config["axes"][name]["id"], address, len(FEEDBACK_REGISTERS))
+        data, result, error = self.packet.readTxRx(*args)
+        if result in (-3001, -3002) and not error:
+            self.read_retries += 1
+            LOGGER.warning("%s packed feedback communication=%d; retrying once", name, result)
+            data, result, error = self.packet.readTxRx(*args)
+        self._check(result, error, name, "read packed feedback")
+        if (len(data) != len(FEEDBACK_REGISTERS)
+                or any(type(v) is not int or not 0 <= v <= 255 for v in data)):
+            raise DeviceUnavailable(f"{name.upper()}: malformed packed feedback")
+        if data[6] != 2:
+            raise DeviceUnavailable(f"{name.upper()}: feedback mapping reset or invalid")
+        if data[4] not in (0, 1):
+            raise DeviceUnavailable(f"{name.upper()}: invalid torque reading")
+        if self.armed and data[7] != 50:
+            raise DeviceUnavailable(f"{name.upper()}: unexpected bus watchdog state")
+        return int.from_bytes(bytes(data[:4]), "little"), data[4], data[5]
 
     def _disable_all_locked(self) -> list[str]:
         """Never let a failed first motor prevent attempting to stop the second."""
@@ -180,6 +282,12 @@ class ServoController:
         return errors
 
     def _disconnect_locked(self) -> None:
+        if self.packet is not None:
+            errors = self._restore_feedback_locked()
+            if errors:
+                detail = "feedback restoration failed: " + "; ".join(errors)
+                LOGGER.error(detail)
+                self.error = f"{self.error}; {detail}" if self.error else detail
         if self.port is not None:
             try:
                 self.port.closePort()
@@ -208,21 +316,38 @@ class ServoController:
             errors = self._disable_all_locked()
             if errors:
                 raise DeviceUnavailable("; ".join(errors))
+        self._prepare_feedback_locked()
         for name, state in self.axes.items():
-            position = self._read(name, XL330_PRESENT_POSITION, 4)
+            retries_before = self.read_retries
+            read_started = time.monotonic()
+            packed = bool(self._feedback_bases)
+            if packed:
+                position, torque, hardware_error = self._read_feedback_locked(name)
+            else:
+                position = self._read(name, XL330_PRESENT_POSITION, 4)
+            read_finished = time.monotonic()
+            # Separate axes are read sequentially. The response midpoint is an
+            # estimate, with the transaction duration retained as uncertainty.
+            state["observed_at"] = (read_started + read_finished) / 2
+            state["read_duration_ms"] = (read_finished - read_started) * 1000
+            state["position_retried"] = self.read_retries != retries_before
             state["position"] = position if position < 2**31 else position - 2**32
             if not -1048575 <= state["position"] <= 1048575:
                 raise DeviceUnavailable(f"{name.upper()}: invalid extended-position reading")
             if not self.armed:
                 state["origin"] = nearest_center(self.config["axes"][name], state["position"])
-            state["torque"] = bool(self._read(name, XL330_TORQUE_ENABLE, 1))
-            if self._read(name, 70, 1):
+            if not packed:
+                torque = self._read(name, XL330_TORQUE_ENABLE, 1)
+                hardware_error = self._read(name, 70, 1)
+            state["torque"] = bool(torque)
+            if hardware_error:
                 raise DeviceUnavailable(f"{name.upper()}: servo hardware fault")
             if state["torque"] != self.armed:
                 raise DeviceUnavailable(f"{name.upper()}: unexpected torque state")
             state["online"] = True
         completed_at = time.monotonic()
-        if self.armed and completed_at - sampled_at <= 0.1:
+        if (self.armed and completed_at - sampled_at <= 0.1
+                and not any(state["position_retried"] for state in self.axes.values())):
             with self.pose_lock:
                 self.cached_pose = {"sampled_at": sampled_at, "read_completed_at": completed_at,
                     "axes": {name: {
@@ -230,6 +355,8 @@ class ServoController:
                         "direction": self.config["axes"][name]["direction"],
                         "degrees": to_degrees(self._axis_config(name), state["position"]),
                         "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
+                        "observed_at": state["observed_at"],
+                        "read_duration_ms": state["read_duration_ms"],
                     } for name, state in self.axes.items()}}
                 self.pose_history.append(self.cached_pose)
 
@@ -264,9 +391,8 @@ class ServoController:
 
     def _tick_locked(self) -> None:
         self._poll_locked()
-        if self.armed and time.monotonic() - self.last_keepalive > CONTROL_TIMEOUT:
-            raise DeviceUnavailable("Controls disconnected; motors stopped")
-        # Validate BOTH axes and the control lease before any corrective motion.
+        if self.run_requested and not self.armed and not self.stop_event.is_set():
+            self.arm()  # Revalidate both devices and hold their current pose.
         self._recover_limits_locked()
 
     def _monitor(self) -> None:
@@ -281,12 +407,14 @@ class ServoController:
 
     def arm(self) -> None:
         with self.lock:
+            if not self.config["calibrated"]:
+                raise DeviceUnavailable("X/Y IDs and mechanical zero must be calibrated first")
+            self.run_requested = True
             if self.armed:
                 return
             try:
-                if not self.config["calibrated"]:
-                    raise DeviceUnavailable("X/Y IDs and mechanical zero must be calibrated first")
                 self._poll_locked()
+                self._verify_feedback_mapping_locked()
                 # Extended mode avoids the long-way-around move at encoder rollover.
                 # EEPROM is deliberately never changed by the running web service.
                 for name, axis in self.config["axes"].items():
@@ -298,6 +426,14 @@ class ServoController:
                 # Prepare BOTH axes before enabling either. No move to zero on Start.
                 for name, axis in self.config["axes"].items():
                     self._write(name, 98, 1, 0)  # Clear a previous bus watchdog timeout.
+                    # Optional assembly-qualified RAM gains. Never alter the
+                    # operating mode/EEPROM or assume both assemblies share gains.
+                    gains = axis.get("position_gains")
+                    if gains is not None:
+                        for key, address in POSITION_GAIN_REGISTERS.items():
+                            self._write(name, address, 2, gains[key])
+                            if self._read(name, address, 2) != gains[key]:
+                                raise DeviceUnavailable(f"{name.upper()}: {key.upper()} gain readback mismatch")
                     self._write(name, 108, 4, axis["profile_acceleration"])
                     self._write(name, 112, 4, axis["profile_velocity"])
                     position = self.axes[name]["position"]
@@ -309,8 +445,8 @@ class ServoController:
                     if self._read(name, XL330_TORQUE_ENABLE, 1) != 1:
                         raise DeviceUnavailable(f"{name.upper()}: Start not confirmed")
                     self.axes[name]["torque"] = True
-                self.last_keepalive = time.monotonic()
                 self.armed = True
+                self.armed_at = time.monotonic()
                 self.error = ""
             except Exception as error:
                 self._fault_locked(error)
@@ -318,6 +454,9 @@ class ServoController:
 
     def disable(self) -> None:
         with self.lock:
+            # Stop must win even when the cable is absent and torque-off cannot
+            # be acknowledged. Reconnection must not undo the operator's Stop.
+            self.run_requested = False
             errors = self._disable_all_locked()
             if errors:
                 self.error = "; ".join(errors) + "; torque-off unconfirmed"
@@ -330,7 +469,7 @@ class ServoController:
     def recalibrate(self) -> None:
         """Save both current encoders as zero, torque-off and without motion."""
         with self.lock:
-            if self.armed:
+            if self.armed or self.run_requested:
                 raise ServoDisarmed("Stop motors before recalibrating servo zeros")
             if not self.config["calibrated"]:
                 raise DeviceUnavailable("Commission the servo IDs and modes before setting zeros")
@@ -368,9 +507,7 @@ class ServoController:
                 raise DeviceUnavailable(self.error) from error
 
     def keepalive(self) -> None:
-        with self.lock:
-            if self.armed:
-                self.last_keepalive = time.monotonic()
+        """Compatibility no-op for already-open clients; never arms or moves."""
 
     def move(self, name: str, degrees: float) -> None:
         if not isinstance(name, str) or name not in self.axes:
@@ -388,7 +525,6 @@ class ServoController:
                 position = to_position(self._axis_config(name), degrees)
                 self._write(name, XL330_GOAL_POSITION, 4, position)
                 self.axes[name]["goal"] = position
-                self.last_keepalive = time.monotonic()
             except Exception as error:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error
@@ -396,16 +532,22 @@ class ServoController:
     def sample_pose(self, captured_at: float | None = None) -> dict[str, Any] | None:
         """Nonblocking checked encoder snapshot; never performs serial I/O.
 
-        The monitor/command paths still check both axes and all faults. Pairing
-        rejects snapshots over 100 ms old, including time spent reading the bus.
-        For a camera frame, choose the newest fully completed read BEFORE its
-        receipt time, not a newer pose that would force waiting for another frame.
+        Called after inference, history normally brackets the frame receipt time
+        on each axis. Interpolate that historical pose, never substitute the
+        current angle. A fast worker without both brackets uses the older checked
+        snapshot. History is invalidated on Stop, faults and zero changes.
         """
         with self.pose_lock:
             now = time.monotonic()
             at = now if captured_at is None else captured_at
-            if not self.armed or not 0 <= now - at <= 0.1:
+            if (not self.armed or type(at) not in (int, float) or not math.isfinite(at)
+                    or at > now or not self.pose_history
+                    or not 0 <= now - self.pose_history[-1]["read_completed_at"] <= 0.1):
                 return None
+            if captured_at is not None:
+                interpolated = interpolate_pose(self.pose_history, at, now)
+                if interpolated is not None:
+                    return interpolated
             for pose in reversed(self.pose_history):
                 if pose["read_completed_at"] <= at and 0 <= at - pose["sampled_at"] <= 0.1:
                     return {**pose, "axes": {name: dict(axis) for name, axis in pose["axes"].items()}}
@@ -416,7 +558,7 @@ class ServoController:
         return self.track(degrees, absolute=True)
 
     def track(self, offsets: dict[str, float], *, absolute: bool = False) -> dict[str, Any]:
-        """Camera-framing goal correction; only the browser renews its lease.
+        """Camera-framing goal correction while explicitly armed.
 
         With absolute=True, values are absolute degree goals (zero means zero).
         Otherwise, all-zero offsets hold the measured pose (clamped to limits).
@@ -474,9 +616,15 @@ class ServoController:
             return {
                 "online": online, "ready": online and self.config["calibrated"] and (self.armed or not outside),
                 "can_recalibrate": bool(self.config.get("calibration_file")) and self.config["calibrated"]
-                    and online and not self.armed and all(state["torque"] is False for state in self.axes.values()),
+                    and online and not self.armed and not self.run_requested
+                    and all(state["torque"] is False for state in self.axes.values()),
                 "device": self.config["device"], "protocol": "dynamixel-2.0",
                 "baudrate": self.config["baudrate"], "armed": self.armed,
+                "run_requested": self.run_requested, "armed_at": self.armed_at,
+                "recovering": self.run_requested and not self.armed,
+                "can_start": self.config["calibrated"],
+                "read_retries": self.read_retries,
+                "feedback_mode": "packed" if self._feedback_bases else "registers",
                 "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
                 "axes": {name: {**state, "id": self.config["axes"][name]["id"],
                     "direction": self.config["axes"][name]["direction"],

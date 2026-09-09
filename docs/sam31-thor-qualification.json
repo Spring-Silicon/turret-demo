@@ -1,0 +1,197 @@
+{
+  "benchmarks": [
+    {
+      "device": "NVIDIA Thor",
+      "device_type": "cuda",
+      "torch": "2.8.0a0+34c6371d24.nv25.08",
+      "torch_compile": true,
+      "cuda_graph": true,
+      "accuracy_policy": "enforced",
+      "preprocess_validation": {
+        "bitwise_equal": true,
+        "backend": "compiled-uint8-lut"
+      },
+      "batch_size": 1,
+      "prompts": 1,
+      "latency_ms": 112,
+      "timing": {
+        "preprocess_ms": 24.44,
+        "cpu_prepare_ms": 23.98,
+        "prompt_setup_ms": 0.04,
+        "image_encoder_ms": 95.86,
+        "grounding_ms": 15.52,
+        "postprocess_ms": 0.98,
+        "annotation_ms": 28.36,
+        "worker_total_ms": 165.38
+      },
+      "allocated_mb": 3701,
+      "reserved_mb": 4696,
+      "counts": [
+        3
+      ],
+      "validation": {
+        "person": {
+          "max_confidence_error": 0.000525,
+          "max_all_query_score_error": 0.005488,
+          "compared_boxes": 3,
+          "max_box_coordinate_error": 4.4e-05
+        },
+        "computer monitor": {
+          "max_confidence_error": 0,
+          "max_all_query_score_error": 0.00268,
+          "compared_boxes": 0,
+          "max_box_coordinate_error": 0
+        },
+        "keyboard": {
+          "max_confidence_error": 0,
+          "max_all_query_score_error": 0.000108,
+          "compared_boxes": 0,
+          "max_box_coordinate_error": 0
+        },
+        "chair": {
+          "max_confidence_error": 0.000802,
+          "max_all_query_score_error": 0.030657,
+          "compared_boxes": 1,
+          "max_box_coordinate_error": 4.7e-05
+        }
+      }
+    },
+    {
+      "device": "NVIDIA Thor",
+      "device_type": "cuda",
+      "torch": "2.8.0a0+34c6371d24.nv25.08",
+      "torch_compile": true,
+      "cuda_graph": true,
+      "accuracy_policy": "enforced",
+      "preprocess_validation": {
+        "bitwise_equal": true,
+        "backend": "compiled-uint8-lut"
+      },
+      "batch_size": 1,
+      "prompts": 2,
+      "latency_ms": 127,
+      "timing": {
+        "preprocess_ms": 24.6,
+        "cpu_prepare_ms": 23.97,
+        "prompt_setup_ms": 0.04,
+        "image_encoder_ms": 95.76,
+        "grounding_ms": 30.47,
+        "postprocess_ms": 1.13,
+        "annotation_ms": 28.35,
+        "worker_total_ms": 180.55
+      },
+      "allocated_mb": 3701,
+      "reserved_mb": 4696,
+      "counts": [
+        3,
+        0
+      ],
+      "validation": {
+        "person": {
+          "max_confidence_error": 0.000525,
+          "max_all_query_score_error": 0.005488,
+          "compared_boxes": 3,
+          "max_box_coordinate_error": 4.4e-05
+        },
+        "computer monitor": {
+          "max_confidence_error": 0,
+          "max_all_query_score_error": 0.00268,
+          "compared_boxes": 0,
+          "max_box_coordinate_error": 0
+        },
+        "keyboard": {
+          "max_confidence_error": 0,
+          "max_all_query_score_error": 0.000108,
+          "compared_boxes": 0,
+          "max_box_coordinate_error": 0
+        },
+        "chair": {
+          "max_confidence_error": 0.000802,
+          "max_all_query_score_error": 0.030657,
+          "compared_boxes": 1,
+          "max_box_coordinate_error": 4.7e-05
+        }
+      }
+    },
+    {
+      "device": "NVIDIA Thor",
+      "device_type": "cuda",
+      "torch": "2.8.0a0+34c6371d24.nv25.08",
+      "torch_compile": true,
+      "cuda_graph": true,
+      "accuracy_policy": "enforced",
+      "preprocess_validation": {
+        "bitwise_equal": true,
+        "backend": "compiled-uint8-lut"
+      },
+      "batch_size": 1,
+      "prompts": 4,
+      "latency_ms": 158,
+      "timing": {
+        "preprocess_ms": 24.6,
+        "cpu_prepare_ms": 23.96,
+        "prompt_setup_ms": 0.04,
+        "image_encoder_ms": 95.77,
+        "grounding_ms": 60.32,
+        "postprocess_ms": 1.56,
+        "annotation_ms": 29.47,
+        "worker_total_ms": 211.97
+      },
+      "allocated_mb": 3701,
+      "reserved_mb": 4696,
+      "counts": [
+        3,
+        0,
+        0,
+        1
+      ],
+      "validation": {
+        "person": {
+          "max_confidence_error": 0.000525,
+          "max_all_query_score_error": 0.005488,
+          "compared_boxes": 3,
+          "max_box_coordinate_error": 4.4e-05
+        },
+        "computer monitor": {
+          "max_confidence_error": 0,
+          "max_all_query_score_error": 0.00268,
+          "compared_boxes": 0,
+          "max_box_coordinate_error": 0
+        },
+        "keyboard": {
+          "max_confidence_error": 0,
+          "max_all_query_score_error": 0.000108,
+          "compared_boxes": 0,
+          "max_box_coordinate_error": 0
+        },
+        "chair": {
+          "max_confidence_error": 0.000802,
+          "max_all_query_score_error": 0.030657,
+          "compared_boxes": 1,
+          "max_box_coordinate_error": 4.7e-05
+        }
+      }
+    }
+  ],
+  "changed_image_and_prompts": {
+    "chair": {
+      "max_confidence_error": 0.001112,
+      "max_all_query_score_error": 0.051987,
+      "compared_boxes": 2,
+      "max_box_coordinate_error": 2.6e-05
+    },
+    "person": {
+      "max_confidence_error": 0.006182,
+      "max_all_query_score_error": 0.030652,
+      "compared_boxes": 3,
+      "max_box_coordinate_error": 0.000366
+    },
+    "bottle": {
+      "max_confidence_error": 0,
+      "max_all_query_score_error": 0.000362,
+      "compared_boxes": 0,
+      "max_box_coordinate_error": 0
+    }
+  },
+  "shared_features_verified": true
+}

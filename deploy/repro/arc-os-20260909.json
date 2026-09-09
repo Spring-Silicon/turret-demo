@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "observed_on": "spring-edge-turret",
+  "source_repository": "https://github.com/Spring-Silicon/edge-image",
+  "source_commit": "3899c012a859d7d07fefc6561044999c6d3cbbd1",
+  "image_version": "0.1.2",
+  "profile": "base",
+  "storage_mode": "production-512",
+  "build_time_utc": "2026-09-07T16:20:08Z",
+  "ubuntu_iso": "ubuntu-24.04.4-desktop-amd64.iso",
+  "ubuntu_iso_sha256": "3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e",
+  "cpu": "AMD Ryzen 5 4500 6-Core Processor",
+  "gpu": "Intel Arc B580",
+  "gpu_pci_id": "8086:e20b",
+  "gpu_subsystem_id": "1849:6021",
+  "gpu_kernel_driver": "xe",
+  "gpu_prefetchable_bar_bytes": 17179869184,
+  "private_foundation_directory": "/home/spring/recovery-20260909-arc-base",
+  "files_sha256": {
+    "build-metadata.json": "6f97f94ebd3794be3ad7f210e211eadeef952fdd6b0e196b333d75c3dbe9678f",
+    "ota-keyring.pem": "7514e9246eb822822bdf50924053e9a221c1c9ffa8e7203f45b0c2153aa1261b",
+    "spring-edge-image": "8507bc54cc276dcdb0bdcd55447bc2d9a9cb420329c6371577485f1f07e490f8",
+    "spring-graphs-runtime-intel_0.1.0+20260904.2.g58c3d974b967_amd64.deb": "99d66aba3ed3af85d9d46a79223afba45ca8077f6c913fa691ad11a8f6fd38d3",
+    "versions.yaml": "881bbe41542991432b7e0f369da09ede525bc7752e3e7538a86ac9b04a296693"
+  },
+  "note": "OS provenance and build inputs, not an ISO backup or a new OS build validation. Login credentials and private signing keys are excluded."
+}

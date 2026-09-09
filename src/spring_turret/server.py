@@ -7,6 +7,8 @@ import argparse
 import base64
 import json
 import logging
+import os
+import selectors
 import signal
 import subprocess
 import threading
@@ -33,6 +35,18 @@ LOGGER = logging.getLogger("spring-turret")
 JPEG_START = b"\xff\xd8"
 JPEG_END = b"\xff\xd9"
 MAX_JSON_BYTES = 4096
+COMMAND_FIELDS = {
+    "/api/detection/model": {"model"},
+    "/api/detection/prompts": {"prompts"},
+    "/api/detection/prompt": {"prompt"},
+    "/api/tracking/target": {"target"},
+    "/api/tracking/instance": {"revision", "frame_sequence", "instance_id"},
+    "/api/servo/arm": None,
+    "/api/servo/disable": None,
+    "/api/servo/recalibrate": set(),
+    "/api/servo/keepalive": None,
+    "/api/servo/position": {"axis", "degrees"},
+}
 
 
 def extract_jpeg_frames(buffer: bytes) -> tuple[list[bytes], bytes]:
@@ -87,6 +101,7 @@ class CameraStream:
         self.latest_monotonic = 0.0
         self.error = "camera has not started"
         self.identity = None
+        self.connection_generation = 0
         self.process: subprocess.Popen[bytes] | None = None
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="camera", daemon=True)
@@ -108,6 +123,7 @@ class CameraStream:
     def _set_error(self, message: str) -> None:
         with self.condition:
             self.error = message
+            self.latest_frame = None
             self.condition.notify_all()
 
     def _pipeline(self) -> list[str]:
@@ -148,26 +164,32 @@ class CameraStream:
                 )
                 with self.condition:
                     self.process = process
+                    self.connection_generation += 1
                 if process.stdout is None:
                     raise DeviceUnavailable("camera process has no output stream")
                 buffer = b""
-                while not self.stop_event.is_set():
-                    chunk = process.stdout.read1(65536)
-                    if not chunk:
-                        raise DeviceUnavailable(
-                            f"camera pipeline exited with status {process.poll()}"
-                        )
-                    buffer += chunk
-                    frames, buffer = extract_jpeg_frames(buffer)
-                    if len(buffer) > 8 * 1024 * 1024:
-                        buffer = buffer[-2:]
-                    for frame in frames:
-                        with self.condition:
-                            self.latest_frame = frame
-                            self.latest_sequence += 1
-                            self.latest_monotonic = time.monotonic()
-                            self.error = ""
-                            self.condition.notify_all()
+                last_frame_at = time.monotonic()
+                with selectors.DefaultSelector() as selector:
+                    selector.register(process.stdout, selectors.EVENT_READ)
+                    while not self.stop_event.is_set():
+                        if time.monotonic() - last_frame_at > 5:
+                            raise DeviceUnavailable("camera stalled; reconnecting capture")
+                        if not selector.select(.25):
+                            continue
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            raise DeviceUnavailable(f"camera pipeline exited with status {process.poll()}")
+                        buffer += chunk
+                        frames, buffer = extract_jpeg_frames(buffer)
+                        if len(buffer) > 8 * 1024 * 1024:
+                            buffer = buffer[-2:]
+                        for frame in frames:
+                            with self.condition:
+                                self.latest_frame = frame
+                                self.latest_sequence += 1
+                                self.latest_monotonic = last_frame_at = time.monotonic()
+                                self.error = ""
+                                self.condition.notify_all()
             except (OSError, TurretError) as error:
                 self._set_error(str(error))
             finally:
@@ -179,6 +201,9 @@ class CameraStream:
                         process.wait(timeout=2)
                     except subprocess.TimeoutExpired:
                         process.kill()
+                        process.wait(timeout=2)
+                if process is not None and process.stdout is not None:
+                    process.stdout.close()
                 self.stop_event.wait(restart_delay)
 
     def wait_for_frame(
@@ -209,9 +234,10 @@ class CameraStream:
                 else None
             )
             return {
-                "online": age is not None and age < 3,
+                "online": not self.error and age is not None and age < 3,
                 "device": self.config["device"],
                 "identity": self.identity,
+                "connection_generation": self.connection_generation,
                 "width": int(self.config["width"]),
                 "height": int(self.config["height"]),
                 "framerate": int(self.config["framerate"]),
@@ -260,13 +286,37 @@ class TurretApplication:
             "tracking": self.tracking.status(),
         }
 
+    def command(self, path: str, body: dict) -> dict:
+        """Explicit command boundary, shared by local tests and private IPC."""
+        if path not in COMMAND_FIELDS or not isinstance(body, dict):
+            raise ValueError("Unknown command or invalid body")
+        fields = COMMAND_FIELDS[path]
+        if fields is not None and set(body) != fields:
+            raise ValueError("body must contain only " + ", ".join(sorted(fields)))
+        if path == "/api/detection/model": self.tracking.set_model(body["model"])
+        elif path == "/api/detection/prompts": self.tracking.set_prompts(body["prompts"])
+        elif path == "/api/detection/prompt": self.tracking.set_prompts([body["prompt"]])
+        elif path == "/api/tracking/target": self.tracking.set_target(body["target"])
+        elif path == "/api/tracking/instance":
+            self.tracking.set_instance(body["revision"], body["frame_sequence"], body["instance_id"])
+        elif path == "/api/servo/arm": self.tracking.arm()
+        elif path == "/api/servo/disable": self.tracking.disable()
+        elif path == "/api/servo/recalibrate": self.tracking.recalibrate()
+        elif path == "/api/servo/keepalive": self.servo.keepalive()
+        elif path == "/api/servo/position": self.tracking.manual_move(body["axis"], body["degrees"])
+        return self.status()
+
 
 def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]:
     class TurretHandler(BaseHTTPRequestHandler):
         server_version = "SpringTurret/1"
 
         def log_message(self, format_string: str, *args: Any) -> None:
-            LOGGER.info("%s - %s", self.address_string(), format_string % args)
+            # Status/video reads can be frequent; keep command/error access
+            # logs visible without writing one journal entry for every poll.
+            quiet = self.command == "GET" and len(args) > 1 and str(args[1]) == "200"
+            log = LOGGER.debug if quiet else LOGGER.info
+            log("%s - %s", self.address_string(), format_string % args)
 
         def _security_headers(self) -> None:
             self.send_header("Cache-Control", "no-store")
@@ -358,6 +408,12 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
             try:
                 while not detector.stop_event.is_set():
                     detector.wait_for_update(previous, 1)
+                    if hasattr(detector, "event"):
+                        current, payload = detector.event(previous)
+                        self.wfile.write(payload)
+                        self.wfile.flush()
+                        previous = current
+                        continue
                     with detector.condition:
                         metadata = detector.status()
                         current = (metadata["revision"], metadata.get("frame_sequence"))
@@ -408,50 +464,12 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
+            if path not in COMMAND_FIELDS:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             try:
-                if path == "/api/detection/model":
-                    body = self._request_json()
-                    if set(body) != {"model"}:
-                        raise ValueError("body must contain only model")
-                    application.tracking.set_model(body["model"])
-                elif path == "/api/detection/prompts":
-                    body = self._request_json()
-                    if set(body) != {"prompts"}:
-                        raise ValueError("body must contain only prompts")
-                    application.tracking.set_prompts(body["prompts"])
-                elif path == "/api/detection/prompt":
-                    body = self._request_json()
-                    if set(body) != {"prompt"}:
-                        raise ValueError("body must contain only prompt")
-                    application.tracking.set_prompts([body["prompt"]])
-                elif path == "/api/tracking/target":
-                    body = self._request_json()
-                    if set(body) != {"target"}:
-                        raise ValueError("body must contain only target")
-                    application.tracking.set_target(body["target"])
-                elif path == "/api/tracking/instance":
-                    body = self._request_json()
-                    if set(body) != {"revision", "frame_sequence", "instance_id"}:
-                        raise ValueError("body must contain only revision, frame_sequence and instance_id")
-                    application.tracking.set_instance(body["revision"], body["frame_sequence"], body["instance_id"])
-                elif path == "/api/servo/arm":
-                    application.tracking.arm()
-                elif path == "/api/servo/disable":
-                    application.tracking.disable()
-                elif path == "/api/servo/recalibrate":
-                    if self._request_json() != {}:
-                        raise ValueError("recalibrate body must be empty; zeros are read from the servos")
-                    application.tracking.recalibrate()
-                elif path == "/api/servo/keepalive":
-                    application.servo.keepalive()
-                elif path == "/api/servo/position":
-                    body = self._request_json()
-                    if set(body) != {"axis", "degrees"}:
-                        raise ValueError("body must contain only axis and degrees")
-                    application.tracking.manual_move(body["axis"], body["degrees"])
-                else:
-                    self.send_error(HTTPStatus.NOT_FOUND)
-                    return
+                body = {} if COMMAND_FIELDS[path] is None else self._request_json()
+                result = application.command(path, body)
             except ServoDisarmed as error:
                 self._json(HTTPStatus.CONFLICT, {"error": str(error)})
                 return
@@ -461,36 +479,30 @@ def make_handler(application: TurretApplication) -> type[BaseHTTPRequestHandler]
             except (TypeError, ValueError, json.JSONDecodeError) as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
-            self._json(HTTPStatus.OK, application.status())
+            self._json(HTTPStatus.OK, result)
 
     return TurretHandler
 
 
 def serve(config_path: Path) -> None:
+    from spring_turret.isolated import BackendRuntime
+
     config = load_config(config_path)
     application = TurretApplication(config)
-    server = ThreadingHTTPServer(
-        (config["listen"]["host"], int(config["listen"]["port"])),
-        make_handler(application),
-    )
-    server.daemon_threads = True
+    runtime = BackendRuntime(application)
 
     def request_shutdown(_signal: int, _frame: Any) -> None:
-        threading.Thread(target=server.shutdown, daemon=True).start()
+        runtime.stop_event.set()
 
     signal.signal(signal.SIGTERM, request_shutdown)
     signal.signal(signal.SIGINT, request_shutdown)
-    application.start()
     try:
-        LOGGER.info(
-            "turret demo listening on %s:%s",
-            config["listen"]["host"],
-            config["listen"]["port"],
-        )
-        server.serve_forever(poll_interval=0.5)
+        application.start()
+        runtime.run()
     finally:
-        server.server_close()
+        runtime.stop_event.set()
         application.stop()
+        runtime.close()
 
 
 def main() -> None:

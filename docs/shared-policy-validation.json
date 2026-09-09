@@ -1,0 +1,108 @@
+{
+  "policy_version": "sam-shared-v1",
+  "date_utc": "2026-09-09",
+  "arc": "spring-edge-turret",
+  "thor": "agxthor-5",
+  "shared_modules_hash_matched": 26,
+  "final_thor_image": "sha256:5f693081a6025e46bbe0ecf19d21ad268b9eb191bbeb77c0553cdd30cc867b6a",
+  "samples": {
+    "arc": [
+      {
+        "model": "sam3.1",
+        "samples": 15,
+        "latency_ms": 66,
+        "cycle_ms": 67.945,
+        "boxes": 0,
+        "backend": "sleepy-w4a4-map20-frozen",
+        "compile": true,
+        "graph": "sycl",
+        "track_retention": null
+      },
+      {
+        "model": "sam3.1-tracking",
+        "samples": 75,
+        "latency_ms": 42,
+        "cycle_ms": 45.065,
+        "boxes": 0,
+        "backend": "israel-native672-v24-temporal",
+        "compile": true,
+        "graph": "sycl",
+        "track_retention": {
+          "seconds": 5,
+          "minimum_missing_frames": 16
+        }
+      },
+      {
+        "model": "sam3.1-mask",
+        "samples": 15,
+        "latency_ms": 63.5,
+        "cycle_ms": 68.345,
+        "boxes": 0,
+        "backend": "sleepy-w4a4-w8a8-skip4-mask-tiled",
+        "compile": true,
+        "graph": "sycl",
+        "track_retention": null
+      }
+    ],
+    "thor": [
+      {
+        "model": "sam3.1",
+        "samples": 15,
+        "latency_ms": 113,
+        "cycle_ms": 138.36,
+        "boxes": 0,
+        "backend": "torch.compile",
+        "compile": true,
+        "graph": "cuda",
+        "track_retention": null
+      },
+      {
+        "model": "sam3.1-tracking",
+        "samples": 75,
+        "latency_ms": 228,
+        "cycle_ms": 234.44,
+        "boxes": 1,
+        "backend": "sam31-dense-bf16-temporal",
+        "compile": true,
+        "graph": "cuda",
+        "track_retention": {
+          "seconds": 5,
+          "minimum_missing_frames": 16
+        }
+      },
+      {
+        "model": "sam3.1-mask",
+        "samples": 15,
+        "latency_ms": 112,
+        "cycle_ms": 133.57999999999998,
+        "boxes": 0,
+        "backend": "sam31-mask-torch-cuda",
+        "compile": true,
+        "graph": "cuda",
+        "track_retention": null
+      }
+    ]
+  },
+  "caveats": [
+    "Live smoke checks, not controlled comparative benchmarks; camera scenes and detected object counts differ.",
+    "Arc temporal check had zero visible objects; model accuracy and full occlusion/reacquisition quality were not requalified.",
+    "CPU regression traces cover nonempty masks, click selection, temporal ID holding, retirement, session changes and motor commands for both implementations.",
+    "Thor full profile matrix preceded the final graceful-drain patch; final image passed Mask reload/API/SSE checks. Arc full matrix used the final patch.",
+    "Mac validation skips Torch-dependent numeric tests. Exact CPU mask-output/centroid/PNG checks also passed on Arc's inference environment."
+  ],
+  "preserved": {
+    "arc_zeros": {
+      "x": 1005,
+      "y": 22
+    },
+    "thor_zeros": {
+      "x": 1991,
+      "y": 4061
+    },
+    "model_bundles": true,
+    "calibration": true,
+    "armed": true,
+    "thor_link": "192.168.249.2 via enp7s0 from 192.168.249.1"
+  },
+  "recovery": "Initial Arc worker termination triggered an Intel xe GPU fault. Recovered with a fresh worker, without reboot. Added shared inference drain/EOF shutdown and bounded cancelled-receive handling; rerun showed no new kernel GPU faults."
+}

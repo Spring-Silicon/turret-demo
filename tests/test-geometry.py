@@ -1,12 +1,17 @@
 """Synthetic known-ray checks, independent of the scene fitting optimizer."""
 import copy
 import math
+import os
 import random
+import stat
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"src"))
-from spring_turret.geometry import Geometry, body_ray, transform
+from spring_turret.geometry import Geometry, body_ray, transform, usb_identity, bounded_pointing, dot
 from spring_turret.instances import InstanceAssociator
 
 def fixture():
@@ -24,6 +29,25 @@ def pose(x=0,y=0):
 
 class GeometryTests(unittest.TestCase):
     def setUp(self): self.g=Geometry(fixture())
+
+    def test_usb_identity_uses_device_number_not_container_alias_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = root / "usb"
+            device = usb / "interface"
+            device.mkdir(parents=True)
+            for key, value in {"idVendor":"0c45", "idProduct":"0261", "serial":"UC684"}.items():
+                (usb/key).write_text(value)
+            char = root/"char"/"81:2"
+            char.mkdir(parents=True)
+            (char/"device").symlink_to(device)
+            node = SimpleNamespace(stat=lambda:SimpleNamespace(st_mode=stat.S_IFCHR, st_rdev=os.makedev(81,2)))
+            def path(value):
+                return node if value == "/dev/camera-alias" else root/"char" if value == "/sys/dev/char" else Path(value)
+            with patch("spring_turret.geometry.Path", side_effect=path):
+                self.assertEqual(usb_identity("/dev/camera-alias"), "0c45:0261:UC684")
+            self.assertIsNone(usb_identity(str(usb/"serial")))
+            self.assertIsNone(usb_identity(str(root/"missing")))
 
     def test_pixel_ray_roundtrip_full_frame(self):
         for u in range(0,1281,80):
@@ -54,6 +78,65 @@ class GeometryTests(unittest.TestCase):
         goal=self.g.goals(640,360,before,before)
         self.assertAlmostEqual(goal["x"],33,places=6)
         self.assertAlmostEqual(goal["y"],47,places=6)
+
+    def test_infeasible_nearest_branch_does_not_hide_reachable_alternative(self):
+        before=pose(-79,-83)
+        for axis in before['axes'].values():
+            axis.update(min_degrees=-90,max_degrees=90)
+        result=self.g.solve(1270,568,before,before)
+        self.assertFalse(result['limited'])
+        self.assertTrue(all(-90<=q<=90 for q in result['goals'].values()))
+        self.assertLess(math.dist(self.g.reproject(1270,568,before,pose(**result['goals'])),[640,360]),1e-5)
+
+    def test_unreachable_target_optimizes_both_axes_inside_bounds(self):
+        center=[0.,0.,1.]
+        world=body_ray(center,120,40)
+        (pan,tilt),error=bounded_pointing(world,center,(0,0),[(-45,45),(-60,60)])
+        self.assertAlmostEqual(pan,45)
+        self.assertAlmostEqual(tilt,60)
+        old=math.degrees(math.acos(dot(world,body_ray(center,45,40))))
+        self.assertLess(error,old-3)
+
+    def test_bounded_solution_dominates_dense_grid_for_random_mounts_and_bounds(self):
+        rng=random.Random(51)
+        for _ in range(60):
+            center=body_ray([0,0,1],rng.uniform(-15,15),rng.uniform(-15,15))
+            world=body_ray([0,0,1],rng.uniform(-180,180),rng.uniform(-90,90))
+            bounds=[sorted([rng.uniform(-160,160),rng.uniform(-160,160)]) for _ in range(2)]
+            current=[rng.uniform(-180,180),rng.uniform(-180,180)]
+            q,error=bounded_pointing(world,center,current,bounds)
+            self.assertTrue(all(lo-1e-9<=v<=hi+1e-9 for v,(lo,hi) in zip(q,bounds)))
+            score=dot(world,body_ray(center,*q))
+            for i in range(13):
+                for j in range(13):
+                    sample=[lo+(hi-lo)*n/12 for n,(lo,hi) in zip((i,j),bounds)]
+                    self.assertGreaterEqual(score+1e-10,dot(world,body_ray(center,*sample)))
+
+    def test_pole_ties_preserve_pan_and_periodic_equivalents_are_considered(self):
+        q,error=bounded_pointing([0,-1,0],[0,0,1],(31,89),[(-90,90),(-90,90)])
+        self.assertAlmostEqual(q[0],31)
+        self.assertAlmostEqual(q[1],90)
+        self.assertLess(error,1e-5)
+        q,error=bounded_pointing(body_ray([0,0,1],-170,10),[0,0,1],(190,10),[(170,210),(-20,20)])
+        self.assertAlmostEqual(q[0],190)
+        self.assertAlmostEqual(q[1],10)
+        self.assertLess(error,1e-5)
+        # Degenerate side-facing optical ray: tilt cannot change the aim, so
+        # do not move tilt needlessly while finding the best pan.
+        q,error=bounded_pointing(body_ray([1,0,0],20,0),[1,0,0],(0,7),[(-90,90),(-10,10)])
+        self.assertAlmostEqual(q[0],20)
+        self.assertAlmostEqual(q[1],7)
+
+    def test_reversed_axes_and_recalibrated_zero_keep_hardware_bounds(self):
+        d=fixture(); d['tracking_directions']={'x':-1,'y':1}
+        g=Geometry(d)
+        before=pose(10,-20)
+        before['axes']['x']['origin']+=100
+        for axis in before['axes'].values():
+            axis.update(min_degrees=-30,max_degrees=30)
+        result=g.solve(1200,650,before,before)
+        self.assertTrue(result['limited'])
+        self.assertTrue(all(-30-1e-10<=q<=30+1e-10 for q in result['goals'].values()))
 
     def test_zero_recalibration_preserves_physical_geometry_including_rollover(self):
         old=pose(10,-20)

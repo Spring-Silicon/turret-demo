@@ -1,0 +1,8 @@
+{
+  "results/turret_megakernel/engine_only_retained_cast_cached_config.json": "b7a9fa2c6fb283f8060c005cd9b6d5a3a6604a5e4c98b1c3dea749479be56539",
+  "scripts/turret_megakernel/megakernel_design_head_cast_cache_v3.py": "199f32fdd8adbcdac193094918a54c14ea920eeb6b136822f33b57e4cdf4832d",
+  "results/turret_megakernel/cast_cached_engine_summary.json": "8318c0a21492b485831d7ffec26a20073457f224bcd68cd27230a2e64718790e",
+  "results/turret_megakernel/megakernel_design_head_cast_two_device_summary_v1.json": "b42367d96947340a721d70bdf0b7b326ab9395db0fd7f4f9fa6403a2d55ee578",
+  "results/turret_megakernel/engine_roofline_cast_cache_isa_audit_gpu1_v1.json": "a7a9ef7924ee0b7cfe06d8b2ff7d62022f755540aef65b61f5b9752cf8be1aca",
+  "results/turret_megakernel/accuracy_head_cast_cache_cpu_review.json": "8a6af2f451a0754c53c38fdf31113080fd653f198cab5da329c3a7f2540bc905"
+}

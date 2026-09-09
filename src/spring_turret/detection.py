@@ -9,7 +9,6 @@ import os
 import selectors
 import signal
 import subprocess
-import tempfile
 import threading
 import time
 from collections import OrderedDict
@@ -18,8 +17,49 @@ from typing import Any
 
 from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
-from spring_turret.models import MODELS, model_prompts
+from spring_turret.models import MODELS, model_available, model_prompts
 from spring_turret.worker_protocol import JPEG_BYTES, encode_request
+from spring_turret.tracking_masks import valid_mask_centroid
+from spring_turret.api_contract import API_VERSION, detection_result
+from spring_turret.hardware import inference_runtime
+
+
+def validate_tracking_result(result, prompts):
+    """The temporal mode has a distinct, honest contract from compiled detectors."""
+    def valid_id(value):
+        return type(value) is int and 0 <= value < 2**53
+    if (result.get("temporal_tracking") is not True
+            or result.get("tracking_backend") != "sam31-object-multiplex"
+            or type(result.get("tracking_frame")) is not int or result["tracking_frame"] < 1
+            or type(result.get("memory_frames")) is not int or result["memory_frames"] < 0):
+        raise RuntimeError("Worker did not verify SAM temporal tracking")
+    active = result.get("active_instance_ids")
+    if not isinstance(active, list) or not all(map(valid_id, active)) or len(set(active)) != len(active):
+        raise RuntimeError("Tracker returned invalid active object IDs")
+    retired = result.get("retired_instance_ids", [])
+    if (not isinstance(retired, list) or not all(map(valid_id, retired))
+            or len(set(retired)) != len(retired) or set(retired).intersection(active)):
+        raise RuntimeError("Tracker returned invalid retired object IDs")
+    dropped = result.get("dropped_objects", 0)
+    if type(dropped) is not int or dropped < 0:
+        raise RuntimeError("Tracker returned invalid capacity diagnostics")
+    boxes, seen = result.get("boxes"), set()
+    if not isinstance(boxes, list):
+        raise RuntimeError("Tracker returned invalid boxes")
+    for box in boxes:
+        if not isinstance(box, dict):
+            raise RuntimeError("Tracker returned invalid box")
+        instance_id, coords, score = box.get("instance_id"), box.get("xyxy"), box.get("score")
+        if (not valid_id(instance_id) or instance_id not in active or instance_id in seen
+                or box.get("prompt") not in prompts
+                or not isinstance(coords, list) or len(coords) != 4
+                or any(type(v) not in (float, int) or not math.isfinite(v) or not 0 <= v <= 1 for v in coords)
+                or not coords[0] < coords[2] or not coords[1] < coords[3]
+                or type(score) not in (float, int) or not math.isfinite(score) or not 0 <= score <= 1):
+            raise RuntimeError("Tracker returned invalid object geometry or identity")
+        seen.add(instance_id)
+        if box.get("mask_centroid") is not None and not valid_mask_centroid(box["mask_centroid"]):
+            raise RuntimeError("Tracker returned an invalid mask centroid")
 
 
 def validate_config(config: dict[str, Any]) -> None:
@@ -33,11 +73,28 @@ def validate_config(config: dict[str, Any]) -> None:
         if not Path(config.get(key, "")).is_absolute():
             raise ValueError(f"inference.{key} must be an absolute path")
     if config.get("model", "sam3.1") not in MODELS:
-        raise ValueError("inference.model must be sam3.1 or yolo26x")
-    if "yolo26x_checkpoint" in config and not Path(config["yolo26x_checkpoint"]).is_absolute():
-        raise ValueError("inference.yolo26x_checkpoint must be an absolute path")
-    if config.get("model") == "yolo26x" and not config.get("yolo26x_checkpoint"):
-        raise ValueError("inference.yolo26x_checkpoint is required for YOLO26x")
+        raise ValueError("inference.model must be one of " + ", ".join(MODELS))
+    if "sam31_mask_bundle" in config:
+        path = config["sam31_mask_bundle"]
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError("inference.sam31_mask_bundle must be an absolute path")
+        if config.get("device_type", "xpu") != "xpu":
+            raise ValueError("Native mask bundle requires XPU")
+    if config.get("model") == "sam3.1-mask" and not model_available("sam3.1-mask", config):
+        raise ValueError("SAM3.1 mask requires a mask bundle on XPU")
+    if "sam31_tracking_bundle" in config and (not isinstance(config["sam31_tracking_bundle"], str)
+            or not Path(config["sam31_tracking_bundle"]).is_absolute()):
+        raise ValueError("inference.sam31_tracking_bundle must be an absolute path")
+    if "sam31_tracking_native_bundle" in config:
+        path = config["sam31_tracking_native_bundle"]
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError("inference.sam31_tracking_native_bundle must be an absolute path")
+        if config.get("device_type", "xpu") != "xpu" or not config.get("sam31_tracking_bundle"):
+            raise ValueError("Native tracking requires XPU and a tracking source bundle")
+    if config.get("model") == "sam3.1-tracking" and not model_available("sam3.1-tracking", config):
+        raise ValueError("SAM 3.1 Tracking requires a tracking source bundle and XPU or CUDA")
+    if "yolo26x_checkpoint" in config:
+        raise ValueError("YOLO support was removed; remove inference.yolo26x_checkpoint")
     if not 0 < float(config.get("confidence", 0.5)) < 1:
         raise ValueError("inference.confidence must be between zero and one")
     fps = config.get("max_fps", 0)
@@ -45,15 +102,25 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("inference.max_fps must be 0 (uncapped) or between 0.1 and 30")
     if config.get("precision", "float16") not in ("float16", "bfloat16"):
         raise ValueError("inference.precision must be float16 or bfloat16")
+    if config.get("device_type", "xpu") not in ("xpu", "cuda"):
+        raise ValueError("inference.device_type must be xpu or cuda")
+    if config.get("device_type") == "cuda":
+        if config.get("sam31_native_bundle") or config.get("sam31_w8a8_development_bundle"):
+            raise ValueError("Intel native/W8A8 bundles require XPU")
     if type(config.get("sam31_cpu_prefetch", True)) is not bool:
         raise ValueError("inference.sam31_cpu_prefetch must be a boolean")
-    if "sam31_native_bundle" in config and "sam31_w8a8_development_bundle" in config:
+    if sum(key in config for key in ("sam31_native_bundle", "sam31_w8a8_development_bundle", "sam31_w4a4_bundle")) > 1:
         raise ValueError("Select only one SAM image bundle")
+    tradeoff = config.get("sam31_allow_w4a4_accuracy_tradeoff", False)
+    if type(tradeoff) is not bool or bool(config.get("sam31_w4a4_bundle")) != tradeoff:
+        raise ValueError("W4A4 requires an explicit bundle and accuracy-tradeoff opt-in")
+    if config.get("sam31_w4a4_bundle") and config.get("device_type", "xpu") != "xpu":
+        raise ValueError("W4A4 requires Intel XPU")
     if type(config.get("sam31_allow_unqualified_w8a8", False)) is not bool:
         raise ValueError("inference.sam31_allow_unqualified_w8a8 must be a boolean")
     if config.get("sam31_allow_unqualified_w8a8") and not config.get("sam31_w8a8_development_bundle"):
         raise ValueError("Unqualified execution requires a W8A8 development bundle")
-    for key in ("sam31_native_bundle", "sam31_w8a8_development_bundle"):
+    for key in ("sam31_native_bundle", "sam31_w8a8_development_bundle", "sam31_w4a4_bundle"):
         if key in config:
             if not isinstance(config[key], str) or not Path(config[key]).is_absolute():
                 raise ValueError(f"inference.{key} must be an absolute path")
@@ -69,93 +136,43 @@ class WorkerClient:
         self.process: subprocess.Popen | None = None
         self.pending = b""
         self.cancelled = threading.Event()
+        self.cancel_requested_at: float | None = None
         self.native_temp: Any = None
         self.request_transport = "json-base64"
         self.prefetch_supported = False
         self.previous_prompts = None
 
     def launch(self) -> None:
-        from .sam31_w8a8 import packed_profile, verify_graphics
-        sam_bundle = self.config.get("sam31_w8a8_development_bundle")
-        packed = (self.config.get("model", "sam3.1") == "sam3.1" and sam_bundle is not None
-                  and packed_profile(Path(sam_bundle)))
-        cache = Path(self.config["cache_dir"])
-        if self.config.get("model") == "yolo26x":
-            cache /= "yolo26x"
-        elif self.config.get("sam31_w8a8_development_bundle"):
-            cache /= "sam31-israel-w8a8-packed" if packed else "sam31-israel-w8a8"
-        elif self.config.get("sam31_native_bundle"):
-            cache /= "sam31-native"
-        cache.mkdir(parents=True, exist_ok=True)
-        (cache / "ultralytics").mkdir(exist_ok=True)
-        env = {
-            **os.environ,
-            "OMP_NUM_THREADS": "4",
-            "TORCHINDUCTOR_COMPILE_THREADS": "2",
-            "TORCHINDUCTOR_CACHE_DIR": str(cache / "inductor"),
-            "TRITON_CACHE_DIR": str(cache / "triton"),
-            "XDG_CACHE_HOME": str(cache),
-            "YOLO_CONFIG_DIR": str(cache / "ultralytics"),
-            "YOLO_AUTOINSTALL": "false",
-            "YOLO_OFFLINE": "true",
-        }
-        if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_w8a8_development_bundle"):
-            # Custom ops use Torch's SYCL ABI, not the dense graphs runner's
-            # isolated oneAPI runtime. No system-wide library changes.
-            env["LD_LIBRARY_PATH"] = str(Path(self.config["python"]).parent.parent / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
-            if packed:
-                env["LD_LIBRARY_PATH"] = str(verify_graphics(Path(sam_bundle))) + ":" + env["LD_LIBRARY_PATH"]
-        if self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_native_bundle"):
-            # Parent-owned so an interrupted/killed compile cannot leak shared
-            # buffers in /dev/shm. Each worker gets an isolated directory.
-            self.native_temp = tempfile.TemporaryDirectory(prefix="turret-native-", dir="/dev/shm")
-            env["SPRING_NATIVE_IPC_DIR"] = self.native_temp.name
+        if self.config.get("model", "sam3.1") not in MODELS:
+            raise ValueError("Unsupported inference model")
+        spec = inference_runtime(self.config).prepare()
+        self.native_temp = spec.temporary
         self.process = subprocess.Popen(
-            [
-                self.config["python"],
-                "-u",
-                str(Path(__file__).with_name(MODELS[self.config.get("model", "sam3.1")]["worker"])),
-                "--checkpoint",
-                self.config["checkpoint"],
-                "--device",
-                str(self.config.get("device", 0)),
-                "--precision",
-                self.config.get("precision", "float16"),
-                "--confidence",
-                str(self.config.get("confidence", 0.5)),
-                *(["--native-bundle", self.config["sam31_native_bundle"]]
-                  if self.config.get("model", "sam3.1") == "sam3.1"
-                  and self.config.get("sam31_native_bundle") else []),
-                *(["--w8a8-development-bundle", self.config["sam31_w8a8_development_bundle"]]
-                  if self.config.get("model", "sam3.1") == "sam3.1"
-                  and self.config.get("sam31_w8a8_development_bundle") else []),
-                *(["--allow-unqualified-w8a8"] if self.config.get("model", "sam3.1") == "sam3.1"
-                  and self.config.get("sam31_allow_unqualified_w8a8") else []),
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            env=env,
-            start_new_session=True,
-        )
+            spec.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            env=spec.environment, start_new_session=True)
         if self.cancelled.is_set():
             self.cancel()
 
     def cancel(self) -> None:
-        """Interrupt cold compilation without blocking the HTTP/tracking locks."""
+        """Request a bounded drain without signalling an in-flight GPU kernel."""
+        if self.cancel_requested_at is None:
+            self.cancel_requested_at = time.monotonic()
         self.cancelled.set()
-        process = self.process
-        if process and process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
 
     def receive(self, timeout: float, progress: Any = None, tick: Any = None) -> dict[str, Any]:
         assert self.process and self.process.stdout
         deadline = time.monotonic() + timeout
+        # Mask CPU preparation takes about 6 ms on Arc. A 5 ms camera check can
+        # delay most of that work until inference has already finished. This
+        # bounded check only submits new frames; it never substitutes an older
+        # prepared frame or changes the camera/inference scheduling policy.
+        poll_seconds = .001 if self.config.get("model") == "sam3.1-mask" else .005
         with selectors.DefaultSelector() as selector:
             selector.register(self.process.stdout, selectors.EVENT_READ)
             while True:
+                if (self.cancel_requested_at is not None
+                        and time.monotonic() - self.cancel_requested_at >= 2):
+                    raise RuntimeError("Model worker cancelled after drain timeout")
                 if b"\n" in self.pending:
                     line, self.pending = self.pending.split(b"\n", 1)
                     message = json.loads(line)
@@ -176,7 +193,7 @@ class WorkerClient:
                     raise TimeoutError(
                         "Model worker timed out; submit the prompt to retry"
                     )
-                if not selector.select(min(remaining, .005) if tick else remaining):
+                if not selector.select(min(remaining, poll_seconds if tick else .1)):
                     if tick:
                         tick()
                     continue
@@ -189,7 +206,7 @@ class WorkerClient:
 
     def detect(
         self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any,
-        *, prepared_token=None, prepare_next=None,
+        *, prepared_token=None, prepare_next=None, session_revision=None, captured_at=None, camera_identity=None,
     ) -> dict[str, Any]:
         assert self.process and self.process.stdin
         body = {
@@ -198,6 +215,8 @@ class WorkerClient:
             "client_overlay": True,
             "prepared_token": prepared_token,
         }
+        if self.config.get("model") == "sam3.1-tracking":
+            body.update(session_revision=session_revision, captured_at=captured_at, camera_identity=camera_identity)
         self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
         self.process.stdin.flush()
         sent = 0
@@ -235,15 +254,25 @@ class WorkerClient:
         process = self.process
         if process is not None:
             if process.poll() is None:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                # EOF lets a completed worker synchronize and exit normally.
+                # Forced termination is only the fallback for stalled work.
+                if process.stdin and not process.stdin.closed:
+                    try:
+                        process.stdin.close()
+                    except (BrokenPipeError, OSError):
+                        pass
                 try:
                     process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.wait(timeout=3)
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=3)
             # Reap surviving descendants even if the worker itself exited early.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
@@ -273,12 +302,13 @@ class DetectionController:
         self.worker: Any = None
         self.prompts: list[str] = []
         self.model = config.get("model", "sam3.1")
-        self.saved_prompts = {"sam3.1": [], "yolo26x": ["person"]}
+        self.saved_prompts = {model: [] for model in MODELS}
         self.worker_model: str | None = None
         self.revision = 0
         self.sequence = 0
         self.state = "idle" if self.enabled else "disabled"
         self.error: str | None = None
+        self.progress_stage: str | None = None
         self.result: dict[str, Any] = {}
         self.completed_at = 0.0
         self.frames: OrderedDict[str, bytes] = OrderedDict()
@@ -292,10 +322,16 @@ class DetectionController:
         with self.condition:
             self.condition.notify_all()
             worker = self.worker
-        if worker:
-            worker.stop()
+        # The inference thread owns its worker. Let the current completed frame
+        # drain before its finally block closes/reaps the GPU process.
         if self.thread.is_alive():
             self.thread.join(timeout=5)
+        if self.thread.is_alive() and worker:
+            worker.cancel()
+            self.thread.join(timeout=10)
+        if self.thread.is_alive() and worker:
+            worker.stop()
+            self.thread.join(timeout=3)
 
     def set_prompt(self, prompt: Any) -> None:
         """Compatibility for the original single-category endpoint."""
@@ -315,13 +351,14 @@ class DetectionController:
             self.instances.clear()
             self.completed_at = 0
             self.error = None
+            self.progress_stage = None
             self.state = "loading" if self.prompts else "idle"
             self.condition.notify_all()
 
     def set_model(self, model: Any) -> None:
         if type(model) is not str or model not in MODELS:
-            raise ValueError("model must be sam3.1 or yolo26x")
-        if not self.enabled or (model == "yolo26x" and not self.config.get("yolo26x_checkpoint")):
+            raise ValueError("model must be one of " + ", ".join(MODELS))
+        if not model_available(model, self.config):
             raise ValueError(f"{MODELS[model]['label']} is not configured on this device")
         with self.condition:
             if model == self.model:
@@ -342,10 +379,11 @@ class DetectionController:
                 else None
             )
             return {
+                "api_version": API_VERSION,
                 "enabled": self.enabled,
+                "device_type": self.config.get("device_type", "xpu"),
                 "model": self.model,
-                "models": [{"id": key, "label": value["label"], "available": self.enabled and
-                            (key == "sam3.1" or bool(self.config.get("yolo26x_checkpoint")))}
+                "models": [{"id": key, "label": value["label"], "available": model_available(key, self.config)}
                            for key, value in MODELS.items()],
                 "classes": MODELS[self.model]["classes"],
                 "prompt": self.prompts[0] if len(self.prompts) == 1 else "",
@@ -354,9 +392,10 @@ class DetectionController:
                 "colors": COLORS,
                 "revision": self.revision,
                 "state": self.state,
+                "progress_stage": self.progress_stage,
                 "error": self.error,
                 "frame_age_ms": age,
-                **self.result,
+                **detection_result(self.result, self.config.get("device_type", "xpu")),
             }
 
     def frame(self, key: str) -> bytes | None:
@@ -364,16 +403,14 @@ class DetectionController:
             return self.frames.get(key)
 
     def _cache_frame(self, key: str, jpeg: bytes, boxes: list, captured_at: float) -> None:
-        """Called under condition; retain click metadata for the full freshness window."""
+        """Called under condition; retain bounded click metadata independent of age."""
         self.frames[key] = jpeg
         self.frame_selections[key] = {"boxes": boxes, "captured_at": captured_at}
         while len(self.frames) > 8:
             self.frames.popitem(last=False)
-        # JPEG eviction must not invalidate a fresh displayed frame at 30+ FPS.
-        # Metadata is tiny; its independent hard cap also bounds memory usage.
-        now = time.monotonic()
-        while self.frame_selections and (len(self.frame_selections) > 128 or
-                now - next(iter(self.frame_selections.values()))["captured_at"] > .75):
+        # JPEG eviction must not invalidate a displayed frame. Keep the latest
+        # 128 results even when inference itself takes longer than 750 ms.
+        while len(self.frame_selections) > 128:
             self.frame_selections.popitem(last=False)
 
     def selection(self, revision: int, sequence: int, instance_id: int) -> dict:
@@ -381,9 +418,8 @@ class DetectionController:
             raise ValueError("selection requires integer revision, frame_sequence and instance_id")
         with self.condition:
             frame = self.frame_selections.get(f"{revision}-{sequence}")
-            if (revision != self.revision or self.state != "running" or not frame or
-                    not 0 <= time.monotonic() - frame["captured_at"] <= .75):
-                raise ValueError("That camera frame is stale; click a box in a fresh frame")
+            if revision != self.revision or self.state != "running" or not frame:
+                raise ValueError("That camera frame is no longer available; click a displayed box")
             for box in frame["boxes"]:
                 if box["instance_id"] == instance_id:
                     return dict(box)
@@ -407,12 +443,19 @@ class DetectionController:
     def _progress(self, revision: int, stage: str) -> None:
         with self.condition:
             if revision == self.revision and self.prompts:
-                self.state = stage
+                self.progress_stage = stage
+                # A new temporal graph shape is work on the next frame, not a
+                # loss of the last completed result. Keep its JPEG/masks/IDs
+                # together; controllers still consume each frame only once.
+                if not (stage.startswith("compiling_tracker_") and self.result.get("frame_url")):
+                    self.state = stage
+                self.condition.notify_all()
 
     def _run(self) -> None:
         failed_revision = -1
         last_camera_sequence = 0
         prefetched = None
+        retry_at, retry_delay = 0.0, 2.0
         try:
             while not self.stop_event.is_set():
                 with self.condition:
@@ -420,12 +463,14 @@ class DetectionController:
                         lambda: (
                             self.stop_event.is_set()
                             or (self.worker is not None and self.worker_model != self.model)
-                            or (self.prompts and self.revision != failed_revision)
-                        )
+                            or (self.prompts and (self.revision != failed_revision or time.monotonic() >= retry_at))
+                        ), timeout=1
                     )
                     if self.stop_event.is_set():
                         break
                     prompts, revision, model = list(self.prompts), self.revision, self.model
+                    if revision == failed_revision and time.monotonic() < retry_at:
+                        continue
                 if self.worker is not None and self.worker_model != model:
                     self.worker.stop()  # Exit/reap the old process before allocating the new model.
                     with self.condition:
@@ -447,20 +492,10 @@ class DetectionController:
                     self.stop_event.wait(0.1)
                     continue
                 last_camera_sequence = sequence
-                # Use bounded encoder history to match this latest frame. Do not
-                # discard it just because a newer encoder poll has completed.
-                pose = self.pose_provider(captured_at) if self.pose_provider else None
                 started = time.monotonic()
-                # This is a receipt-time pose estimate, not a hardware exposure
-                # timestamp. Never associate a delayed camera frame with an old pose.
-                if pose and (not 0 <= captured_at - pose["sampled_at"] <= 0.1
-                             or pose.get("read_completed_at", pose["sampled_at"]) > captured_at):
-                    pose = None
                 try:
                     if self.worker is None:
                         worker_config = {**self.config, "model": model}
-                        if model == "yolo26x":
-                            worker_config["checkpoint"] = self.config["yolo26x_checkpoint"]
                         worker = self.worker_factory(worker_config)
                         with self.condition:
                             self.worker = worker
@@ -468,8 +503,13 @@ class DetectionController:
                         worker.launch()
                         if self.stop_event.is_set():
                             break
-                        if worker.receive(120).get("type") != "ready":
+                        # Cold checkpoint packing/compiler startup can exceed
+                        # two minutes on the edge CPU. This is not a per-frame
+                        # inference timeout; normal detection keeps its deadline.
+                        if worker.receive(600).get("type") != "ready":
                             raise RuntimeError("Model worker did not become ready")
+                        if time.monotonic() - captured_at > .1:
+                            continue  # Do not process a pre-load/reconnect image.
                     with self.condition:
                         if revision != self.revision:
                             continue
@@ -496,6 +536,13 @@ class DetectionController:
                             return prefetched
                     extra = ({"prepared_token":prepared_token, "prepare_next":prepare_next}
                              if getattr(self.worker, "prefetch_supported", False) else {})
+                    if model == "sam3.1-tracking":
+                        camera_state = self.camera.status()
+                        identity = camera_state.get("identity")
+                        if "connection_generation" in camera_state:
+                            identity = f"{identity}:{camera_state['connection_generation']}"
+                        extra.update(session_revision=revision, captured_at=captured_at,
+                                     camera_identity=identity)
                     result = self.worker.detect(
                         self.sequence,
                         jpeg,
@@ -503,11 +550,24 @@ class DetectionController:
                         lambda stage: self._progress(revision, stage),
                         **extra,
                     )
-                    if not result.get("torch_compile") or not result.get("sycl_graph"):
+                    graph_key = "cuda_graph" if self.config.get("device_type") == "cuda" else "sycl_graph"
+                    if model == "sam3.1-tracking":
+                        validate_tracking_result(result, prompts)
+                    elif result.get("torch_compile") is not True or result.get(graph_key) is not True:
                         raise RuntimeError(
-                            "Model worker did not verify compiled SYCL graph execution"
+                            f"Model worker did not verify compiled {graph_key} execution"
                         )
                     worker_done = time.monotonic()
+                    # Resolve the historical frame pose AFTER inference, when
+                    # checked encoder reads can bracket each axis at capture.
+                    # The provider must not return the current motor angles.
+                    pose = self.pose_provider(captured_at) if self.pose_provider else None
+                    if pose and (not 0 <= captured_at - pose["sampled_at"] <= 0.1
+                                 or (pose.get("read_completed_at", pose["sampled_at"]) > captured_at
+                                     and not (pose.get("interpolated") is True
+                                              and pose["sampled_at"] == captured_at))):
+                        pose = None
+                    pose_done = time.monotonic()
                     annotated = jpeg if result.get("client_overlay") is True else base64.b64decode(result.pop("jpeg"), validate=True)
                     result.pop("type", None)
                     result.pop("id", None)
@@ -515,7 +575,8 @@ class DetectionController:
                     with self.condition:
                         if revision != self.revision:
                             continue  # Never display boxes from an obsolete prompt.
-                        result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
+                        if model != "sam3.1-tracking":
+                            result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
                         self._cache_frame(key, annotated, result["boxes"], captured_at)
                         self.result = {
                             **result,
@@ -524,7 +585,7 @@ class DetectionController:
                             "captured_at": captured_at,
                             "frame_pose": pose,
                             "pipeline_timing": {
-                                "pose_ms": round((started-camera_ready)*1000, 2),
+                                "pose_ms": round((pose_done-worker_done)*1000, 2),
                                 "capture_wait_ms": round((camera_ready-cycle_started)*1000, 2),
                                 "worker_roundtrip_ms": round((worker_done-started)*1000, 2),
                                 "cycle_ms": round((time.monotonic()-cycle_started)*1000, 2),
@@ -532,12 +593,15 @@ class DetectionController:
                         }
                         self.completed_at = captured_at
                         self.state = "running"
+                        self.progress_stage = None
                         self.error = None
+                        retry_delay = 2.0
                         self.condition.notify_all()
                 except Exception as error:
                     with self.condition:
                         if revision == self.revision:
                             self.state, self.error = "error", str(error)
+                            self.progress_stage = None
                             self.result = {}
                             self.frames.clear()
                             self.frame_selections.clear()
@@ -547,6 +611,8 @@ class DetectionController:
                     if worker:
                         worker.stop()
                     failed_revision = revision
+                    retry_at = time.monotonic() + retry_delay
+                    retry_delay = min(30.0, retry_delay * 2)
                 delay = self._sampling_delay(time.monotonic() - started)
                 if delay:
                     self.stop_event.wait(delay)

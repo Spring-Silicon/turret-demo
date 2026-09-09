@@ -1,0 +1,18 @@
+[Unit]
+Description=Fullscreen Firefox for Arc and Thor demo
+Wants=spring-turret-frontend.service
+After=graphical-session.target spring-turret-frontend.service
+PartOf=graphical-session.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Firefox 147 can create an invisible kiosk window on Wayland (Mozilla 2014372).
+# Use the existing XWayland session for this app only; keep the desktop unchanged.
+Environment=MOZ_ENABLE_WAYLAND=0
+Environment=GDK_BACKEND=x11
+Environment=DISABLE_WAYLAND=1
+ExecStart=%h/.local/share/spring-turret-frontend/scripts/open-kiosk.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15

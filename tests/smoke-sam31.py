@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in XPU parity, cache/alias checks and batch benchmarks. No servo access."""
+"""Opt-in CUDA/XPU parity, cache/alias checks and benchmarks. No servo access."""
 
 import argparse
 import base64
@@ -39,7 +39,7 @@ def test_parity_gate(torch):
 
 def parity(engine, jpeg, prompts):
     torch = engine.torch
-    with torch.inference_mode(), torch.autocast("xpu", dtype=engine.dtype):
+    with torch.inference_mode(), torch.autocast(engine.device_type, dtype=engine.dtype):
         pixels = engine._pixels(jpeg)
         embeddings = engine._encode_prompts(prompts)
         actual = engine._run_heads(engine.image_stage(pixels), embeddings)
@@ -55,11 +55,14 @@ def parity(engine, jpeg, prompts):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--device-type", choices=("xpu", "cuda"), default="xpu")
     parser.add_argument("--image", type=Path)
     parser.add_argument("--camera", default="http://127.0.0.1:8080/stream.mjpg")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--batch-sizes", type=int, nargs="+", default=[1, 2, 4])
     parser.add_argument("--iterations", type=int, default=15)
+    parser.add_argument("--prompt-counts", type=int, nargs="+", default=[1, 2, 3, 4, 8])
+    parser.add_argument("--report", type=Path)
     parser.add_argument("--require-detections", action="store_true")
     args = parser.parse_args()
     import torch
@@ -76,7 +79,8 @@ def main():
                 if len(buffer) > 8 * 1024 * 1024:
                     raise RuntimeError("camera did not supply a JPEG")
             jpeg = buffer[buffer.index(b"\xff\xd8") : buffer.index(b"\xff\xd9") + 2]
-    engine = Sam31Engine(args.checkpoint, 0, "float16", 0.5, True, 1)
+    engine = Sam31Engine(args.checkpoint, 0, "float16", 0.5, True, 1, device_type=args.device_type)
+    reports = []
     prompts = ["person", "computer monitor", "keyboard", "chair"]
     for batch_size in args.batch_sizes:
         engine.grounding_batch_size = batch_size
@@ -84,7 +88,7 @@ def main():
         checks = parity(engine, jpeg, prompts)
         if args.require_detections:
             assert len([b for b in warm["boxes"] if b["prompt"] == "person"]) >= 2
-        for count in (1, 2, 3, 4, 8):
+        for count in args.prompt_counts:
             selected = (prompts + ["cup", "bottle", "hand", "table"])[:count]
             engine.detect_many(jpeg, selected)
             samples = []
@@ -96,35 +100,36 @@ def main():
                 result = engine.detect_many(jpeg, selected)
                 assert engine.image_stage.calls == before_image + 1
                 assert engine.text_stage.calls == before_text
-                assert result["text_cache_hit"] and result["sycl_graph"]
+                graph_key = "cuda_graph" if args.device_type == "cuda" else "sycl_graph"
+                assert result["text_cache_hit"] and result[graph_key]
                 assert len(result["categories"]) == count
                 assert [c["prompt"] for c in result["categories"]] == selected
                 assert all(
                     b["prompt"] == selected[b["prompt_index"]] for b in result["boxes"]
                 )
                 samples.append(result)
-            print(
-                json.dumps(
-                    {
-                        "batch_size": batch_size,
-                        "prompts": count,
-                        "latency_ms": statistics.median(
-                            r["latency_ms"] for r in samples
-                        ),
-                        "timing": {
-                            k: round(
-                                statistics.median(r["timing"][k] for r in samples), 2
-                            )
-                            for k in result["timing"]
-                        },
-                        "allocated_mb": round(torch.xpu.memory_allocated() / 1e6),
-                        "reserved_mb": round(torch.xpu.memory_reserved() / 1e6),
-                        "counts": [c["count"] for c in result["categories"]],
-                        "validation": checks,
-                    }
-                ),
-                flush=True,
-            )
+            report = {
+                "device": engine.runtime.get_device_name(),
+                "device_type": args.device_type,
+                "torch": torch.__version__,
+                "torch_compile": result["torch_compile"],
+                graph_key: result[graph_key],
+                "accuracy_policy": result["accuracy_policy"],
+                "preprocess_validation": result["preprocess_validation"],
+                "batch_size": batch_size,
+                "prompts": count,
+                "latency_ms": statistics.median(r["latency_ms"] for r in samples),
+                "timing": {
+                    k: round(statistics.median(r["timing"][k] for r in samples), 2)
+                    for k in result["timing"]
+                },
+                "allocated_mb": round(engine.runtime.memory_allocated() / 1e6),
+                "reserved_mb": round(engine.runtime.memory_reserved() / 1e6),
+                "counts": [c["count"] for c in result["categories"]],
+                "validation": checks,
+            }
+            reports.append(report)
+            print(json.dumps(report), flush=True)
             if args.output:
                 args.output.write_bytes(base64.b64decode(result["jpeg"]))
     # A different image and changed/reordered prompts must update graph inputs.
@@ -145,6 +150,9 @@ def main():
         ),
         flush=True,
     )
+    if args.report:
+        args.report.write_text(json.dumps({"benchmarks": reports,
+            "changed_image_and_prompts": checks, "shared_features_verified": True}, indent=2)+"\n")
 
 
 if __name__ == "__main__":

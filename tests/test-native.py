@@ -90,22 +90,24 @@ class NativeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_config({**config, "sam31_native_bundle": "relative"})
             with patch("spring_turret.detection.subprocess.Popen") as launch, patch(
-                "spring_turret.detection.tempfile.TemporaryDirectory"
+                "spring_turret.hardware.tempfile.TemporaryDirectory"
             ) as temp:
                 temp.return_value.name = directory
                 WorkerClient(config).launch()
                 self.assertIn("--native-bundle", launch.call_args.args[0])
                 self.assertTrue(launch.call_args.kwargs["start_new_session"])
-                WorkerClient({**config, "model": "yolo26x"}).launch()
+                WorkerClient({**config, "model": "sam3.1-mask"}).launch()
                 self.assertNotIn("--native-bundle", launch.call_args.args[0])
 
-    def test_cancel_signals_entire_worker_group(self):
+    def test_cancel_requests_drain_without_interrupting_an_inflight_gpu_kernel(self):
         worker = WorkerClient({})
         worker.process = MagicMock(pid=1234)
         worker.process.poll.return_value = None
         with patch("spring_turret.detection.os.killpg") as kill:
             worker.cancel()
-            kill.assert_called_once_with(1234, 15)
+            kill.assert_not_called()
+            self.assertTrue(worker.cancelled.is_set())
+            self.assertIsNotNone(worker.cancel_requested_at)
 
 
 if __name__ == "__main__":

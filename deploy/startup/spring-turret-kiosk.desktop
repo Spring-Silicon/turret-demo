@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Spring Arc + Thor Demo
+Exec=/usr/bin/systemctl --user start spring-turret-kiosk.service
+Terminal=false
+X-GNOME-Autostart-enabled=true

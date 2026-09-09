@@ -44,6 +44,7 @@ class FakePacket:
         return self.registers[sid][addr], 0, 0
 
     read4ByteTxRx = read1ByteTxRx
+    read2ByteTxRx = read1ByteTxRx
 
     def write1ByteTxRx(self, port, sid, addr, value):
         self.writes.append((sid, addr, value))
@@ -53,9 +54,57 @@ class FakePacket:
         return 0, 0
 
     write4ByteTxRx = write1ByteTxRx
+    write2ByteTxRx = write1ByteTxRx
 
 
 class ControllerTests(unittest.TestCase):
+    def test_lost_read_retries_once_but_persistent_or_device_faults_fail(self):
+        self.controller.arm()
+        original=self.packet.read1ByteTxRx
+        calls=[]
+        def transient(port,sid,addr):
+            calls.append((sid,addr))
+            return (999,-3001,0) if len(calls)==1 else original(port,sid,addr)
+        with patch.object(self.packet,'read1ByteTxRx',side_effect=transient):
+            self.assertEqual(self.controller._read('x',64,1),1)
+        self.assertEqual(calls,[(2,64),(2,64)])
+        self.assertEqual(self.controller.read_retries,1)
+        with patch.object(self.packet,'read1ByteTxRx',return_value=(999,-3002,0)) as read:
+            with self.assertRaisesRegex(servo.DeviceUnavailable,'communication=-3002'):
+                self.controller._read('x',64,1)
+            self.assertEqual(read.call_count,2)
+        with patch.object(self.packet,'read1ByteTxRx',return_value=(999,0,128)) as read:
+            with self.assertRaisesRegex(servo.DeviceUnavailable,'device_error=128'):
+                self.controller._read('x',64,1)
+            self.assertEqual(read.call_count,1)
+
+    def test_optional_qualified_gains_are_checked_before_either_torque_enable(self):
+        for name in ("x", "y"):
+            self.config["servo"]["axes"][name]["position_gains"] = {"p":800,"i":0,"d":400}
+        servo.validate_config(self.config["servo"])
+        self.controller.arm()
+        torque_index = next(i for i,w in enumerate(self.packet.writes) if w[1:] == (64,1))
+        for sid in (1,2):
+            for address,value in ((84,800),(82,0),(80,400)):
+                self.assertEqual(self.packet.registers[sid][address], value)
+                self.assertLess(self.packet.writes.index((sid,address,value)), torque_index)
+
+    def test_failed_gain_write_never_enables_either_axis(self):
+        self.config["servo"]["axes"]["y"]["position_gains"] = {"p":800,"i":0,"d":400}
+        self.packet.fail = ("write",1,80,400)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
+        self.assertFalse(any(a==64 and v==1 for _,a,v in self.packet.writes))
+
+    def test_gain_validation_and_unconfigured_gains_are_unchanged(self):
+        for bad in ({"p":800}, {"p":0,"i":0,"d":0}, {"p":800,"i":-1,"d":0},
+                    {"p":800,"i":0,"d":16384}, {"p":True,"i":0,"d":0},
+                    {"p":800,"i":0,"d":0,"extra":0}, "factory"):
+            config=copy.deepcopy(self.config["servo"])
+            config["axes"]["x"]["position_gains"] = bad
+            with self.assertRaises(ValueError): servo.validate_config(config)
+        self.controller.arm()
+        self.assertFalse(any(a in (80,82,84) for _,a,_ in self.packet.writes))
+
     def setUp(self):
         self.config = server.load_config(ROOT / "config/spring-turret-demo.json")
         self.config["servo"]["calibrated"] = True
@@ -199,13 +248,14 @@ class ControllerTests(unittest.TestCase):
         with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
         self.assertFalse(any(sid == 1 for sid, _, _ in self.packet.writes))
 
-    def test_disconnect_stops_other_and_reconnect_is_disarmed(self):
+    def test_disconnect_holds_other_and_poll_alone_does_not_rearm(self):
         self.controller.arm()
         self.packet.missing.add(2)
         with self.assertRaises(servo.DeviceUnavailable): self.controller.move("y", 10)
         self.assertEqual(self.packet.registers[1][64], 0)
         self.packet.missing.clear()
         self.controller._poll_locked()
+        self.assertTrue(self.controller.run_requested)
         self.assertFalse(self.controller.armed)
         self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
 
@@ -222,13 +272,35 @@ class ControllerTests(unittest.TestCase):
         self.config["servo"]["calibrated"] = False
         with self.assertRaises(servo.DeviceUnavailable): self.controller.arm()
 
-    def test_lease_timeout_rejects_late_move(self):
-        self.controller.arm()
-        self.controller.last_keepalive = time.monotonic() - 4
-        with self.assertRaises(servo.DeviceUnavailable): self.controller.move("x", 10)
+    def test_no_browser_heartbeat_required_and_stop_still_wins(self):
+        with patch("time.monotonic", return_value=10.0):
+            self.controller.arm()
+        # No browser requests for minutes or hours must not disarm either axis.
+        for elapsed in (4, 60, 600, 3600):
+            with self.subTest(elapsed=elapsed), patch("time.monotonic", return_value=10.0 + elapsed):
+                self.controller._tick_locked()
+                self.controller.move("x", 10)
+                self.controller.point({"x": 5, "y": -5})
+                self.assertTrue(self.controller.armed)
+                self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [1, 1])
+        self.controller.disable()
         self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
+        self.packet.writes.clear()
         self.controller.keepalive()
+        with self.assertRaises(servo.ServoDisarmed): self.controller.move("x", 10)
+        with self.assertRaises(servo.ServoDisarmed): self.controller.point({"x": 5, "y": -5})
+        self.assertEqual(self.packet.writes, [])
         self.assertFalse(self.controller.armed)
+
+    def test_legacy_keepalive_never_changes_motor_state(self):
+        for armed in (False, True):
+            with self.subTest(armed=armed):
+                if armed: self.controller.arm()
+                before = copy.deepcopy(self.controller.status())
+                self.packet.writes.clear()
+                self.controller.keepalive()
+                self.assertEqual(self.controller.status(), before)
+                self.assertEqual(self.packet.writes, [])
 
     def test_invalid_degrees_or_axis_never_write(self):
         for name, value in [("z", 0), ([], 0), ("x", True), ("x", "10"), ("y", None),
@@ -244,7 +316,6 @@ class ControllerTests(unittest.TestCase):
 
     def test_outside_feedback_returns_both_axes_without_stopping(self):
         self.controller.arm()
-        lease = self.controller.last_keepalive
         for positions, targets in (((2600, 1500), (2560, 1536)),
                                    ((1500, 2600), (1536, 2560))):
             with self.subTest(positions=positions):
@@ -258,8 +329,6 @@ class ControllerTests(unittest.TestCase):
                 self.assertTrue(state["ready"])
                 self.assertIsNone(state["error"])
                 self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [1, 1])
-                # Recovery is not a browser heartbeat and cannot renew the lease.
-                self.assertEqual(self.controller.last_keepalive, lease)
                 self.packet.writes.clear()
                 self.controller._tick_locked()
                 self.assertEqual(self.packet.writes, [])
@@ -332,7 +401,7 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.packet.writes, [(2, 116, 2560)])
 
     def test_all_fault_checks_precede_recovery_writes(self):
-        for fault in ("hardware", "torque", "communication", "lease", "position_high", "position_low"):
+        for fault in ("hardware", "torque", "communication", "position_high", "position_low"):
             with self.subTest(fault=fault):
                 self.packet.registers[2][132] = 2048
                 self.packet.registers[1][132] = 2048
@@ -341,7 +410,6 @@ class ControllerTests(unittest.TestCase):
                 if fault == "hardware": self.packet.registers[1][70] = 4
                 if fault == "torque": self.packet.registers[1][64] = 0
                 if fault == "communication": self.packet.fail = ("read", 1, 132)
-                if fault == "lease": self.controller.last_keepalive = time.monotonic() - 4
                 if fault == "position_high": self.packet.registers[1][132] = 1048576
                 if fault == "position_low": self.packet.registers[1][132] = -1048576 & 0xFFFFFFFF
                 self.packet.writes.clear()
@@ -434,13 +502,11 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.controller.move(name, degrees)
         self.assertEqual(previous, self.packet.writes)
 
-    def test_tracking_has_only_angle_bounds_and_never_renews_lease(self):
+    def test_tracking_has_only_angle_bounds_and_explicit_stop(self):
         self.controller.arm()
-        lease = self.controller.last_keepalive
         self.controller.track({"x": 30, "y": -20})
         self.assertEqual(self.packet.registers[2][116], 2389)
         self.assertEqual(self.packet.registers[1][116], 1820)
-        self.assertEqual(self.controller.last_keepalive, lease)
         # The encoder remains at zero: neither the step nor lead is capped.
         # Goals saturate only at the configured ±45-degree fixture limits.
         self.assertTrue(self.controller.track({"x": 30, "y": -30})["limited"])
@@ -451,10 +517,9 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.packet.writes, [])
         self.controller.track({"x": 0, "y": 0})
         self.assertEqual([self.packet.registers[i][116] for i in (1, 2)], [2048, 2048])
-        self.assertEqual(self.controller.last_keepalive, lease)
-        self.controller.last_keepalive = time.monotonic() - 4
+        self.controller.disable()
         self.packet.writes.clear()
-        with self.assertRaises(servo.DeviceUnavailable): self.controller.track({"x": 3, "y": 0})
+        with self.assertRaises(servo.ServoDisarmed): self.controller.track({"x": 3, "y": 0})
         self.assertFalse(any(addr == 116 for _, addr, _ in self.packet.writes))
         self.assertEqual([self.packet.registers[i][64] for i in (1, 2)], [0, 0])
 
@@ -499,8 +564,7 @@ class ControllerTests(unittest.TestCase):
             tracker.arm()
             for index in range(120):
                 now[0] += .4
-                # Simulate a browser, not the tracker, keeping the controls alive.
-                self.controller.keepalive()
+                # Intentionally no browser heartbeat throughout this closed loop.
                 angles = {}
                 for name, sid in (("x", 2), ("y", 1)):
                     current, goal = self.packet.registers[sid][132], self.packet.registers[sid][116]
@@ -520,7 +584,6 @@ class ControllerTests(unittest.TestCase):
 
     def test_absolute_point_does_not_accumulate_and_zero_means_zero_not_hold(self):
         self.controller.arm()
-        lease = self.controller.last_keepalive
         for _ in range(3): self.controller.point({"x": 30, "y": -20})
         self.assertEqual(self.packet.registers[2][116], 2389)
         self.assertEqual(self.packet.registers[1][116], 1820)
@@ -530,13 +593,11 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(self.controller.point({"x": 1e308, "y": -1e308})["limited"])
         self.assertEqual(self.packet.registers[2][116], 2560)
         self.assertEqual(self.packet.registers[1][116], 1536)
-        self.assertEqual(self.controller.last_keepalive, lease)
 
-    def test_pose_sample_is_fresh_and_does_not_arm_or_renew_lease(self):
+    def test_pose_sample_is_fresh_and_does_not_arm(self):
         self.assertIsNone(self.controller.sample_pose())
         self.assertEqual(self.packet.writes, [])
         self.controller.arm()
-        lease = self.controller.last_keepalive
         self.packet.registers[2][132] = 2100
         self.controller._tick_locked()
         # Inference can sample while another thread owns the serial bus.
@@ -544,7 +605,6 @@ class ControllerTests(unittest.TestCase):
             pose = self.controller.sample_pose()
         self.assertAlmostEqual(pose["axes"]["x"]["degrees"], 4.57)
         self.assertEqual(pose["axes"]["x"]["goal_degrees"], 0)
-        self.assertEqual(self.controller.last_keepalive, lease)
         pose["axes"]["x"]["degrees"] = 999
         self.assertAlmostEqual(self.controller.sample_pose()["axes"]["x"]["degrees"], 4.57)
         self.packet.registers[1][70] = 4
@@ -567,20 +627,22 @@ class ControllerTests(unittest.TestCase):
 
     def test_pose_includes_bus_read_duration_and_rejects_slow_reads(self):
         self.controller.arm()
-        with patch("time.monotonic", side_effect=[10.0, 10.101]):
+        with patch("time.monotonic", side_effect=[10.0, 10.0, 10.01, 10.02, 10.03, 10.101]):
             self.controller._poll_locked()
         self.assertIsNone(self.controller.cached_pose)
-        with patch("time.monotonic", side_effect=[11.0, 11.05]):
+        with patch("time.monotonic", side_effect=[11.0, 11.0, 11.01, 11.02, 11.03, 11.05]):
             self.controller._poll_locked()
         self.assertEqual(self.controller.cached_pose["sampled_at"], 11.0)
         self.assertEqual(self.controller.cached_pose["read_completed_at"], 11.05)
+        self.assertAlmostEqual(self.controller.cached_pose["axes"]["x"]["observed_at"], 11.005)
+        self.assertAlmostEqual(self.controller.cached_pose["axes"]["y"]["observed_at"], 11.025)
 
     def test_pose_history_uses_completed_read_before_frame_and_clears_on_stop(self):
         self.controller.arm()
-        with patch("time.monotonic", side_effect=[10.0, 10.03]):
+        with patch("time.monotonic", side_effect=[10.0, 10.0, 10.006, 10.017, 10.023, 10.03]):
             self.controller._poll_locked()
         self.packet.registers[2][132] = 2100
-        with patch("time.monotonic", side_effect=[10.04, 10.07]):
+        with patch("time.monotonic", side_effect=[10.04, 10.04, 10.046, 10.057, 10.063, 10.07]):
             self.controller._poll_locked()
         with patch("time.monotonic", return_value=10.08):
             self.assertEqual(self.controller.sample_pose()["sampled_at"], 10.04)
@@ -589,13 +651,45 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(old["axes"]["x"]["degrees"], 0)
             old["axes"]["x"]["degrees"] = 999
             self.assertEqual(self.controller.sample_pose(10.05)["axes"]["x"]["degrees"], 0)
-            self.assertIsNone(self.controller.sample_pose(10.02))
+            interpolated = self.controller.sample_pose(10.025)
+            self.assertTrue(interpolated["interpolated"])
+            self.assertAlmostEqual(interpolated["axes"]["x"]["degrees"], 4.57 * .022 / .04)
+            self.assertEqual(interpolated["sampled_at"], 10.025)
+            self.assertIsNone(self.controller.sample_pose(10.002))  # Before either axis read.
             self.assertIsNone(self.controller.sample_pose(10.09))  # Future frame.
         with patch("time.monotonic", return_value=10.2):
             self.assertIsNone(self.controller.sample_pose(10.05))  # Stale frame.
             self.assertIsNone(self.controller.sample_pose())  # Stale encoders.
-        self.assertEqual(self.controller.pose_history.maxlen, 16)
+        self.assertEqual(self.controller.pose_history.maxlen, 256)
         self.controller.disable()
+        self.assertEqual(len(self.controller.pose_history), 0)
+
+    def test_delayed_inference_can_resolve_old_frame_with_live_encoder_history(self):
+        self.controller.arm()
+        for i in range(20):
+            t = 10 + .04 * i
+            self.packet.registers[2][132] = 2048 + i
+            with patch("time.monotonic", side_effect=[t,t,t+.006,t+.017,t+.023,t+.03]):
+                self.controller._poll_locked()
+        with patch("time.monotonic", return_value=10.80):
+            pose = self.controller.sample_pose(10.10)
+            self.assertTrue(pose["interpolated"])
+            self.assertEqual(pose["sampled_at"], 10.10)
+            self.assertLess(pose["axes"]["x"]["degrees"], .3)
+            self.assertGreater(self.controller.sample_pose()["axes"]["x"]["degrees"], 1.5)
+        self.controller.disable()
+        self.assertIsNone(self.controller.sample_pose(10.10))
+
+    def test_retried_position_read_is_not_given_a_misleading_midpoint(self):
+        self.controller.arm()
+        original = self.controller._read
+        def read(name, address, size):
+            value = original(name, address, size)
+            if address == 132:
+                self.controller.read_retries += 1
+            return value
+        with patch.object(self.controller, "_read", side_effect=read):
+            self.controller._poll_locked()
         self.assertEqual(len(self.controller.pose_history), 0)
 
     def test_camera_sample_pairs_timestamp_and_waits_until_after_pose_read(self):
