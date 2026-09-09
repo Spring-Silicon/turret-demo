@@ -1,4 +1,4 @@
-"""Pinned Israel native672 Object Multiplex worker; no hardware access."""
+"""Pinned Israel native Object Multiplex workers; no camera or servo access."""
 from __future__ import annotations
 
 import hashlib
@@ -35,7 +35,12 @@ class NativeTrackingEngine(host.TrackingEngine):
             raise ValueError('The pinned native recipe requires its qualified graph hook')
         bundle = Path(os.environ['SPRING_SAM31_TRACKING_NATIVE_BUNDLE']).resolve()
         manifest_path = bundle / 'manifest.json'
-        if hashlib.sha256(manifest_path.read_bytes()).hexdigest() != MANIFEST_SHA:
+        manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        from spring_turret import sam31_tracking_hillclimb
+        if manifest_sha == sam31_tracking_hillclimb.MANIFEST_SHA:
+            sam31_tracking_hillclimb.initialize(self, args, bundle, progress)
+            return
+        if manifest_sha != MANIFEST_SHA:
             raise ValueError('Unknown Israel tracking bundle')
         manifest = json.loads(manifest_path.read_text())
         if hashlib.sha256((bundle/'lib/libdnnl.so.3').read_bytes()).hexdigest() != DNNL_SHA:
@@ -106,10 +111,10 @@ class NativeTrackingEngine(host.TrackingEngine):
                 'replay_calls':stage.replay_calls} for name,stage in self.graph_stages.items()},
             'image_passes_per_frame':image_passes, **self.receipt})
         # Diagnostic records, not SAM attention/session memory.
-        for values in self.model._native_work_observations.values():
+        for values in getattr(self.model, '_native_work_observations', {}).values():
             if isinstance(values, list):
                 del values[:-32]
-        events = self.model._native_preflight_stats.get('events')
+        events = getattr(self.model, '_native_preflight_stats', {}).get('events')
         if isinstance(events, list):
             del events[:-32]
         return result
