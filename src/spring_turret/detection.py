@@ -80,6 +80,12 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("inference.sam31_mask_bundle must be an absolute path")
         if config.get("device_type", "xpu") != "xpu":
             raise ValueError("Native mask bundle requires XPU")
+    if "sam31_mask_compiled_bundle" in config:
+        path = config["sam31_mask_compiled_bundle"]
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError("inference.sam31_mask_compiled_bundle must be an absolute path")
+        if config.get("device_type", "xpu") != "xpu" or not config.get("sam31_mask_bundle"):
+            raise ValueError("Compiled mask artifacts require XPU and its native mask bundle")
     if config.get("model") == "sam3.1-mask" and not model_available("sam3.1-mask", config):
         raise ValueError("SAM3.1 mask requires a mask bundle on XPU")
     if "sam31_tracking_bundle" in config and (not isinstance(config["sam31_tracking_bundle"], str)

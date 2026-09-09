@@ -18,6 +18,7 @@ python3 tests/test-native.py
 python3 tests/test-w8a8.py
 python3 tests/test-w4a4.py
 python3 tests/test-mask-profile.py
+python3 tests/test-mask-artifacts.py
 python3 tests/test-mask-output.py
 python3 tests/test-mask-centroid.py
 python3 tests/test-mask-postprocess.py

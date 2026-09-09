@@ -40,7 +40,7 @@ class MaskGraph:
         torch, runtime = engine.torch, engine.runtime
         self.inputs = tuple(value.clone() for value in inputs)
         self.stream = engine.stream
-        engine._progress('compiling', 'mask-model')
+        engine._progress('loading' if engine.artifacts else 'compiling', 'mask-model')
         runtime.synchronize()
         with runtime.stream(self.stream):
             for _ in range(2): outputs = self.direct(*self.inputs)
@@ -92,7 +92,7 @@ class MaskGraph:
 
 
 class MaskEngine(common.Sam31Engine):
-    def __init__(self, args):
+    def __init__(self, args, *, stage_factory=None):
         import torch
         if __package__:
             from . import sam31_mask_layers as layers
@@ -113,6 +113,16 @@ class MaskEngine(common.Sam31Engine):
         self.image_optimization = None
         self.stream = self.runtime.Stream()
         self._progress('loading', 'mask-model')
+        self.artifacts = None
+        if getattr(args, 'compiled_bundle', None):
+            if stage_factory is not None:
+                raise ValueError('Cannot export and load compiled mask artifacts together')
+            if __package__:
+                from .sam31_mask_artifacts import MaskArtifactReader
+            else:
+                from sam31_mask_artifacts import MaskArtifactReader
+            self.artifacts = MaskArtifactReader(torch, args)
+            stage_factory = self.artifacts.stage
         if self.device_type == 'xpu':
             if __package__:
                 from .sam31_mask_native import build_stages, BACKEND, RECIPE
@@ -151,7 +161,8 @@ class MaskEngine(common.Sam31Engine):
                        fpn=layers.ExtraFeatures(self.backbone).eval(),
                        output=layers.BinaryMaskOutput(self.capacity, self.confidence).eval())
         options = {'emulate_precision_casts':True, 'triton.cudagraphs':False}
-        self.compiled = {name:torch.compile(module, fullgraph=True, dynamic=False, options=options)
+        self.compiled = {name:(stage_factory(name, module) if stage_factory else
+                              torch.compile(module, fullgraph=True, dynamic=False, options=options))
                          for name,module in modules.items()}
         self.preprocessor = ExactImagePreprocessor(torch, self.device, self._progress)
         self.start_event = self.runtime.Event(enable_timing=True)
@@ -231,6 +242,7 @@ class MaskEngine(common.Sam31Engine):
                 'precision':('W4A4-MLP/W8A8-projections/FP16-attention' if self.image_optimization
                              else 'W4A4-MLP/FP16-attention' if self.device_type=='xpu' else 'float16'),
                 'image_optimization':self.image_optimization,
+                'compiled_mask_artifacts': self.artifacts is not None,
                 'torch_compile':True,'cuda_graph':self.device_type=='cuda','sycl_graph':self.device_type=='xpu',
                 'compilation_scope':'image+fpn+all-prompt-grounding+masks+selection',
                 'model_graph_count':1,'image_passes_per_frame':1,'head_passes_per_frame':len(prompts),
@@ -258,6 +270,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint',required=True)
     parser.add_argument('--mask-bundle')
+    parser.add_argument('--compiled-bundle')
     parser.add_argument('--device',type=int,default=0)
     parser.add_argument('--device-type',choices=('xpu','cuda'),default='xpu')
     parser.add_argument('--precision',choices=('float16',),default='float16')

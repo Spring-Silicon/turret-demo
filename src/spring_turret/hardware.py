@@ -108,6 +108,8 @@ class XpuRuntime:
                   if self.config.get("model") == "sam3.1-tracking" else []),
                 *(["--mask-bundle", self.config["sam31_mask_bundle"]]
                   if self.config.get("model") == "sam3.1-mask" and self.config.get("sam31_mask_bundle") else []),
+                *(["--compiled-bundle", self.config["sam31_mask_compiled_bundle"]]
+                  if self.config.get("model") == "sam3.1-mask" and self.config.get("sam31_mask_compiled_bundle") else []),
                 *(["--native-bundle", self.config["sam31_native_bundle"]]
                   if self.config.get("model", "sam3.1") == "sam3.1"
                   and self.config.get("sam31_native_bundle") else []),
