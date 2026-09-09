@@ -516,7 +516,8 @@ image backend and frame-driven delivery are separate improvements.
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL
   returned in `status.detection.frame_url`; old revisions return 404)
 
-Per-axis P/D sliders and Reset controls are available in each device panel.
+The combined page shares one P slider, one D slider and Reset across all four
+servos. Standalone pages retain per-axis tuning controls.
 See [servo gains](docs/servo-gains.md) for raw units, persistence, readback and
 reset-baseline behavior. Gain changes do not arm motors or change servo zeros.
 

@@ -51,6 +51,9 @@ def main() -> None:
     server = (ROOT / "src/spring_turret/server.py").read_text()
     controller = (ROOT / "src/spring_turret/servo.py").read_text()
     assert html.count('type="range"') == 6  # X/Y angle plus per-axis P/D.
+    dashboard = (ROOT / "src/spring_turret/static/dashboard.html").read_text()
+    assert dashboard.count('type="range"') == 2
+    assert dashboard.count('id="shared-gains-reset"') == 1
     for axis in ('x','y'):
         assert f'id="{axis}-gains-reset"' in html
         for gain in ('p','d'):

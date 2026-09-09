@@ -31,8 +31,8 @@ async function loadDashboard() {
     root.append(...[...template.body.children].map(child => child.cloneNode(true)));
     root.querySelector('h1').textContent = device.label;
     document.getElementById('devices').append(host);
-    // Scope frames and motor/instance control to this panel. Only class-level
-    // inference controls are shared; a clicked native ID belongs to one device.
+    // Frames, motion and instance selection stay in each panel. Class-level
+    // inference and P/D tuning are shared; native IDs belong to one device.
     // Escape acts only on the panel containing keyboard focus.
     const client = mountTurret({
       getElementById: id => root.getElementById(id),

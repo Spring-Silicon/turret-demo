@@ -1,7 +1,14 @@
 # Servo P/D controls
 
-Each device panel (standalone or combined) has independent X/Y P and D sliders
-and a **Reset P/D** button for each axis. A slider commits on release or keyboard
+The combined page has **one P slider, one D slider and one Reset P/D button**
+shared by X/Y on both turrets. Changing P applies P to all four servos while
+preserving each one's D, and vice versa. Reset restores each axis's saved baseline.
+Different readbacks display **Mixed**, not whichever device replied last. All
+devices must be connected to adjust the shared controls; partial failures name
+the device/axis and are not automatically retried. Model and Start/Stop controls
+are unaffected. Standalone device pages retain independent X/Y tuning controls.
+
+A slider commits on release or keyboard
 change. Opening, polling, or reconnecting the page never writes gains. Stop stays
 available during a gain update; changing gains never arms a stopped turret.
 

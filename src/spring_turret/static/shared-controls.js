@@ -11,6 +11,77 @@ function mountSharedControls(document, devices) {
   const states = new Map(), clients = new Map(), offline = new Set(), drafts = new Map();
   let model = null, initialized = false, busy = false, error = '', dirty = false;
   let renderedModel = null;
+  const gainSliders = Object.fromEntries(['p','d'].map(key => [key, document.getElementById(`shared-${key}-gain`)]));
+  const gainReset = document.getElementById('shared-gains-reset');
+  const gainMessage = document.getElementById('shared-gains-message');
+  let gainsBusy = false, gainsError = '';
+  const gainEdits = new Set();
+
+  const gainAxes = () => devices.flatMap(device => ['x','y'].map(axis => ({device, axis,
+    state: states.get(device.id)?.servo?.axes?.[axis]})));
+  const gainsReady = () => devices.every(device => !offline.has(device.id) && clients.has(device.id)
+    && states.get(device.id)?.servo?.online) && gainAxes().every(({state}) => state?.position_gains && state?.gain_baseline);
+
+  function renderGains() {
+    const ready = gainsReady(), axes = gainAxes();
+    for (const key of ['p','d']) {
+      const slider = gainSliders[key];
+      slider.disabled = !ready || gainsBusy;
+      if (!gainsBusy && !gainEdits.has(key)) {
+        const values = axes.map(({state}) => state?.position_gains?.[key]);
+        const known = values.every(Number.isInteger);
+        const common = known && values.every(value => value === values[0]);
+        if (known) slider.value = values[0];
+        const label = !ready ? '—' : common ? String(values[0]) : 'Mixed';
+        document.getElementById(`shared-${key}-value`).textContent = label;
+        slider.setAttribute('aria-valuetext', label);
+      }
+    }
+    gainReset.disabled = !ready || gainsBusy;
+    gainReset.title = 'Restore the saved P/D baseline on all four servos';
+    gainMessage.textContent = gainsError;
+    gainMessage.hidden = !gainsError;
+  }
+
+  async function applyGain(key) {
+    if (gainsBusy || !gainsReady()) return;
+    const value = key === 'reset' ? null : Number(gainSliders[key].value);
+    // Freeze each untouched gain before any replies arrive. A P adjustment
+    // never replaces a differing D value with one peer's value (or vice versa).
+    const commands = gainAxes().map(({device, axis, state}) => ({device, axis,
+      body: key === 'reset' ? {axis} : {axis, p:state.position_gains.p, d:state.position_gains.d, [key]:value}}));
+    gainsBusy = true; gainsError = ''; gainEdits.clear(); renderGains();
+    const failures = [];
+    try {
+      await Promise.all(devices.map(async device => {
+        // Serialize X/Y on each bus; devices run independently. Still attempt
+        // the other axis after a failure and report exactly what failed.
+        for (const {axis, body} of commands.filter(command => command.device.id === device.id)) {
+          try {
+            const result = await clients.get(device.id).command(
+              key === 'reset' ? '/api/servo/gains/reset' : '/api/servo/gains', body);
+            states.set(device.id, result);
+          } catch (error) {
+            failures.push(`${device.label} ${axis.toUpperCase()}: ${error.message || error}`);
+          }
+        }
+      }));
+      gainsError = failures.join(' · ');
+    } finally {
+      gainsBusy = false; renderGains();
+    }
+  }
+  for (const [key, slider] of Object.entries(gainSliders)) {
+    slider.addEventListener('input', () => {
+      gainEdits.add(key);
+      document.getElementById(`shared-${key}-value`).textContent = slider.value;
+      slider.setAttribute('aria-valuetext', slider.value);
+    });
+    slider.addEventListener('change', () => applyGain(key));
+    for (const event of ['blur','pointercancel'])
+      slider.addEventListener(event, () => { gainEdits.delete(key); renderGains(); });
+  }
+  gainReset.addEventListener('click', () => applyGain('reset'));
 
   const readRows = () => [...rows.children].map(row => row.querySelector('.detection-prompt').value.trim());
   const normalized = values => [...new Map(values.filter(Boolean).map(value => [value.toLowerCase(), value])).values()];
@@ -49,6 +120,7 @@ function mountSharedControls(document, devices) {
   }
 
   function render() {
+    renderGains();
     if (!initialized && states.size) {
       // Deterministic initial draft: prefer Arc/config order, not reply order.
       const first = states.get(devices[0].id) || (offline.has(devices[0].id) && states.values().next().value);
@@ -201,7 +273,7 @@ function mountSharedControls(document, devices) {
   });
   render();
   return {
-    attach(id, client) { clients.set(id, client); },
+    attach(id, client) { clients.set(id, client); renderGains(); },
     update(id, state) { states.set(id, state); offline.delete(id); render(); },
     offline(id) { offline.add(id); render(); },
   };

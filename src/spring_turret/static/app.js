@@ -3,6 +3,9 @@
 // Each mounted panel owns all mutable UI state and its fixed API namespace.
 function mountTurret(document, apiPrefix = "", options = {}) {
 const sharedControls = options.sharedControls === true;
+if (sharedControls) {
+  for (const axis of ["x", "y"]) document.getElementById(`${axis}-gains`).hidden = true;
+}
 let sharedBusy = false;
 const apiUrl = path => apiPrefix + path;
 const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };

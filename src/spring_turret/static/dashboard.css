@@ -6,8 +6,14 @@ body { margin: 0; }
 #shared-message.error { color: #ff7a86; }
 #devices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; max-width: 2200px; padding: 20px; margin: auto; align-items: start; }
 .device-panel { min-width: 0; border: 1px solid #303535; }
+#shared-gains { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 20px; max-width: 850px; margin: 0 auto 20px; padding: 16px; border: 1px solid #303535; }
+#shared-gains legend { color: #98a09f; font-size: 13px; }
+#shared-gains-reset { padding: 0 12px; }
+#shared-gains-message { grid-column: 1 / -1; margin: 0; font-size: 12px; color: #ff7a86; }
 #dashboard-error { margin: 24px; color: #ff7a86; }
 @media (max-width: 1050px) { #devices { grid-template-columns: 1fr; padding: 12px; gap: 12px; } }
 @media (max-width: 480px) {
   #shared-controls { padding: 12px 12px 0; }
+  #shared-gains { margin: 0 12px 12px; gap: 12px; grid-template-columns: 1fr 1fr; }
+  #shared-gains-reset { grid-column: 1 / -1; justify-self: center; }
 }

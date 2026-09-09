@@ -68,6 +68,8 @@ for (const {id} of devices) {
       } else if (route === '/api/detection/prompts') state.detection.prompts = [...body.prompts];
       else if (route === '/api/tracking/target') state.tracking = {target:body.target,instance_id:null};
       else if (route === '/api/servo/arm') state.servo.armed = true;
+      else if (route === '/api/servo/gains') Object.assign(state.servo.axes[body.axis].position_gains,{p:body.p,d:body.d});
+      else if (route === '/api/servo/gains/reset') Object.assign(state.servo.axes[body.axis].position_gains,state.servo.axes[body.axis].gain_baseline);
       else throw new Error(`Unexpected mutation ${route}`);
       controller.update(id, structuredClone(state));
       return structuredClone(state);
@@ -237,6 +239,64 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('detection-model').value,'sam3.1-mask');
   console.log('validated partial failures, no automatic retries, in-flight exclusion and common model availability');
 
+  const gainStart = calls.length;
+  for (const id of ['arc','thor']) {
+    states[id].servo={online:true,armed:true,axes:Object.fromEntries(['x','y'].map((axis,i)=>[axis,{
+      position_gains:{p:id==='arc'?400+i*100:600+i*100,i:0,d:i*10},gain_baseline:{p:400,d:0}}]))};
+    controller.update(id,structuredClone(states[id]));
+  }
+  assert.equal(calls.length,gainStart); // Mixed initial values never auto-align.
+  assert.equal(get('shared-p-value').textContent,'Mixed');
+  assert.equal(get('shared-d-value').textContent,'Mixed');
+  get('shared-p-gain').value='800'; get('shared-p-gain').events.input();
+  controller.update('thor',structuredClone(states.thor));
+  assert.equal(get('shared-p-gain').value,'800');
+  assert.equal(calls.length,gainStart); // One commit on release, no drag requests.
+  await get('shared-p-gain').events.change();
+  assert.equal(calls.length,gainStart+4);
+  assert.ok(calls.slice(gainStart).every(c=>c.route==='/api/servo/gains'));
+  for(const id of ['arc','thor']) {
+    assert.deepEqual(calls.slice(gainStart).filter(c=>c.id===id).map(c=>c.body),[
+      {axis:'x',p:800,d:0},{axis:'y',p:800,d:10}]);
+    assert.equal(states[id].servo.armed,true);
+  }
+  assert.equal(get('shared-p-value').textContent,'800');
+  assert.equal(get('shared-d-value').textContent,'Mixed');
+  get('shared-d-gain').value='100'; get('shared-d-gain').events.input();
+  await get('shared-d-gain').events.change();
+  assert.ok(calls.slice(-4).every(c=>c.body.p===800 && c.body.d===100));
+  assert.equal(get('shared-d-value').textContent,'100');
+  await get('shared-gains-reset').events.click();
+  assert.ok(calls.slice(-4).every(c=>c.route==='/api/servo/gains/reset'));
+  assert.equal(get('shared-p-value').textContent,'400');
+  assert.equal(get('shared-d-value').textContent,'0');
+
+  controller.offline('thor');
+  const offlineCount=calls.length;
+  assert.equal(get('shared-p-gain').disabled,true);
+  await get('shared-gains-reset').events.click();
+  assert.equal(calls.length,offlineCount);
+  controller.update('thor',structuredClone(states.thor));
+  failures.set('thor','Disconnected');
+  get('shared-p-gain').value='900';
+  await get('shared-p-gain').events.change();
+  assert.equal(calls.length,offlineCount+4); // Both axes attempted, no retries.
+  assert.match(get('shared-gains-message').textContent,/Thor X: Disconnected.*Thor Y: Disconnected/);
+  assert.equal(get('shared-p-value').textContent,'Mixed');
+  failures.clear(); controller.update('thor',structuredClone(states.thor));
+  assert.equal(calls.length,offlineCount+4);
+  assert.ok(calls.slice(gainStart).every(c=>!c.route.includes('/arm') && !c.route.includes('/disable')));
+
+  let releaseGains; blocks.set('thor',new Promise(resolve=>{releaseGains=resolve;}));
+  const pendingGain=get('shared-gains-reset').events.click(); await tick();
+  assert.equal(get('shared-p-gain').disabled,true);
+  assert.equal(clients.arc.busy,false); // No blocking of panel Start/Stop/retarget.
+  const gainBusyCount=calls.length;
+  await get('shared-gains-reset').events.click();
+  assert.equal(calls.length,gainBusyCount);
+  releaseGains(); await pendingGain; blocks.clear();
+  console.log('validated shared X/Y P/D across both devices, mixed values, reset, partial failures and no auto-arm');
+
   // The actual per-device client runs without model/form/template elements
   // when mounted in shared-control mode. Local motor and instance commands
   // remain namespaced; no new model/prompt/servo writes occur during mounting.
@@ -273,6 +333,8 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   }
   await tick();
   assert.equal(panelRequests.filter(r=>r.options.method==='POST').length,0);
+  for(const id of ['arc','thor']) for(const axis of ['x','y'])
+    assert.equal(panels[id].element(`${axis}-gains`).hidden,true);
   panels.arc.images.at(-1).events.load();
   panels.arc.client.setSharedBusy(true);
   assert.equal(panels.arc.element('box-targets').children[0].disabled,true);
