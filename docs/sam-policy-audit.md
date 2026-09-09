@@ -1,8 +1,21 @@
 # Shared SAM backend policy
 
+## Moving-target update, 2026-09-09
+
+The common policy is now `sam-shared-v2`. Target selection, identity retirement,
+model outputs, aiming geometry and motor gains are unchanged. A missing target
+can retain the last bounded goal for up to 200 ms after the last accepted
+result, then holds measured position once. Empty/repeated frames cannot extend
+the deadline, and expiry works even without a new frame. This is not target
+prediction. Stop, faults and selection changes bypass the grace period.
+During the gap, no old box/mask is presented as a new detection; status reports
+`hold_reason="brief-detection-gap"`. See [qualification](moving-target-jitter.md).
+
+## Original deployment audit
+
 Audited the installed Arc (`spring-edge-turret`) and Thor (`agxthor-5`) packages,
 not just the checkout. Audit date: 2026-09-08 (deployment crosses UTC midnight).
-Policy version: `sam-shared-v1`.
+Historical policy version: `sam-shared-v1`.
 
 ## Target behavior (now shared)
 
@@ -140,13 +153,3 @@ control parity are covered by deterministic regression tests.
 YOLO was removed from the registry, UI, launch path, worker, dedicated requirements
 and smoke test. Unknown/legacy YOLO requests return 400 without changing target or
 armed state. Historical artifacts/backups are retained for rollback.
-# Moving-target update, 2026-09-09
-
-The common policy is now `sam-shared-v2`. Target selection, identity retirement,
-model outputs, aiming geometry and motor gains are unchanged. A missing target
-can retain the last bounded goal for up to 200 ms after the last accepted
-result, then holds measured position once. Empty/repeated frames cannot extend
-the deadline, and expiry works even without a new frame. This is not target
-prediction. Stop, faults and selection changes bypass the grace period.
-During the gap, no old box/mask is presented as a new detection; status reports
-`hold_reason="brief-detection-gap"`. See [qualification](moving-target-jitter.md).

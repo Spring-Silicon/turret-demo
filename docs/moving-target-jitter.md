@@ -76,10 +76,43 @@ in force. Recorded-input replay is separate from live acceptance.
 The local diagnostic artifacts are in
 `/home/ubuntu/work/turret-jitter-20260909`: baseline and coordinated recordings,
 geometry/config snapshots, original installed modules, replay results and the
-full validation log. Record the deployment receipt and live outcome here after
-acceptance. Do not overwrite the immutable September 9 recovery archives.
+full validation log. Do not overwrite the immutable September 9 recovery archives.
 
 To roll back, restore the backed-up application modules and configuration,
 restart only the affected backend, then restore the operator's latest model,
 prompts, target and Start intent. Removing only `tracking.bearing_filter` disables
 the optional Arc filter while retaining the shared missed-detection fix.
+
+## Deployed Arc result
+
+Application commit `535593b5268839166638d141937f635d5fbb6694` was pushed to
+`user/demo-changes`, fetched into `/home/spring/turret-demo`, and installed into
+Arc's existing backend environment. Only `tracking.py` and `policy.py` changed
+in the installed package. Both hashes match the pushed source. The only config
+change is the bearing-filter entry above; gains, motor profiles, limits, model
+settings, calibration and saved-zero files are unchanged.
+
+Arc backup and receipt:
+`/home/spring/.local/share/turret-demo/jitter-535593b-20260909T052650/`.
+The first deployment attempt restored the original code after a target-restoration
+request used the wrong API field. The corrected attempt restored SAM3.1 Mask,
+`ball`, class following and the prior Start intent, then completed model warmup.
+No calibration or motor-register change was involved in that recovery.
+
+The complete CPU/JavaScript validation suite passed, with its two dependency-gated
+skips. After adding the final filter-state regression, all 41 tracking tests also
+passed. A one-minute live recording after deployment captured 846 distinct Arc
+results, zero servo errors/retries, one uninterrupted backend PID, and median
+worker time 69.15 ms. The ball was stationary near image center: both encoder
+positions stayed constant despite intermittent detection loss. This qualifies
+live startup, state restoration and stationary holding; **a repeated live moving-
+target comparison and subjective smoothness confirmation remain pending**. The
+before/after moving-target claims above are same-input controller replays.
+
+Thor's running backend remains on `sam-shared-v1`, with its configuration and
+filter unchanged. The shared source was fetched there and an application-only
+image `spring-turret-demo:jitter-535593b` was built from the pinned recovery
+runtime, but it has not been deployed. Its image ID is
+`sha256:d1993d3607f613de621788c27b6530279cfb4fb3c6babd476e182f95fba5fef4`.
+Deploying that image is a separate live-device action. Arc's filter should not be
+copied to Thor: the recorded Thor pan reversal count did not improve with it.
