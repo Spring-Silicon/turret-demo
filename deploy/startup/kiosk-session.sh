@@ -3,10 +3,11 @@
 # No GNOME shell, desktop, dock, welcome screen or generic autostart programs.
 set -eu
 export MOZ_ENABLE_WAYLAND=0 GDK_BACKEND=x11 DISABLE_WAYLAND=1
+export XDG_CURRENT_DESKTOP=SpringKiosk XDG_SESSION_DESKTOP=spring-turret
 /usr/bin/xsetroot -solid black
 /usr/bin/xset s off
 /usr/bin/xset -dpms
-/usr/bin/dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_SESSION_TYPE
+/usr/bin/dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP
 /usr/bin/openbox --config-file /etc/spring-turret-kiosk/openbox.xml &
 wm_pid=$!
 cleanup() {
