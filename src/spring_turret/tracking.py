@@ -14,8 +14,7 @@ from spring_turret.geometry import Geometry
 from spring_turret.bearing_filter import BearingFilter
 from spring_turret.tracking_masks import valid_mask_centroid
 from spring_turret.interfaces import CameraDevice, MotorDevice, DetectionSource
-from spring_turret.policy import (POLICY_VERSION, DEAD_BAND, DETECTION_LOSS_GRACE_SECONDS,
-                                 continuity, select_candidates)
+from spring_turret.policy import POLICY_VERSION, DEAD_BAND, continuity, select_candidates
 
 LOGGER = logging.getLogger("spring-turret.tracking")
 DEFAULTS = {
@@ -129,8 +128,6 @@ class TrackingController:
         self.hold_bias = {"x": 0.0, "y": 0.0}
         self.goal_degrees: dict | None = None
         self.last_armed_at = None
-        self.last_detection_at = None
-        self.loss_deadline = None
 
     def start(self) -> None:
         self.thread.start()
@@ -141,7 +138,6 @@ class TrackingController:
             self.thread.join(timeout=3)
 
     def _pause(self, state: str) -> None:
-        self.last_detection_at = self.loss_deadline = None
         if self.bearing_filter:
             self.bearing_filter.reset()
         if self.moving:
@@ -154,22 +150,6 @@ class TrackingController:
         self.hold_bias = {"x": 0.0, "y": 0.0}
         self.goal_degrees = None
         self.state, self.box, self.frame, self.error_pixels = state, None, None, None
-
-    def _missing_target(self, now: float) -> None:
-        """Brief misses keep the last bounded goal; never predict or send a new one.
-
-        Braking to the current encoder pose on every missed mask makes moving
-        targets stutter. Allow the last correction to finish for at most 200 ms
-        after the last accepted detection, then hold measured position once.
-        This clock is independent of inference rate and repeated empty frames.
-        """
-        if (self.moving and self.last_detection_at is not None
-                and now < self.last_detection_at + DETECTION_LOSS_GRACE_SECONDS):
-            self.loss_deadline = self.last_detection_at + DETECTION_LOSS_GRACE_SECONDS
-            self.state, self.box, self.frame, self.error_pixels = "lost", None, None, None
-            self.error = None
-            return
-        self._pause("lost")
 
     def set_target(self, prompt: Any) -> None:
         with self.lock:
@@ -232,7 +212,6 @@ class TrackingController:
     def arm(self) -> None:
         with self.lock:
             self.servo.arm()
-            self.last_detection_at = self.loss_deadline = None
             if self.bearing_filter:
                 self.bearing_filter.reset()
             # Never move using a frame captured before the user pressed Start.
@@ -245,7 +224,6 @@ class TrackingController:
 
     def disable(self) -> None:
         with self.lock:
-            self.last_detection_at = self.loss_deadline = None
             if self.bearing_filter:
                 self.bearing_filter.reset()
             self.moving = False
@@ -281,8 +259,7 @@ class TrackingController:
                     "error_pixels": self.error_pixels, "mode": "absolute-angle",
                     "mapping": "fisheye-kinematics" if self.geometry else "linear",
                     "policy_version": POLICY_VERSION, "continuity": continuity(model),
-                    "hold_reason": ("brief-detection-gap" if self.loss_deadline is not None else
-                                    "temporary-occlusion" if self.state == "lost" and self.instance_id is not None else None),
+                    "hold_reason": "temporary-occlusion" if self.state == "lost" and self.instance_id is not None else None,
                     "goal_degrees": self.goal_degrees}
 
     def _tick(self) -> None:
@@ -316,10 +293,6 @@ class TrackingController:
                 return
             frame = (detection["revision"], detection["frame_sequence"])
             if frame == self.last_frame:
-                # A stalled worker must not extend a gap indefinitely merely
-                # because no subsequent frame arrives to expire it.
-                if self.loss_deadline is not None and now >= self.loss_deadline:
-                    self._pause("lost")
                 return
             self.last_frame = frame
             # Only reject images from before Start or a class/prompt change.
@@ -334,11 +307,11 @@ class TrackingController:
             boxes, self.instance_id, self.clicked, holding = select_candidates(
                 detection, self.target, self.instance_id, self.clicked)
             if holding:
-                self._missing_target(now)
+                self._pause("lost")
                 return
             box = nearest_box(boxes, self.target, camera["width"], camera["height"])
             if box is None:
-                self._missing_target(now)
+                self._pause("lost")
                 return
             if detection.get("temporal_tracking") is True and self.instance_id is None:
                 # Class selection acquires the nearest instance once. A click
@@ -408,8 +381,6 @@ class TrackingController:
                     goals[axis] = current_goal
             self.previous_pose = pose
             result = self.servo.point(goals)
-            self.last_detection_at = time.monotonic()
-            self.loss_deadline = None
             self.goal_degrees = result["goal_degrees"]
             self.moving = True
             self.state = ("limited" if result["limited"] or geometry_limited else
@@ -459,7 +430,4 @@ class TrackingController:
             # Wake on a new inference result, not a fixed-rate control timer.
             # The timeout only provides checks for Stop and hardware/model faults
             # when inference has stopped publishing results.
-            with self.lock:
-                timeout = (min(.1, max(.001, self.loss_deadline - time.monotonic()))
-                           if self.loss_deadline is not None else .1)
-            self.detection.wait_for_update(version, timeout=timeout)
+            self.detection.wait_for_update(version, timeout=0.1)

@@ -1,21 +1,8 @@
 # Shared SAM backend policy
 
-## Moving-target update, 2026-09-09
-
-The common policy is now `sam-shared-v2`. Target selection, identity retirement,
-model outputs, aiming geometry and motor gains are unchanged. A missing target
-can retain the last bounded goal for up to 200 ms after the last accepted
-result, then holds measured position once. Empty/repeated frames cannot extend
-the deadline, and expiry works even without a new frame. This is not target
-prediction. Stop, faults and selection changes bypass the grace period.
-During the gap, no old box/mask is presented as a new detection; status reports
-`hold_reason="brief-detection-gap"`. See [qualification](moving-target-jitter.md).
-
-## Original deployment audit
-
 Audited the installed Arc (`spring-edge-turret`) and Thor (`agxthor-5`) packages,
 not just the checkout. Audit date: 2026-09-08 (deployment crosses UTC midnight).
-Historical policy version: `sam-shared-v1`.
+Policy version: `sam-shared-v1`.
 
 ## Target behavior (now shared)
 
