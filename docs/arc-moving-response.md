@@ -5,24 +5,30 @@ missed-detection grace period and optional bearing filter did not resolve the
 live complaint and were reverted in `001a9de`. The next experiment isolated motor
 response from SAM by commanding known, smooth angle trajectories.
 
-## Selected live candidate
+## Live result: P800 did not resolve the complaint
 
-`config/arc-5B3D045331-motion.json` records an assembly-specific gain profile;
-it is not a complete backend config and must not replace one. Apply only its
-`position_gains` to the matching axes of Arc adapter `5B3D045331`, after checking
-adapter serial, model and motor IDs. Pan P changes from 1200 to 800. Pan I=0,
-D=1600 and tilt P=1200/I=0/D=1600 are retained. The existing backend writes and
-read-verifies the gains on Start.
+The pan-P800 candidate was deployed from `97ff9de`, the backend was restarted,
+and the user repeated the moving-ball comparison. The user reported that Arc's
+physical turret was still extremely jerky. The synthetic motor-response
+improvement below did not resolve the real complaint. Do not treat this candidate
+as a qualified fix or reapply it from the historical commit.
 
-There is no application-code, detection, model, camera, deadband, motor-profile,
-calibration, zero, limit or Thor deployment change. Both velocity/acceleration
-profiles remain zero. Stop, fault handling and target-selection policy remain
-`sam-shared-v1`. The previous experimental filter remains disabled.
+Pan P has been restored to 1200; both axes again use P1200/I0/D1600 and zero
+velocity/acceleration profiles. No production source, model, filter, camera,
+calibration, saved-zero or limit changes were made. Normal SAM3.1 Mask / ball
+tracking and the previous Start intent were restored. The active P800 profile
+file has been removed from this branch to prevent accidental redeployment.
 
-This is a measured motor-response improvement and a candidate for the live
-moving-target complaint. Successful startup or a smooth synthetic sweep alone
-does not establish that all live jerkiness is fixed. Operator acceptance remains
-pending until the same moving-ball comparison is repeated.
+The live comparison captured 60 seconds: 853 distinct Arc results and 455 Thor
+results, with substantial physical pan movement on both. Arc had 42 internal
+mask gaps (including one long absence) and Thor had 21. No servo faults occurred.
+These scenes and views are not identical model inputs; these counts do not prove
+quantization causes the observed jerkiness.
+
+A subsequent read inside Thor's running container verified that `tracking.py`,
+`servo.py`, `geometry.py`, `pose_history.py` and `policy.py` have exactly the same
+hashes as Arc's restored application. Thor has no configured gain override;
+actual motor-register readback remains necessary before asserting its gains.
 
 ## Motor-only experiment
 
@@ -61,10 +67,10 @@ measured after the 0.7-second final hold, not infinite-time static accuracy.
 | 400/0; 0/0 | 2.08 | 153.6 | 0.61 |
 | 600/0; 0/0 | 2.14 | 123.1 | 0.17 |
 
-The selected profile reduces measured pan speed ripple by 38–40% against the
+The rejected P800 candidate reduced measured pan speed ripple by 38–40% against the
 first batch's bracketing controls, with about 17 ms additional fitted delay.
 Its continuous-path pan RMS error increased from 1.82 to 2.12 degrees, primarily
-from that delay. This tradeoff must be checked on a real moving target. P600/D0
+from that delay. The user subsequently rejected its real moving-target behavior. P600/D0
 was somewhat smoother, but removes the damping previously needed for step
 overshoot and has greater holding error; it was not selected.
 
@@ -87,12 +93,12 @@ raw data and restored status under:
 - `/home/spring/.local/share/turret-demo/moving-response-20260909T055628/`
 - `/home/spring/.local/share/turret-demo/moving-response-20260909T055941/`
 
-Deploy by preserving the complete current config, changing only the pan P
-register setting to 800, restarting Arc's backend, and restoring its latest
-model/prompts/target/Start intent. Confirm profile identity and gain readback,
-advancing processed frames and no servo faults. Rollback restores the backed-up
-configuration and restarts the backend; no source-code rollback is needed.
+P800 deployment and rollback receipts on Arc:
 
-The earlier full-image recovery archives deliberately retain their original
-configuration. Reproducing this candidate requires applying the profile above
-after restoring that archive. Thor remains unchanged.
+- `/home/spring/.local/share/turret-demo/pan-p800-97ff9de-20260909T060432/deployment-receipt.json`
+- `/home/spring/.local/share/turret-demo/restore-pan-p1200-97ff9de-20260909T060902/deployment-receipt.json`
+
+The rollback changed only `servo.axes.x.position_gains.p` from 800 to 1200,
+restarted the backend, and verified advancing Mask frames, ball selection,
+armed state and no servo error. The original recovery-archive motor settings
+remain the active baseline. Thor has not been interrupted or changed.

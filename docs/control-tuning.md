@@ -6,8 +6,9 @@ assembly-specific gains, zeros or intrinsics to another turret without testing.
 ## Moving-target follow-up (2026-09-09)
 
 The original P1200/D1600 setting below describes the stationary/step
-qualification. A subsequent motor-only moving-path comparison selected pan
-P800/D1600, with tilt unchanged, for live evaluation. See
+qualification. A subsequent motor-only moving-path comparison tested pan
+P800/D1600 with tilt unchanged. The user rejected its live moving-target
+behavior, so pan P1200 was restored. See
 [measurements and deployment boundaries](arc-moving-response.md).
 
 ## Non-tracking mask reacquisition correction (2026-09-08)
