@@ -5,6 +5,10 @@ missed-detection grace period and optional bearing filter did not resolve the
 live complaint and were reverted in `001a9de`. The next experiment isolated motor
 response from SAM by commanding known, smooth angle trajectories.
 
+Current retained gains are **P400/I0/D0 on both axes**, accepted after the later
+[live comparison with Thor's measured settings](arc-thor-gain-trial.md). The
+P800 rollback and synthetic experiments below are historical.
+
 ## Live result: P800 did not resolve the complaint
 
 The pan-P800 candidate was deployed from `97ff9de`, the backend was restarted,
@@ -13,7 +17,7 @@ physical turret was still extremely jerky. The synthetic motor-response
 improvement below did not resolve the real complaint. Do not treat this candidate
 as a qualified fix or reapply it from the historical commit.
 
-Pan P has been restored to 1200; both axes again use P1200/I0/D1600 and zero
+After that failed trial, pan P was restored to 1200; both axes used P1200/I0/D1600 and zero
 velocity/acceleration profiles. No production source, model, filter, camera,
 calibration, saved-zero or limit changes were made. Normal SAM3.1 Mask / ball
 tracking and the previous Start intent were restored. The active P800 profile
@@ -28,7 +32,8 @@ quantization causes the observed jerkiness.
 A subsequent read inside Thor's running container verified that `tracking.py`,
 `servo.py`, `geometry.py`, `pose_history.py` and `policy.py` have exactly the same
 hashes as Arc's restored application. Thor has no configured gain override;
-actual motor-register readback remains necessary before asserting its gains.
+later actual register readback confirmed P400/I0/D0 on both axes, as documented
+in the accepted comparison linked above.
 
 ## Motor-only experiment
 

@@ -2,8 +2,9 @@
 
 The user reports physical turret jerks coinciding with brief ball-mask flickers.
 Both unsuccessful controller/P800 trials are reverted; see
-[the moving-response experiment](arc-moving-response.md). This investigation has
-not yet produced a qualified live fix.
+[the moving-response experiment](arc-moving-response.md). This stage did not by itself
+produce a live fix. The subsequent [motor-gain comparison](arc-thor-gain-trial.md)
+confirmed Thor's actual settings and produced the accepted Arc improvement.
 
 ## Saved-frame observations
 
@@ -51,16 +52,17 @@ The earlier model was loaded from an isolated copy of the existing verified base
 bundle, without its optional attention8 extension. Production model artifacts,
 configuration and control source were not modified. After each replay, the
 normal model, prompts, ball target and prior Start intent were restored and
-running inference/no servo error verified. Arc remains P1200/I0/D1600 on both
+running inference/no servo error verified. At that stage Arc retained P1200/I0/D1600 on both
 axes, velocity/acceleration profiles zero, production confidence 0.5 and the
 skip4/attention8 recipe. Thor was not interrupted.
 
-## Next live test
+## Recording workflow and subsequent tests
 
 The user requires advance notice and an explicit readiness reply before any new
 recording. No capture may start merely because a timer expired. After readiness,
 give a clear start cue and collect a timed stationary/moving/stationary baseline
-before changing another setting. The planned recording has not started.
+before changing another setting. That baseline and a subsequent accepted gain
+comparison have since completed; see the live evidence linked above.
 
 Local scripts, original JPEGs, metadata, replay manifests/results and comparison
 analysis are in `/home/ubuntu/work/turret-motor-20260909/`. Arc's replay outputs:

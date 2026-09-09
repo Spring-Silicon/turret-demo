@@ -1,10 +1,14 @@
-# Arc trial using Thor's measured motor gains — 2026-09-09
+# Arc motor gains validated against Thor — 2026-09-09
 
-The earlier P800 trial failed live and was reverted. It retained D1600. This
-candidate instead uses the motor gains actually read from the smooth Thor:
-P400/I0/D0 on both axes. It is a pending live trial, not a qualified fix.
+Arc now retains **P400/I0/D0 on both axes**, matching Thor's measured motor
+gains. After the repeated 60-second live comparison, the user reported Arc was
+"clearly smoother" and that very fast motion could still jerk, but Thor jerked
+more. This is the accepted setting for this assembly and moving-ball demo.
 
-## Evidence from the latest cued test
+The earlier P800 trial failed live and was reverted; it retained D1600. The
+successful change lowers P from 1200 to 400 and D from 1600 to 0 on both axes.
+
+## Original cued baseline
 
 The user explicitly said ready before this 40-second recording. It retained
 564 Arc results and 302 Thor results. Arc had 97 missing-ball frames and 58
@@ -46,10 +50,10 @@ The first read-only probe container could import its SDK but lacked the serial
 device's group permission with all capabilities dropped. The retry added only
 that device group and succeeded. Both attempts restored the unchanged backend.
 
-## Candidate and acceptance
+## Retained settings and validation boundaries
 
-The adapter-bound candidate is
-[`arc-5B3D045331-thor-gains-trial.json`](../config/arc-5B3D045331-thor-gains-trial.json).
+The adapter-bound retained profile is
+[`arc-5B3D045331-motion.json`](../config/arc-5B3D045331-motion.json).
 Only both axes' `position_gains` change. Applying it must preserve the current
 model, confidence, profiles, camera, calibration, saved zeros and angle limits.
 The existing `ServoController.arm()` writes and read-verifies all three gains
@@ -59,10 +63,10 @@ Earlier Arc motor-only trials already exercised these settings without faults.
 Pan speed-ripple RMS fell from about 4.1 to 2.08 degrees/s, while fitted lag rose
 from about 103 to 154 ms. Tilt ripple increased from about 1.35 to 1.80 degrees/s
 and lag from 119 to 191 ms. Final holding errors were about 0.61/0.70 degrees.
-Those tradeoffs require an actual moving/stationary-ball comparison; copying
-Thor gains does not prove they are optimal for Arc's assembly.
+Those tradeoffs were assessed in the live moving/stationary-ball comparison
+below. These settings are not claimed to be optimal for every assembly or task.
 
-Before recording the candidate, tell the user it is ready and wait for a new
+Before any further recording, tell the user it is ready and wait for a new
 explicit readiness reply. Give a START cue and movement/hold cues. Compare the
 latest baseline, measured motion, centering and the user's physical observation.
 If rejected, restore the complete saved configuration and original Start intent.
@@ -83,6 +87,35 @@ protected source/calibration/zero hashes and the expected full configuration
 matched. Receipt and original baseline backup:
 `/home/spring/.local/share/turret-demo/thor-gains-trial-40d3976-20260909T065820/deployment-receipt.json`.
 
-Candidate recording has not started. A new explicit readiness reply is required;
-plan 60 seconds with a longer final stationary segment. Physical smoothness and
-centering remain unvalidated for this deployment.
+## Accepted 60-second repeat
+
+The user first reported that the deployed settings seemed better, then requested
+a fresh 60-second recording. The first take completed (846 Arc / 453 Thor frames),
+but the user asked to restart it. The repeat is the acceptance take and is stored
+with prefix `thor-gains-cued-redo-20260909`; it followed advance notice and a fresh
+START cue, with slow sweeps, faster sweeps and an extended final hold. The earlier
+take remains preserved and is not silently combined with this one.
+
+| Recording | Duration | Arc frames / missing masks | Thor frames / missing masks | Arc / Thor dropout events |
+| --- | ---: | ---: | ---: | ---: |
+| Original P1200/D1600 baseline | 40 s | 564 / 97 | 302 / 10 | 58 / 6 |
+| Accepted P400/D0 repeat | 60 s | 844 / 35 | 452 / 29 | 29 / 24 |
+
+A dropout event is a transition from a valid class mask to no valid class mask.
+Both devices had **zero new servo read retries and zero servo faults** in the
+repeat. The final 15 seconds retained 212 Arc frames (10 missing masks) and 113
+Thor frames (7 missing masks). Mask loss is therefore not eliminated.
+
+Arc's missing-mask fraction was 4.1% in the repeat versus 17.2% in the baseline.
+The ball motion, camera viewpoint and durations differ, so this is descriptive
+of the recordings, not a controlled model-accuracy or percentage-smoothness claim.
+The model, confidence and frame scheduling were unchanged by the gain update.
+
+The user's physical assessment is the acceptance result: clearly smoother,
+with occasional jerks under very fast motion and more jerking on Thor in that
+condition. Keep the current gains; do not add another filter/model/profile
+change to chase this accepted result. No further recording is running.
+
+All changes are persisted in Arc's existing config and read-verified by its
+normal arm sequence. Both backends remain operational. The source, saved zeros,
+geometry, model and limits remain those protected in the deployment receipt.
