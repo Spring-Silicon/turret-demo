@@ -220,3 +220,17 @@ test('unified page keeps status, commands and streams pinned to separate backend
   assert.equal((await fetch(local + '/devices/arc/api/status')).status, 502);
   assert.equal((await (await fetch(local + '/devices/thor/api/status')).json()).device, 'thor');
 });
+
+test('kiosk readiness belongs to a single local viewer launch and never reaches either backend', async t => {
+  let upstream = 0;
+  const {local} = await fixture(t, (_, res) => { upstream++; res.end('{}'); });
+  const token = 'a'.repeat(32), other = 'b'.repeat(32);
+  assert.deepEqual(await (await fetch(`${local}/kiosk-ready/${token}`)).json(), {ready: false});
+  assert.deepEqual(await (await fetch(`${local}/kiosk-ready/${token}`, {method:'POST'})).json(), {ready: true});
+  assert.deepEqual(await (await fetch(`${local}/kiosk-ready/${token}`)).json(), {ready: true});
+  assert.deepEqual(await (await fetch(`${local}/kiosk-ready/${other}`)).json(), {ready: false});
+  assert.equal((await fetch(`${local}/kiosk-ready/${other}`, {method:'POST', headers:{Origin:'https://elsewhere.example'}})).status,403);
+  assert.deepEqual(await (await fetch(`${local}/kiosk-ready/${other}`)).json(), {ready: false});
+  assert.equal((await fetch(`${local}/kiosk-ready/invalid`, {method:'POST'})).status,404);
+  assert.equal(upstream,0);
+});

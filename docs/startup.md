@@ -55,18 +55,21 @@ changing the active model, prompts, calibration or motor state.
 - Arc's user `spring-turret-frontend.service` is enabled for `default.target`.
   It runs an isolated, checksum-verified Node 22.23.2 runtime under
   `/home/spring/.local/share/spring-turret-frontend`, not system Node/Python.
-- GDM automatically logs in as `spring`. This intentionally makes the desktop
-  accessible to anyone physically at the machine without entering a password.
-- `~/.config/autostart/spring-turret-kiosk.desktop` starts
-  `spring-turret-kiosk.service` after the graphical session is ready. The launcher
-  waits for the local page, then uses Firefox `--kiosk` with a dedicated profile
-  at `~/snap/firefox/common/spring-turret-kiosk-profile`.
-  The installed Firefox 147 is affected by an invisible-window Wayland kiosk
-  issue ([Mozilla bug 2014372](https://bugzilla.mozilla.org/show_bug.cgi?id=2014372)),
-  so this service alone sets `MOZ_ENABLE_WAYLAND=0`, `GDK_BACKEND=x11`, and the
-  snap launcher's supported `DISABLE_WAYLAND=1` to use the existing XWayland
-  session. GNOME and the GPU/inference stack are unchanged. The snap setting is
-  necessary because its desktop launcher otherwise overrides `GDK_BACKEND`.
+- GDM automatically logs in as `spring` to the **Spring Turret Demo** X11
+  session, selected through AccountsService and `/etc/gdm3/custom.conf`.
+  Openbox manages only the kiosk windows; no GNOME desktop, dock, overview, or
+  generic desktop autostarts run in this session. The root window is black.
+- `kiosk-session.sh` imports the actual display/authentication environment and
+  starts `spring-turret-kiosk.service`. The launcher displays the same native-size
+  Spring logo as Plymouth, opens Firefox with its dedicated profile, and keeps
+  the logo above the browser until the local page has painted both styled panels.
+  The per-launch `/kiosk-ready/<token>` handshake stays within the frontend;
+  it never contacts either inference backend or sends motor commands.
+- Firefox uses X11 (`MOZ_ENABLE_WAYLAND=0`, `GDK_BACKEND=x11`,
+  `DISABLE_WAYLAND=1`). This also avoids the installed Firefox's invisible
+  Wayland kiosk window issue. The dedicated profile at
+  `~/snap/firefox/common/spring-turret-kiosk-profile` skips onboarding and crash
+  restoration. The browser restarts if it exits; stopping its service is explicit.
 - Thor's existing system `spring-turret-demo.service`, Docker and its snap
   Tailscale service are enabled. No Thor model/container/runtime is replaced.
 - Each host runs `spring-turret-inference-startup.service` once after its backend
@@ -76,16 +79,23 @@ changing the active model, prompts, calibration or motor state.
   POST is sent once and is never retried after an ambiguous failure.
 
 The page does not wait for model compilation: each panel reconnects to its own
-backend as it becomes available. Startup and viewer reconnects do not send
+backend as it becomes available. Before the first completed image/mask pair,
+Arc shows a circular spinner with **Spring is Coming** and Thor shows one with
+**Thor is Loading**. Placeholder alt text, FPS placeholders, and routine model
+preparation/connection messages are hidden. The loader disappears only after
+painting a complete pair. Existing images remain visible during later model
+changes and reconnects. Explicit command failures and operational errors remain
+available after startup. Startup and viewer reconnects do not send
 motor commands. Models and prompts use the backend's configured startup values;
 servo zeros, geometry and angle limits are unchanged. The dedicated Firefox
 profile skips welcome and pre-onboarding screens so first-run setup cannot
 block the page. Motors remain unarmed
 until Start is pressed. Closing the viewer does not stop an already armed motor.
 
-Templates live in `deploy/startup/`. The kiosk deliberately starts through
-desktop autostart, not the lingering user's boot target: Firefox needs the live
-Wayland/display and session-bus environment.
+Templates live in `deploy/startup/`. The kiosk starts from the dedicated GDM
+session, after its display is available; the lingering user's boot target still
+starts only the backend and frontend. The old GNOME `.desktop` autostart remains
+as a fallback if an operator explicitly selects the Ubuntu session.
 
 ## Inspection and control
 
@@ -120,3 +130,42 @@ To undo automatic desktop login, restore the Arc's original GDM file from
 `/var/backups/spring-turret-startup-20260908/gdm.conf` to
 `/etc/gdm3/custom.conf` and reboot. To stop browser autostart, disable its
 `.desktop` entry. Backend boot startup can remain enabled independently.
+
+## Quiet Arc boot profile (September 9)
+
+Arc boots through `/boot/efi/EFI/spring/grub.cfg`, independently of the timeout
+in `/etc/default/grub`. The installed profile hides that A/B menu and boots its
+selected healthy slot immediately. A/B trial bits, health selection, slot roots,
+and initrd paths are preserved. The GRUB background is removed and routine kernel
+status/cursor output is suppressed; diagnostics remain in the journal/serial log.
+
+Plymouth initially paints black. `spring-native-logo.service`, ordered before
+GDM, reveals the existing 610×200 logo only once `xedrmfb` reports at least
+1920×1080. It does not load a different graphics driver or change GPU firmware.
+The service has a bounded wait so a disconnected display cannot prevent login.
+The custom script is also rebuilt into the active kernel's initramfs. The GTK
+kiosk cover uses that exact logo at its native pixel size on black.
+
+`deploy/startup/install-clean-boot.py REPO COMMIT` installs this specific Arc
+profile as root after checking the clean checkout and expected hardware. It
+backs up touched files, the original initramfs, and AccountsService preferences
+under `/var/backups/spring-clean-boot-TIMESTAMP`, validates GRUB/unit/desktop
+syntax, and preserves A/B environment and inference/motor configuration bytes.
+Installation does not reboot or restart GDM. Frontend assets and the user kiosk
+launcher must be installed from the same commit before starting the new session.
+The required additional package is `openbox`; GTK3/Python GI/Xorg were already
+installed. No GPU or X server packages were upgraded.
+
+Two stages originate outside the operating system: the motherboard's ASRock
+POST logo and the display's HDMI input banner. This B550M WiFi exposes no Linux
+firmware-attributes interface for its logo setting. Disable **Full Screen Logo**
+in the firmware Boot settings; inspect the physical display's OSD controls for
+its input banner. Neither is controlled by GRUB, Plymouth, or Firefox. Software
+changes alone cannot guarantee a fully black screen before the OS runs.
+
+To restore the Ubuntu desktop, use AccountsService to set `XSession`/`Session`
+back to their saved values and restore `SessionType`, GDM config and `.dmrc`
+from the backup, then restart GDM or reboot. Restore the backed-up GRUB/Plymouth
+files and initramfs to undo the boot visuals. Disable `spring-native-logo.service`
+if it was not enabled before installation. The saved receipt records exact paths
+and hashes; do not replace the current A/B grubenv with an old copy.

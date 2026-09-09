@@ -21,6 +21,24 @@ class StartupTests(unittest.TestCase):
         rules=(repo/'deploy/direct-ethernet/arc.nft').read_text()
         self.assertEqual(rules.count('ip daddr 192.168.249.2 oifname != "enp7s0"'),2)
 
+    def test_quiet_boot_preserves_ab_selection_and_kernel_roots(self):
+        spec = importlib.util.spec_from_file_location('boot_install', path.with_name('install-clean-boot.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        original = (Path(__file__).with_name('fixtures') / 'arc-grub.cfg').read_text()
+        quiet = installer.quiet_grub(original)
+        for line in original.splitlines():
+            if line.lstrip().startswith('linux '):
+                updated = next(row for row in quiet.splitlines() if row.lstrip().startswith('linux ') and row.split()[-1] == line.split()[-1])
+                self.assertEqual(line.split(), [part for part in updated.split() if part not in {'loglevel=3', 'systemd.show_status=false', 'vt.global_cursor_default=0'}])
+            elif any(word in line for word in ('_OK', '_TRY', 'ORDER', 'default=', 'INDEX=', 'load_env', 'save_env', 'root=', 'initrd')):
+                self.assertIn(line, quiet)
+        self.assertIn('set timeout_style=hidden\nset timeout=0', quiet)
+        self.assertNotIn('background_image', quiet)
+        self.assertEqual(quiet.count('systemd.show_status=false'), 2)
+        self.assertEqual(quiet.count('vt.global_cursor_default=0'), 2)
+        with self.assertRaises(ValueError):
+            installer.quiet_grub(original.replace('set timeout=3', 'set timeout=10'))
+
     def run_case(self, prompts, failures=0, post_error=False, enabled=True):
         calls = []
         def open_url(request, timeout):

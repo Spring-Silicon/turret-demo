@@ -102,7 +102,14 @@ const completeFrame = () => {
   assert.ok(pending);
   pending.image.events.load();
   if (pending.mask) pending.mask.events.load();
+  if (run('frameDetection') === pending.detection) {
+    assert.equal(get('feed-loading').hidden, true);
+    assert.equal(get('camera-feed').hidden, false);
+    assert.equal(get('fps-counter').hidden, false);
+  }
 };
+assert.equal(get('feed-loading').hidden, false);
+assert.equal(get('fps-counter').hidden, true);
 const rows = () => get("prompt-rows").children;
 assert.match(fs.readFileSync(path.join(__dirname,'../src/spring_turret/static/index.html'),'utf8'),
   /<option value="sam3\.1-mask">SAM 3\.1 Mask<\/option>/);
@@ -565,9 +572,9 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   detectorMaskPair.image.events.load(); detectorMaskPair.mask.events.load();
   assert.equal(get('camera-feed'),previousImage);
   assert.equal(get('camera-feed').raster[1],detectorMaskPair.mask.src);
-  assert.equal(get('detection-status').textContent, '3 over mask cap');
-  assert.equal(get('detection-status').hidden, false);
-  console.log('validated non-temporal mask profile compositing and overflow reporting');
+  assert.equal(get('detection-status').textContent, '');
+  assert.equal(get('detection-status').hidden, true);
+  console.log('validated non-temporal masks without overflow text');
 
   for (const model of ['sam3.1-mask', 'sam3.1-tracking']) {
     run(`request = async (path, options) => {
@@ -650,7 +657,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     renderDetection(status.detection);`);
   assert.equal(get('camera-feed').src, '/32-8.jpg');
   assert.equal(run('frameDetection.frame_sequence'), 8);
-  assert.match(get('detection-status').textContent, /Preparing tracking graph.*showing last result/);
+  assert.equal(get('detection-status').hidden, true);
   assert.doesNotMatch(get('detection-status').textContent, /FPS|Waiting for detection/);
   assert.equal(get('fps-value').textContent, '—');
   run(`status.detection = {...status.detection, frame_sequence:9, frame_url:'/32-9.jpg',
@@ -666,12 +673,12 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run('frameDetection.frame_sequence'), 9);
   assert.equal(get('mask-overlay').hidden, true);
   assert.doesNotMatch(appSource, /\/stream\.mjpg/);
-  assert.equal(get('detection-status').textContent, 'Preparing tracking graph…');
+  assert.equal(get('detection-status').hidden, true);
   run(`status.detection = {...status.detection, state:'error', error:'worker failed'};
     renderDetection(status.detection);`);
   assert.equal(get('detection-status').textContent, 'worker failed');
   assert.equal(get('detection-status').hidden, false);
-  console.log('validated temporal recapture preserves paired frame, labels warmup and resumes without MJPEG flashing');
+  console.log('validated temporal recapture quietly preserves paired frames and resumes without flashing');
 
   run(`status.runtime = {backend_pid:10}; frameBackendPid = 10;
     render({...status, runtime:{backend_pid:11}, detection:{...status.detection,
@@ -771,7 +778,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
       progress:{phase:'preparing',stage:id === 'arc' ? 'compiling_tracker_memory_update' : 'compiling'},
       frame_sequence:null,frame_url:null})});
   }
-  assert.equal(devices.arc.element('detection-status').textContent, 'Preparing tracking graph…');
+  assert.equal(devices.arc.element('detection-status').hidden, true);
   assert.equal(devices.arc.element('detection-status').textContent, devices.thor.element('detection-status').textContent);
   for (const [id, stream] of [['arc', arcStream], ['thor', thorStream]]) {
     stream.onmessage({data: JSON.stringify({...states[id].detection, revision:2,
@@ -781,6 +788,6 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     assert.equal(devices[id].element('detection-status').textContent, '');
     assert.equal(devices[id].element('detection-status').hidden, true);
   }
-  console.log('validated identical Arc/Thor loading messages and hidden running summaries');
+  console.log('validated quiet Arc/Thor preparation and hidden running summaries');
   console.log('validated side-by-side panel isolation: prompts, streams, image URLs, Start/Stop and focused Escape');
 })().catch(error => { console.error(error); process.exitCode = 1; });

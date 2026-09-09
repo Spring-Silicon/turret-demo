@@ -1,0 +1,14 @@
+[Unit]
+Description=Reveal Spring logo after the native Arc display is ready
+After=plymouth-start.service systemd-udev-trigger.service
+Before=display-manager.service
+Wants=plymouth-start.service
+ConditionKernelCommandLine=splash
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/spring-turret/show-native-logo.py
+TimeoutStartSec=20
+
+[Install]
+WantedBy=graphical.target

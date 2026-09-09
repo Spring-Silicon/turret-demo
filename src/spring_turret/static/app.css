@@ -58,6 +58,21 @@ main {
   user-select: none;
 }
 .fps-unit { font-size: 0.25em; letter-spacing: 0; }
+#feed-loading {
+  position: absolute; inset: 0; z-index: 4;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; background: #000; color: var(--muted); font-size: 16px;
+  pointer-events: none;
+}
+.loading-spinner {
+  width: 38px; height: 38px; border: 3px solid #26302e;
+  border-top-color: var(--accent); border-radius: 50%;
+  animation: loading-spin 1s linear infinite;
+}
+@keyframes loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner { animation-duration: 3s; }
+}
 .vision { min-width: 0; }
 .model-control { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 14px; }
 #detection-model { border: 1px solid var(--line); background: #151919; color: inherit; padding: 8px 12px; font: inherit; }

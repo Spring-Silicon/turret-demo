@@ -27,6 +27,11 @@ const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
 const fpsCounter = document.getElementById("fps-counter");
 const fpsValue = document.getElementById("fps-value");
+const feedLoading = document.getElementById("feed-loading");
+const feedLoadingLabel = document.getElementById("feed-loading-label");
+if (options.loadingLabel) feedLoadingLabel.textContent = options.loadingLabel;
+feedLoading.hidden = false;
+fpsCounter.hidden = true;
 const modelSelector = document.getElementById("detection-model");
 let activeModel = null;
 let renderedModel = null;
@@ -236,6 +241,10 @@ function presentProcessedFrame(pending) {
   } else {
     displayContext.drawImage(frameBuffer, 0, 0);
   }
+  // Reveal only after the camera image and matching masks have been committed.
+  cameraFeed.hidden = false;
+  feedLoading.hidden = true;
+  fpsCounter.hidden = false;
   cameraFeed.setAttribute("data-frame-key", processedFrameKey(pending.detection));
   cameraFeed.setAttribute("data-frame-sequence", String(pending.detection.frame_sequence));
   cameraFeed.setAttribute("data-mask-present", String(Boolean(pending.mask)));
@@ -576,23 +585,10 @@ function renderDetection(detection) {
   }
   displayedDetection = detection;
   updatePromptControls();
-  const name = detection?.model === "sam3.1-tracking" ? "SAM 3.1 Tracking"
-    : detection?.model === "sam3.1-mask" ? "SAM 3.1 Mask" : "SAM 3.1";
-  const labels = { disabled: "Inference not configured", idle: name, loading: `Loading ${name}…`,
-    preparing: detection?.model === "sam3.1-tracking" ? "Preparing tracking graph…" : "Preparing model graph…",
-    validating: "Validating model…", capturing: "Capturing model graph…", waiting_for_camera: "Waiting for camera…" };
-  const fresh = isDetectionFresh(detection);
   const phase = detectionPhase(detection);
   const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
   renderFps(detectionFps(preparing ? null : detection));
-  const holdResult = preparing && detection.state === "running" &&
-    Boolean(detection.frame_url) && Number.isInteger(detection.frame_sequence);
-  const omitted = Object.values(detection?.mask_overflow || {}).reduce((sum, count) => sum + count, 0);
-  const capacityNotice = omitted > 0 ? `${omitted} over mask cap` : "";
-  detectionMessage.textContent = promptError || detection?.error || (preparing
-    ? `${labels[phase]}${holdResult ? " · showing last result" : ""}` : fresh
-    ? capacityNotice
-    : labels[phase] || "Waiting for detection…");
+  detectionMessage.textContent = promptError || (frameDetection ? detection?.error : "") || "";
   detectionMessage.hidden = !detectionMessage.textContent;
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   // The viewer is a sink for completed worker results, never the raw camera.
@@ -682,8 +678,8 @@ function render(next) {
   renderTracking();
   options.onStatus?.(next);
   // A 30 FPS detection update must not erase a rejected click's error instantly.
-  if (servo.error || camera.error || performance.now() >= messageExpiresAt)
-    showMessage(servo.error || camera.error || "", Boolean(servo.error || camera.error));
+  if (performance.now() >= messageExpiresAt || (frameDetection && (servo.error || camera.error)))
+    showMessage(frameDetection ? servo.error || camera.error || "" : "", Boolean(frameDetection && (servo.error || camera.error)));
 }
 
 async function request(path, options = {}) {
@@ -803,12 +799,13 @@ async function poll() {
   try {
     await request("/api/status");
   } catch (error) {
-    showMessage(error.message, true);
+    // A backend still starting is expected; keep the initial loader quiet.
+    if (frameDetection) showMessage(error.message, true);
     options.onOffline?.(error);
     updatePromptColors(null);
     renderFps(detectionFps(null));
     detectionMessage.textContent = "Detector connection lost";
-    detectionMessage.hidden = false;
+    detectionMessage.hidden = !frameDetection;
     detectionMessage.classList.add("error");
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
     boxTargets.hidden = true;
@@ -924,4 +921,7 @@ return {
 }
 
 // Preserve the standalone page used by the remote viewer and single-device CLI.
-if (document.getElementById("motor-toggle")) mountTurret(document);
+if (document.getElementById("motor-toggle")) {
+  mountTurret(document);
+  window.addEventListener("load", () => window.springDemoReady?.(), {once: true});
+}

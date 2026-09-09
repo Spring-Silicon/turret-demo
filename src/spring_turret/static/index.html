@@ -41,12 +41,16 @@
         <p id="detection-status" role="status" hidden></p>
         <p id="tracking-status" role="status" hidden></p>
         <div class="feed" aria-label="Live camera, mirrored view">
-          <img id="camera-feed" alt="Mirrored live turret camera feed">
+          <img id="camera-feed" alt="" hidden>
+          <div id="feed-loading" role="status" aria-live="polite">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span id="feed-loading-label">Spring is Coming</span>
+          </div>
           <div id="mask-overlay" aria-hidden="true" hidden></div>
           <div id="box-targets" aria-label="Detected objects" hidden></div>
           <svg id="tracking-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" hidden><rect id="tracked-box"/></svg>
           <svg id="frame-center" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="3"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6"/></svg>
-          <output id="fps-counter" aria-label="Frames per second unavailable" aria-live="off">
+          <output hidden id="fps-counter" aria-label="Frames per second unavailable" aria-live="off">
             <span id="fps-value">—</span><span class="fps-unit" aria-hidden="true">FPS</span>
           </output>
         </div>
@@ -69,6 +73,7 @@
         <p id="message" role="status" hidden></p>
       </section>
     </main>
+    <script src="/kiosk-ready.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

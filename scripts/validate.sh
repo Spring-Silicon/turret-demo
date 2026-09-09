@@ -5,7 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "${repo_root}"
 
 bash -n scripts/*.sh
-bash -n deploy/thor/run-container.sh deploy/startup/open-kiosk.sh
+bash -n deploy/thor/run-container.sh deploy/startup/*.sh
 python3 -m py_compile src/spring_turret/*.py tests/*.py
 python3 tests/test-server.py
 python3 tests/test-servo-feedback.py
@@ -41,10 +41,11 @@ python3 tests/test-tracking-masks.py
 python3 tests/test-geometry.py
 python3 tests/test-pose-history.py
 python3 tests/test-bearing-filter.py
-python3 -m py_compile tools/*.py
+python3 -m py_compile tools/*.py deploy/startup/*.py deploy/startup/clean-boot/*.py
 python3 tests/test-repository.py
 node --check src/spring_turret/static/app.js
 node --check src/spring_turret/static/dashboard.js
+node --check src/spring_turret/static/kiosk-ready.js
 node --check src/spring_turret/static/shared-controls.js
 node tests/test-ui.cjs
 node tests/test-shared-controls.cjs

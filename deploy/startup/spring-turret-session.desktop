@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Spring Turret Demo
+Comment=Dedicated full-screen Arc and Thor demo
+Exec=/usr/local/bin/spring-turret-session
+TryExec=/usr/bin/openbox
+Type=Application
+DesktopNames=SpringKiosk;

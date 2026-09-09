@@ -19,6 +19,7 @@ const POST_PATHS = new Set(['/api/detection/model', '/api/detection/prompts',
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],
+  ['/kiosk-ready.js', ['kiosk-ready.js', 'application/javascript; charset=utf-8']],
   ['/app.js', ['app.js', 'application/javascript; charset=utf-8']],
   ['/app.css', ['app.css', 'text/css; charset=utf-8']],
 ]);
@@ -48,11 +49,12 @@ export function frontendOptions(values) {
     backends:{arc:{url:arc,label:'Spring Silicon'},thor:thorDevice}};
   // A single named device uses the original standalone UI and unprefixed API.
   return {backend:backend || arc || thor, name:name || (arc ? 'Spring Silicon' : thor ? 'NVIDIA Jetson Thor' : 'Turret Demo'),
+          loadingLabel: thor ? 'Thor is Loading' : 'Spring is Coming',
           ...(thor && (interfaceName || localAddress) ? {singleDevice:thorDevice} : {})};
 }
 
 export function createFrontend({backend, backends, name = 'Turret Demo', timeoutMs = 15000,
-                                isLinkReady = wiredLinkReady, singleDevice}) {
+                                isLinkReady = wiredLinkReady, singleDevice, loadingLabel = "Spring is Coming"}) {
   if ((!backend && !backends) || (backend && backends)) throw new Error('Choose one backend or a device map');
   const unified = Boolean(backends);
   const entries = unified ? Object.entries(backends) : [['default', {...singleDevice, url: backend, label: name}]];
@@ -77,7 +79,7 @@ export function createFrontend({backend, backends, name = 'Turret Demo', timeout
   const title = name.replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
   const assets = new Map([...ASSETS].map(([path, [file, type]]) => {
     const raw = readFileSync(new URL(file, STATIC));
-    const body = file === 'index.html' ? Buffer.from(raw.toString().replace('<title>Turret Demo</title>', `<title>${title}</title>`)) : raw;
+    const body = file === 'index.html' ? Buffer.from(raw.toString().replace('<title>Turret Demo</title>', `<title>${title}</title>`).replace('Spring is Coming', loadingLabel === 'Thor is Loading' ? loadingLabel : 'Spring is Coming')) : raw;
     return [path, {body, type}];
   }));
   if (unified) {
@@ -97,6 +99,7 @@ export function createFrontend({backend, backends, name = 'Turret Demo', timeout
     res.writeHead(code, {...SECURITY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)});
     res.end(body);
   };
+  const kioskReady = new Map();
   const server = http.createServer({headersTimeout: 10000, requestTimeout: 15000}, async (req, res) => {
     // Bind loopback AND check Host/Origin: arbitrary websites cannot issue local
     // motor commands through DNS rebinding or cross-origin form submissions.
@@ -112,6 +115,19 @@ export function createFrontend({backend, backends, name = 'Turret Demo', timeout
       return jsonError(res, 400, 'Invalid request path');
     }
     let path = req.url.split('?')[0];
+    const readyToken = /^\/kiosk-ready\/([a-f0-9]{32})$/.exec(path)?.[1];
+    if (readyToken && ['GET', 'POST'].includes(req.method)) {
+      const now = Date.now();
+      for (const [token, expires] of kioskReady) if (expires <= now) kioskReady.delete(token);
+      if (req.method === 'POST') {
+        req.resume();
+        if (kioskReady.size >= 16) kioskReady.delete(kioskReady.keys().next().value);
+        kioskReady.set(readyToken, now + 120000);
+      }
+      const body = JSON.stringify({ready: kioskReady.has(readyToken)});
+      res.writeHead(200, {...SECURITY, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body)});
+      return res.end(body);
+    }
     if (assets.has(path) && ['GET', 'HEAD'].includes(req.method)) {
       const {body, type} = assets.get(path);
       res.writeHead(200, {...SECURITY, 'Content-Type': type, 'Content-Length': body.length});
