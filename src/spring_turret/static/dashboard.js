@@ -15,6 +15,7 @@ async function loadDashboard() {
     template.querySelector(selector).remove();
   }
   const shared = mountSharedControls(document, devices);
+  const stylesReady = [];
   for (const device of devices) {
     const host = document.createElement('article');
     host.className = 'device-panel';
@@ -23,7 +24,9 @@ async function loadDashboard() {
     const root = host.attachShadow({mode: 'open'});
     for (const href of ['/app.css', '/panel.css']) {
       const link = document.createElement('link');
-      link.rel = 'stylesheet'; link.href = href; root.append(link);
+      link.rel = 'stylesheet'; link.href = href;
+      stylesReady.push(new Promise((resolve, reject) => { link.onload = resolve; link.onerror = reject; }));
+      root.append(link);
     }
     root.append(...[...template.body.children].map(child => child.cloneNode(true)));
     root.querySelector('h1').textContent = device.label;
@@ -37,11 +40,14 @@ async function loadDashboard() {
       querySelectorAll: selector => root.querySelectorAll(selector),
       addEventListener: (...args) => root.addEventListener(...args),
     }, device.prefix, {sharedControls: true,
+      loadingLabel: device.id === 'thor' ? 'Thor is Loading' : 'Spring is Coming',
       onStatus: state => shared.update(device.id, state),
       onOffline: () => shared.offline(device.id),
     });
     shared.attach(device.id, client);
   }
+  await Promise.all(stylesReady);
+  await window.springDemoReady?.();
 }
 
 loadDashboard().catch(error => {

@@ -21,6 +21,7 @@ if not __package__:
 from spring_turret import sam31_tracking_worker as host
 from spring_turret.tracking_graph_cache import install_nonblocking_cache, finish_cache_warmup
 from spring_turret.tracking_preprocess import VideoPreprocessor
+from spring_turret.tracking_suppression import install_tracking_suppression
 
 MANIFEST_SHA = '34958e69ecb21d124669edb2e8518fe73e256eca9fdad01fc890a6c6afd8df48'
 DNNL_SHA = '0c38542cc9fdba8d6bf4c7837289a7260cc9fbaad1c587fea6074f67a247958a'
@@ -62,6 +63,7 @@ class NativeTrackingEngine(host.TrackingEngine):
                 'calibration_sha256':'23607525cae3efb29e2753d36c3dfe67c374c74232e2b88b1bc175ad616d2c7c',
                 'backend':'onednn','alpha':.5},
             graph_hook='resolution_672_native.graph:install')
+        install_tracking_suppression(model)
         self.torch, self.model = torch, model
         self.accelerator = torch.xpu
         self.source_digest, self.source_count = None, -1

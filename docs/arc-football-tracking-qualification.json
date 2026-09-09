@@ -1,0 +1,71 @@
+{
+  "date": "2026-09-09",
+  "device": "Intel Arc B580",
+  "prompt": "football",
+  "protocol": {
+    "source": "earlier operator-cued Arc ball footage",
+    "sampled_frames": 256,
+    "source_duration_seconds": 36.196830199,
+    "sampling": "every second frame of first 512; original capture timestamps",
+    "empty_scene_frames": 64,
+    "empty_scene_interval_seconds": 0.15,
+    "motors": "stopped throughout",
+    "reference": "prior SAM 3.1 Mask ball detections, not human ground truth",
+    "positive_reference_frames": 214
+  },
+  "results": {
+    "native": {
+      "frames": 320,
+      "recorded_detector_positive_frames": 214,
+      "aim_inside_recorded_ball_box": 104,
+      "frames_with_aim_outside_recorded_ball_box": 0,
+      "empty_scene_frames_with_masks": 25,
+      "empty_scene_total": 64,
+      "median_model_ms_on_clip_after_warmup": 88.0,
+      "error": null
+    },
+    "dense": {
+      "frames": 320,
+      "recorded_detector_positive_frames": 214,
+      "aim_inside_recorded_ball_box": 213,
+      "frames_with_aim_outside_recorded_ball_box": 0,
+      "empty_scene_frames_with_masks": 0,
+      "empty_scene_total": 64,
+      "median_model_ms_on_clip_after_warmup": 222.0,
+      "error": null
+    },
+    "native-fixed": {
+      "frames": 320,
+      "recorded_detector_positive_frames": 214,
+      "aim_inside_recorded_ball_box": 21,
+      "frames_with_aim_outside_recorded_ball_box": 0,
+      "empty_scene_frames_with_masks": 0,
+      "empty_scene_total": 64,
+      "median_model_ms_on_clip_after_warmup": 86.0,
+      "error": null
+    },
+    "dense-fixed": {
+      "frames": 320,
+      "recorded_detector_positive_frames": 214,
+      "aim_inside_recorded_ball_box": 213,
+      "frames_with_aim_outside_recorded_ball_box": 0,
+      "empty_scene_frames_with_masks": 0,
+      "empty_scene_total": 64,
+      "median_model_ms_on_clip_after_warmup": 222.0,
+      "error": null
+    }
+  },
+  "artifact_sha256": {
+    "manifest.json": "95799ea70c8ad70f80ebe9d9d8c6eab3d35677420a0b30dcb95070554cef8781",
+    "native-results.jsonl": "529baf43b10d42bafd6c45501f0203807b6be58fe72b2c4a50adec67e1f1d903",
+    "dense-results.jsonl": "d3556441a96bdbf354dfbab109a5bec8f3d859944f0d91310be7c9819e50cd41",
+    "native-fixed-results.jsonl": "43eb079406de7f2a823132061428dd4fe2a8f9a46a25c155b2709e589432541e",
+    "dense-fixed-results.jsonl": "a68f50039695948345f53084c383ca1f91178e6e49de24e3a4f9194a4a7a109a"
+  },
+  "limits": [
+    "Single clip and prompt; XPU nondeterminism allows small independent-run differences.",
+    "No test isolates input resolution, quantization, and temporal memory reduction individually.",
+    "Aiming-point agreement is not a segmentation accuracy or ground-truth tracking score.",
+    "Live moving-turret confirmation is still required."
+  ]
+}

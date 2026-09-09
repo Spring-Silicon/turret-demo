@@ -9,10 +9,6 @@
   <body>
     <header>
       <h1>Turret Demo</h1>
-      <div class="device-status" aria-label="Hardware status">
-        <span id="camera-status">Camera: checking</span>
-        <span id="servo-status">X/Y: checking</span>
-      </div>
     </header>
 
     <main>
@@ -37,21 +33,26 @@
               <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>
             </button>
             <input class="detection-prompt" type="text" maxlength="256" placeholder="Object to find" aria-label="Object to find" autocomplete="off" disabled>
-            <output class="prompt-count" aria-label="Detected count unavailable" aria-live="off">—</output>
             <button class="remove-prompt" type="button" aria-label="Remove object" title="Remove object" disabled>
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>
             </button>
           </div>
         </template>
-        <p id="detection-status" role="status">Detector: checking</p>
+        <p id="detection-status" role="status" hidden></p>
         <p id="tracking-status" role="status" hidden></p>
-        <div class="feed" aria-label="Live camera">
-          <img id="camera-feed" alt="Live turret camera feed">
+        <div class="feed" aria-label="Live camera, mirrored view">
+          <img id="camera-feed" alt="" hidden>
+          <div id="feed-loading" role="status" aria-live="polite">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span id="feed-loading-label">Spring is Coming</span>
+          </div>
           <div id="mask-overlay" aria-hidden="true" hidden></div>
           <div id="box-targets" aria-label="Detected objects" hidden></div>
           <svg id="tracking-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" hidden><rect id="tracked-box"/></svg>
           <svg id="frame-center" viewBox="0 0 24 24" aria-hidden="true" hidden><circle cx="12" cy="12" r="3"/><path d="M12 1v6M12 17v6M1 12h6M17 12h6"/></svg>
-          <p id="camera-offline" hidden>Camera unavailable</p>
+          <output hidden id="fps-counter" aria-label="Frames per second unavailable" aria-live="off">
+            <span id="fps-value">—</span><span class="fps-unit" aria-hidden="true">FPS</span>
+          </output>
         </div>
       </section>
 
@@ -72,6 +73,7 @@
         <p id="message" role="status" hidden></p>
       </section>
     </main>
+    <script src="/kiosk-ready.js"></script>
     <script src="/app.js"></script>
   </body>
 </html>

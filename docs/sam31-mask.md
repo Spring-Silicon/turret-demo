@@ -73,6 +73,9 @@ Arc needs `inference.sam31_mask_bundle` pointing at the frozen bundle. Thor uses
 an Intel bundle is deliberately rejected on CUDA. Select `inference.model:
 "sam3.1-mask"` for the startup default, or switch through the API/UI.
 
+Optional [offline-compiled artifacts](sam31-mask-artifacts.md) remove repeated
+main-stage compilation from Arc startup while retaining the qualified kernels.
+
 Compilation caches are separate under `sam31-mask-20260908`, leaving existing
 profiles' caches and weights untouched. A service restart never re-arms motors.
 

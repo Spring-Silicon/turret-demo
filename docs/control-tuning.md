@@ -3,6 +3,21 @@
 This is measured control tuning, not model-accuracy qualification. Do not copy
 assembly-specific gains, zeros or intrinsics to another turret without testing.
 
+## Accepted moving-target settings (2026-09-09)
+
+Arc now retains **P400/I0/D0 on both axes**, matching the actual gains read from
+Thor. A cued 60-second comparison confirmed the user's reported improvement:
+Arc is clearly smoother; very fast motion can still jerk, with more jerking on
+Thor in that condition. Both devices had zero new servo retries or faults.
+The persisted, adapter-bound profile and full live evidence are in
+[the accepted gain comparison](arc-thor-gain-trial.md).
+
+The original P1200/D1600 setting below describes historical stationary/step
+qualification. The intermediate pan-P800/D1600 trial failed live and was reverted;
+see [the earlier measurements](arc-moving-response.md). Neither is the retained
+setting. Model, confidence, filtering, profiles and calibration were not changed
+by the accepted gain update.
+
 ## Non-tracking mask reacquisition correction (2026-09-08)
 
 The old Arc-only world-bearing lock could hold forever after a mask dropout if

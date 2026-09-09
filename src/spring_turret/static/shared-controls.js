@@ -39,13 +39,6 @@ function mountSharedControls(document, devices) {
       });
       return fanOut(client => client.command('/api/tracking/target', {target: stop ? null : prompt}));
     });
-    const counts = row.querySelector('.prompt-count');
-    counts.setAttribute('aria-label', 'Detected counts by device');
-    counts.replaceChildren();
-    for (const device of devices) {
-      const count = document.createElement('span');
-      count.dataset.device = device.id; counts.append(count);
-    }
     rows.append(row);
     return input;
   }
@@ -64,7 +57,7 @@ function mountSharedControls(document, devices) {
         initialized = true; setRows(first.detection.prompts || []);
       }
     }
-    // Once initialized, polls only update counts/availability. Never overwrite
+    // Once initialized, polls only update availability. Never overwrite
     // a user's draft with another device's result or auto-resubmit on mismatch.
     const ready = initialized && detections().some(d => d?.enabled);
     const disabled = !ready || busy;
@@ -106,16 +99,6 @@ function mountSharedControls(document, devices) {
       target.setAttribute('aria-pressed', String(Boolean(selected)));
       target.setAttribute('aria-label', label);
       target.title = applied ? label : 'Apply this prompt to both devices first';
-      const counts = row.querySelector('.prompt-count');
-      [...counts.children].forEach((element, i) => {
-        const device = devices[i], d = states.get(device.id)?.detection;
-        const category = d?.categories?.find(c => c.prompt === prompt);
-        const fresh = !offline.has(device.id) && d?.model === model && d.state === 'running' &&
-          d.frame_age_ms < Math.max(5000, 2 * d.latency_ms + 1000);
-        const count = fresh && Number.isInteger(category?.count) && category.count >= 0 ? category.count : '—';
-        element.textContent = `${device.label}: ${count}`;
-        element.setAttribute('aria-label', `${device.label}, ${prompt || 'object'}: ${count === '—' ? 'count unavailable' : count + ' detected'}`);
-      });
       row.style.setProperty('--prompt-color', detections().find(d => d?.model === model)?.colors?.[index] || '#55e8ce');
     });
     const mismatched = initialized && devices.filter(device => {
@@ -123,11 +106,10 @@ function mountSharedControls(document, devices) {
       return d && (d.model !== model || !same(d.prompts, normalized(readRows())));
     });
     const notices = [];
-    if (offline.size) notices.push(`${devices.filter(d => offline.has(d.id)).map(d => d.label).join(', ')} offline`);
     if (!busy && mismatched?.length) notices.push(dirty ? 'Unapplied changes' : 'Device settings differ; Update prompts applies this selection to both');
     message.textContent = error || notices.join(' · ');
     message.hidden = !message.textContent;
-    message.classList.toggle('error', Boolean(error || offline.size));
+    message.classList.toggle('error', Boolean(error));
   }
 
   async function fanOut(action) {
@@ -150,15 +132,22 @@ function mountSharedControls(document, devices) {
     }
   }
 
-  async function applySelection(startAfter = false) {
+  async function applySelection(startAfter = false, targetPrompt) {
     if (busy || !initialized || !available(model)) return;
+    if (targetPrompt === '') { error = 'Enter an object to target'; render(); return; }
     const selectedModel = model, prompts = normalized(readRows());
     drafts.set(model, prompts);
     const ok = await fanOut(async (client, device) => {
       if (states.get(device.id)?.detection?.model !== selectedModel)
         await client.command('/api/detection/model', {model: selectedModel});
-      const result = await client.command('/api/detection/prompts', {prompts});
+      let result = await client.command('/api/detection/prompts', {prompts});
       states.set(device.id, result); offline.delete(device.id);
+      if (targetPrompt !== undefined) {
+        const target = result.detection.prompts.find(prompt => prompt.toLowerCase() === targetPrompt.toLowerCase());
+        if (!target) throw new Error('The target prompt was not applied');
+        result = await client.command('/api/tracking/target', {target});
+        states.set(device.id, result);
+      }
       if (startAfter && !(result.servo?.run_requested ?? result.servo?.armed)) {
         const started = await client.command('/api/servo/arm', {});
         states.set(device.id, started);
@@ -190,7 +179,8 @@ function mountSharedControls(document, devices) {
   });
   document.getElementById('detection-form').addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.repeat && !event.isComposing && ['INPUT', 'SELECT'].includes(event.target.tagName)) {
-      event.preventDefault(); return applySelection(true);
+      event.preventDefault();
+      return applySelection(true, event.target.tagName === 'INPUT' ? event.target.value.trim() : undefined);
     }
   });
   document.addEventListener?.('keydown', event => {

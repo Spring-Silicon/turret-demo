@@ -60,7 +60,7 @@ def main() -> None:
     template = html.split('<template id="prompt-row-template">')[1].split(
         "</template>"
     )[0]
-    assert 'class="prompt-count"' in template
+    assert 'class="prompt-count"' not in template
     assert 'class="remove-prompt"' in template
     assert 'class="target-prompt"' in template
     assert 'aria-pressed="false"' in template

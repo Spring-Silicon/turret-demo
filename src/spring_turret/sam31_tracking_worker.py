@@ -15,6 +15,7 @@ if __package__:
     from .prompts import COLORS, normalize_prompts
     from .sam31_tracking import OnlineSession, build_model, configure_source
     from .session_policy import ManagedSession
+    from .tracking_suppression import install_tracking_suppression
     from .sam31_tracking_graph import install_tracking_graphs, tracking_graph_status
     from .tracking_masks import encode_mask_overlay, instance_color, mask_centroid
     from .tracking_preprocess import VideoPreprocessor
@@ -24,6 +25,7 @@ else:
     from prompts import COLORS, normalize_prompts
     from sam31_tracking import OnlineSession, build_model, configure_source
     from session_policy import ManagedSession
+    from tracking_suppression import install_tracking_suppression
     from sam31_tracking_graph import install_tracking_graphs, tracking_graph_status
     from tracking_masks import encode_mask_overlay, instance_color, mask_centroid
     from tracking_preprocess import VideoPreprocessor
@@ -43,6 +45,7 @@ class TrackingEngine:
         self.model = build_model(torch, Path(args.checkpoint), self.device)
         self.graph_stages = (install_tracking_graphs(torch, self.model, self.device.type, progress=progress, layout="regions")
                              if compile_stages else {})
+        install_tracking_suppression(self.model)
         self.session_factory = OnlineSession
         self.confidence = args.confidence
         self.sessions, self.ids = [], {}

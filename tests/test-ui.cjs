@@ -60,7 +60,7 @@ class Element {
   querySelectorAll(selector) { return this.children.map(child => child.querySelector(selector)); }
   cloneNode() {
     const row = new Element();
-    row.fields = { input: new Element(), ".prompt-count": new Element(), ".remove-prompt": new Element(), ".target-prompt": new Element() };
+    row.fields = { input: new Element(), ".remove-prompt": new Element(), ".target-prompt": new Element() };
     row.fields.input.replaceWith = replacement => { row.fields.input = replacement; };
     return row;
   }
@@ -69,6 +69,7 @@ class Element {
 const elements = new Map();
 const documentEvents = {};
 const get = (id) => {
+  if (["camera-status", "servo-status", "camera-offline"].includes(id)) return null;
   if (!elements.has(id)) {
     const element = new Element(); element.ownerMap = elements; element.ownerKey = id;
     elements.set(id, element);
@@ -101,7 +102,14 @@ const completeFrame = () => {
   assert.ok(pending);
   pending.image.events.load();
   if (pending.mask) pending.mask.events.load();
+  if (run('frameDetection') === pending.detection) {
+    assert.equal(get('feed-loading').hidden, true);
+    assert.equal(get('camera-feed').hidden, false);
+    assert.equal(get('fps-counter').hidden, false);
+  }
 };
+assert.equal(get('feed-loading').hidden, false);
+assert.equal(get('fps-counter').hidden, true);
 const rows = () => get("prompt-rows").children;
 assert.match(fs.readFileSync(path.join(__dirname,'../src/spring_turret/static/index.html'),'utf8'),
   /<option value="sam3\.1-mask">SAM 3\.1 Mask<\/option>/);
@@ -110,7 +118,7 @@ assert.equal(run(`hasTrackingMask({model:'sam3.1-mask',mask_detection:true,tempo
   mask_overlay:{format:'indexed-png',png:'AAAA'}})`),true);
 assert.equal(run(`hasTrackingMask({model:'sam3.1',mask_detection:true,
   mask_overlay:{format:'indexed-png',png:'AAAA'}})`),false);
-const counts = () => rows().map(row => row.fields[".prompt-count"].textContent);
+const colors = () => rows().map(row => row.style["--prompt-color"]);
 for (const id of ["camera-feed", "box-targets", "tracking-overlay"])
   assert.equal(get(id).style["--view-zoom"], undefined);
 assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "../src/spring_turret/static/index.html"), "utf8"), /fov-slider/);
@@ -123,25 +131,17 @@ run(`status = { detection: { enabled: true, state: "running", revision: 1,
   categories: [{prompt: "finger", count: 9, color: "green"}, {prompt: "person", count: 2, color: "orange"}]
 }}; displayedDetection = status.detection;
 setPromptRows(["finger", "person"]);`);
-assert.deepEqual(counts(), ["9", "2"]);
-assert.equal(rows()[0].fields[".prompt-count"].attributes["aria-label"], "finger: 9 detected");
+assert.deepEqual(colors(), ["green", "orange"]);
 run('setPromptRows(["person", "finger"]);');
-assert.deepEqual(counts(), ["2", "9"]); // Not tied to original row indexes.
+assert.deepEqual(colors(), ["orange", "green"]); // Not tied to original row indexes.
 rows()[0].fields.input.value = "unapplied object";
 rows()[0].fields.input.events.input();
-assert.deepEqual(counts(), ["—", "9"]);
-run('displayedDetection.categories[0].count = 0; updatePromptCounts(displayedDetection);');
-assert.deepEqual(counts(), ["—", "0"]);
-run('displayedDetection.state = "loading"; updatePromptCounts(displayedDetection);');
-assert.deepEqual(counts(), ["—", "—"]);
-run('displayedDetection.state = "running"; displayedDetection.frame_age_ms = 6000; updatePromptCounts(displayedDetection);');
-assert.deepEqual(counts(), ["—", "—"]);
-run('updatePromptCounts(null);');
-assert.deepEqual(counts(), ["—", "—"]);
+assert.deepEqual(colors(), ["#55e8ce", "green"]);
+run('updatePromptColors(null);');
+assert.deepEqual(colors(), ["#55e8ce", "#55e8ce"]);
 get("add-prompt").events.click();
 assert.equal(rows().length, 3);
 assert.equal(rows()[2].fields.input.value, "");
-assert.equal(counts()[2], "—");
 while (rows().length < 8) get("add-prompt").events.click();
 assert.equal(get("add-prompt").disabled, true);
 get("add-prompt").events.click();
@@ -149,7 +149,7 @@ assert.equal(rows().length, 8);
 rows()[7].fields[".remove-prompt"].events.click();
 assert.equal(rows().length, 7);
 assert.equal(get("add-prompt").disabled, false);
-console.log("validated per-category counts, draft/stale states and single add button");
+console.log("validated prompt colors, draft edits and single add button");
 
 run(`globalThis.fpsDetection = {state: "running", model: "sam3.1", revision: 1,
   frame_sequence: 100, latency_ms: 1, frame_age_ms: 100};`);
@@ -168,6 +168,14 @@ assert.equal(run('detectionFps(fpsDetection, 5000)'), null);
 assert.equal(run('detectionFps({...fpsDetection, frame_sequence: 99}, 5600)'), null); // Restarted sequence.
 run('detectionFps(null);');
 console.log("validated measured detection FPS, skipped/duplicate polls, stalls and model/prompt resets");
+run('renderFps(14.36);');
+assert.equal(get('fps-value').textContent, '14.4');
+assert.equal(get('fps-counter').getAttribute('aria-label'), '14.4 frames per second');
+run('renderFps(0);');
+assert.equal(get('fps-value').textContent, '0.0');
+run('renderFps(null);');
+assert.equal(get('fps-value').textContent, '—');
+assert.equal(get('fps-counter').getAttribute('aria-label'), 'Frames per second unavailable');
 
 run(`status.servo = {online: true, ready: true, armed: false, axes: {
   x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
@@ -269,13 +277,14 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     frameDetection.boxes = [{prompt:'cup',xyxy:[.45,.45,.55,.55],score:.9,instance_id:1}];
     renderTracking();`);
   assert.equal(run('trackedBox(frameDetection)'), null);
-  assert.match(get('tracking-status').textContent, /holding/);
+  assert.equal(get('tracking-status').hidden, true);
+  assert.equal(get('tracking-status').textContent, '');
   run(`status.tracking.state='reacquiring'; renderTracking();`);
   assert.equal(run('trackedBox(frameDetection)'), null);
-  assert.match(get('tracking-status').textContent, /reacquiring/);
+  assert.equal(get('tracking-status').hidden, true);
   run(`status.tracking.state='centered'; renderTracking();`);
   assert.equal(run('trackedBox(frameDetection).instance_id'), 1);
-  console.log("validated persistent-target hold/reacquire labels without false red highlights");
+  console.log("validated persistent-target hold/reacquire without status clutter or false red highlights");
 
   run(`status.detection.frame_sequence = 11;
     status.detection.boxes = [{prompt: "cup", xyxy: [.1,.2,.3,.4], score: .9, instance_id: 7},
@@ -296,6 +305,8 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   const clickBox = get("box-targets").children[0];
   run('frameDetection.client_overlay = true; renderBoxTargets();');
   assert.equal(clickBox.children[0].textContent, "cup 90%");
+  assert.equal(clickBox.style.left, "70%"); // Original x=.1–.3 appears at mirrored x=.7–.9.
+  assert.ok(Math.abs(parseFloat(clickBox.style.width) - 20) < 1e-10);
   run('frameDetection.client_overlay = false; renderBoxTargets();');
   assert.equal(clickBox.children[0].textContent, ""); // No duplicate labels on baked overlays.
   const pointer = {button: 0, isPrimary: true, pointerId: 1, clientX: 100, clientY: 200};
@@ -394,10 +405,51 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run("JSON.stringify(targetRequests.at(-1))"), '["/api/detection/model",{"model":"sam3.1-mask"}]');
   assert.equal(rows()[0].fields.input.value, "cup"); // Mask draft preserved too.
   assert.equal(run("status.servo.armed"), false);
-  run(`globalThis.submissions = 0; setPrompts = () => { submissions++; };`);
-  get("detection-form").events.keydown({key: "Enter", target: {tagName: "SELECT"}, preventDefault() {}});
-  assert.equal(run("submissions"), 1);
-  console.log("validated model selection, free-text SAM prompts, independent drafts and Enter submission");
+  run(`globalThis.promptCalls = []; globalThis.rejectTarget = false;
+    status.servo.ready=true; status.servo.armed=false; status.servo.run_requested=false;
+    request = async (path, options) => {
+      const body = JSON.parse(options.body || '{}'); promptCalls.push([path, body]);
+      if (path === '/api/detection/prompts')
+        status.detection.prompts = [...new Map(body.prompts.filter(Boolean).map(p=>[p.toLowerCase(),p])).values()];
+      if (path === '/api/tracking/target') {
+        if (rejectTarget) throw new Error('Target rejected');
+        status.tracking = {target:body.target,instance_id:null};
+      }
+      if (path === '/api/servo/arm') status.servo.armed = status.servo.run_requested = true;
+      return status;
+    };
+    setPromptRows(['person','cup']);`);
+  const promptEnter = value => get('detection-form').events.keydown({key:'Enter',
+    target:{tagName:'INPUT',value},preventDefault(){}});
+  await promptEnter(' cup ');
+  assert.equal(run('status.tracking.target'),'cup');
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),
+    '["/api/detection/prompts","/api/tracking/target","/api/servo/arm"]');
+  run('promptCalls=[];');
+  await promptEnter('person');
+  assert.equal(run('status.tracking.target'),'person');
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),
+    '["/api/detection/prompts","/api/tracking/target"]');
+  run('promptCalls=[];');
+  await promptEnter(' ');
+  assert.equal(run('promptCalls.length'),0);
+  assert.equal(run('promptError'),'Enter an object to target');
+  for (const extra of [{repeat:true},{isComposing:true}])
+    await get('detection-form').events.keydown({key:'Enter',target:{tagName:'INPUT',value:'person'},preventDefault(){},...extra});
+  assert.equal(run('promptCalls.length'),0);
+  run('status.servo.armed=false; status.servo.run_requested=false; rejectTarget=true;');
+  await promptEnter('cup');
+  assert.equal(run('status.servo.armed'),false);
+  assert.equal(run('promptError'),'Target rejected');
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),
+    '["/api/detection/prompts","/api/tracking/target"]');
+  run('promptCalls=[]; rejectTarget=false;');
+  await get('detection-form').events.submit({preventDefault(){}});
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),'["/api/detection/prompts"]');
+  run('promptCalls=[];');
+  await get('detection-form').events.keydown({key:'Enter',target:{tagName:'SELECT'},preventDefault(){}});
+  assert.equal(run('JSON.stringify(promptCalls.map(c=>c[0]))'),'["/api/detection/prompts","/api/servo/arm"]');
+  console.log('validated Enter applies prompts, selects the edited class before Start, and leaves button submission unchanged');
   run(`globalThis.enterCalls = []; status.servo.armed=false; status.servo.run_requested=false;
     request = async path => {enterCalls.push(path); status.servo.armed=true; status.servo.run_requested=true; return status;};`);
   documentEvents.keydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
@@ -444,31 +496,30 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   console.log("validated client overlays and out-of-order status without losing motor updates");
   run(`render({...status, detection: {...status.detection, model: "sam3.1", state: "running", frame_age_ms: 10, latency_ms: 100,
     timing: {model_ms:100}, pipeline_timing: {cycle_ms: 121.4}, boxes: [], image_backend: "israel-w8a8-development"}});`);
-  assert.match(get("detection-status").textContent, /^0 boxes · [\d.—]+ FPS · 100 ms model · 121 ms total$/);
+  assert.equal(get("detection-status").textContent, "");
+  assert.equal(get("detection-status").hidden, true);
   run(`render({...status, detection: {...status.detection,
     image_backend: "israel-w8a8-packed-development"}});`);
   assert.doesNotMatch(get("detection-status").textContent, /W8A8|accuracy unqualified|torch\.compile|graphs/);
-  assert.match(get("detection-status").textContent, /100 ms model · 121 ms total/);
+  assert.equal(get("detection-status").textContent, "");
+  assert.equal(get("detection-status").hidden, true);
   run('render({...status, detection: {...status.detection, pipeline_timing: undefined}});');
   assert.doesNotMatch(get("detection-status").textContent, /ms total|NaN/);
   run('status.detection.image_backend = "torch.compile";');
   run('render({...status, detection: {...status.detection, cuda_graph: true, sycl_graph: false}});');
-  assert.match(get("detection-status").textContent, /^0 boxes · [\d.—]+ FPS · 100 ms model$/);
-  assert.equal(run('detectionTiming({model:"sam3.1-tracking",latency_ms:220,timing:{tracking_ms:218.2,model_ms:null},pipeline_timing:{cycle_ms:240}})'),
-    ' · 218.2 ms tracking · 240 ms total');
-  assert.equal(run('detectionTiming({model:"sam3.1-mask",latency_ms:90,timing:{model_ms:89.8}})'), ' · 89.8 ms model');
-  assert.equal(run('detectionTiming({latency_ms:90})'), ' · 90 ms inference');
-  assert.equal(run('detectionTiming({latency_ms:null,timing:{model_ms:NaN},pipeline_timing:{cycle_ms:null}})'), '');
+  assert.equal(get("detection-status").textContent, "");
+  assert.equal(get("detection-status").hidden, true);
   assert.equal(run('isDetectionFresh({state:"running",frame_age_ms:null,latency_ms:null})'), false);
   assert.equal(run('isDetectionFresh({state:"running",frame_age_ms:20})'), true);
   for (const raw of ['compiling', 'compiling_tracker_memory_update']) {
     assert.equal(run(`detectionPhase({state:${JSON.stringify(raw)}})`), 'preparing');
   }
   assert.equal(run('detectionPhase({state:"running",progress:{phase:"preparing"}})'), 'preparing');
-  console.log('validated common progress vocabulary and truthful model versus tracking versus total timings');
+  console.log('validated common progress vocabulary with routine latency and counts hidden');
   assert.doesNotMatch(get("detection-status").textContent, /CUDA|SYCL|torch\.compile|graphs/);
   run('render({...status, detection: {...status.detection, cuda_graph: false, sycl_graph: true}});');
-  assert.match(get("detection-status").textContent, /^0 boxes · [\d.—]+ FPS · 100 ms model$/);
+  assert.equal(get("detection-status").textContent, "");
+  assert.equal(get("detection-status").hidden, true);
   run(`loadingFrame = null; feedSource = "";
     detectionEvents.onopen();
     detectionEvents.onmessage({data: JSON.stringify({...status.detection, state: "running",
@@ -562,9 +613,9 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   detectorMaskPair.image.events.load(); detectorMaskPair.mask.events.load();
   assert.equal(get('camera-feed'),previousImage);
   assert.equal(get('camera-feed').raster[1],detectorMaskPair.mask.src);
-  assert.match(get('detection-status').textContent,/0 masks/);
-  assert.match(get('detection-status').textContent,/3 over mask cap/);
-  console.log('validated non-temporal mask profile compositing and overflow reporting');
+  assert.equal(get('detection-status').textContent, '');
+  assert.equal(get('detection-status').hidden, true);
+  console.log('validated non-temporal masks without overflow text');
 
   for (const model of ['sam3.1-mask', 'sam3.1-tracking']) {
     run(`request = async (path, options) => {
@@ -593,19 +644,23 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     const stableCanvas = get('camera-feed'), frameKey = stableCanvas.getAttribute('data-frame-key');
     const requestsBefore = run('targetRequests.length');
     get('box-targets').rect = {left: 20, top: 30, width: 800, height: 400};
-    const mouse = {button:0,isPrimary:true,pointerId:10,clientX:520,clientY:130};
+    const mouse = {button:0,isPrimary:true,pointerId:10,clientX:320,clientY:130};
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:20,y:130})'), null); // Mirrored leftmost pixel is background.
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:819.9,y:130})'), 7);
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:19.9,y:130})'), null);
+    assert.equal(run('maskInstanceAt(visibleFrame.maskSurface, {x:820,y:130})'), null);
     get('box-targets').events.pointermove(mouse);
     assert.deepEqual(pixel(2), [255,132,142,144]);
     assert.deepEqual(pixel(0), [255,32,48,144]); // Hover cannot lighten the selected target.
     assert.equal(get('camera-feed'), stableCanvas);
     assert.equal(stableCanvas.getAttribute('data-frame-key'), frameKey); // Same processed frame, no raw camera refresh.
     assert.equal(run('targetRequests.length'), requestsBefore); // Hover never moves motors.
-    get('box-targets').events.pointermove({...mouse,clientX:320}); // Transparent pixel inside both boxes.
+    get('box-targets').events.pointermove({...mouse,clientX:520}); // Transparent pixel inside both boxes.
     assert.deepEqual(pixel(2), [65,191,144,112]);
-    get('box-targets').events.pointerdown({...mouse,clientX:320});
-    await get('box-targets').events.pointerup({...mouse,clientX:320});
+    get('box-targets').events.pointerdown({...mouse,clientX:520});
+    await get('box-targets').events.pointerup({...mouse,clientX:520});
     assert.equal(run('targetRequests.length'), requestsBefore);
-    get('box-targets').events.pointermove({...mouse,clientX:120});
+    get('box-targets').events.pointermove({...mouse,clientX:720});
     assert.deepEqual(pixel(0), [255,32,48,144]);
     get('box-targets').events.pointerleave();
     get('box-targets').children[1].events.focus();
@@ -643,13 +698,15 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     renderDetection(status.detection);`);
   assert.equal(get('camera-feed').src, '/32-8.jpg');
   assert.equal(run('frameDetection.frame_sequence'), 8);
-  assert.match(get('detection-status').textContent, /Preparing tracking graph.*showing last result/);
+  assert.equal(get('detection-status').hidden, true);
   assert.doesNotMatch(get('detection-status').textContent, /FPS|Waiting for detection/);
+  assert.equal(get('fps-value').textContent, '—');
   run(`status.detection = {...status.detection, frame_sequence:9, frame_url:'/32-9.jpg',
     frame_age_ms:100, progress_stage:null}; renderDetection(status.detection);`);
   completeFrame();
   assert.equal(get('camera-feed').src, '/32-9.jpg');
-  assert.match(get('detection-status').textContent, /FPS/);
+  assert.doesNotMatch(get('detection-status').textContent, /FPS/);
+  assert.match(get('fps-value').textContent, /^[\d.—]+$/);
   run(`status.detection = {...status.detection, revision:33, frame_sequence:null, frame_url:null,
     state:'compiling_tracker_text_encoder', progress_stage:'compiling_tracker_text_encoder'};
     renderDetection(status.detection);`);
@@ -657,11 +714,12 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run('frameDetection.frame_sequence'), 9);
   assert.equal(get('mask-overlay').hidden, true);
   assert.doesNotMatch(appSource, /\/stream\.mjpg/);
-  assert.equal(get('detection-status').textContent, 'Preparing tracking graph…');
+  assert.equal(get('detection-status').hidden, true);
   run(`status.detection = {...status.detection, state:'error', error:'worker failed'};
     renderDetection(status.detection);`);
   assert.equal(get('detection-status').textContent, 'worker failed');
-  console.log('validated temporal recapture preserves paired frame, labels warmup and resumes without MJPEG flashing');
+  assert.equal(get('detection-status').hidden, false);
+  console.log('validated temporal recapture quietly preserves paired frames and resumes without flashing');
 
   run(`status.runtime = {backend_pid:10}; frameBackendPid = 10;
     render({...status, runtime:{backend_pid:11}, detection:{...status.detection,
@@ -679,7 +737,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   console.log('validated backend restart accepts reset frame numbers and invalidates old click targets');
   const retainedFrame = get('camera-feed'), retainedPixels = [...retainedFrame.raster];
   run('render({...status,camera:{...status.camera,online:false,error:"temporary reconnect"}});');
-  assert.equal(get('camera-offline').hidden,true);
+  assert.equal(get('message').textContent, 'temporary reconnect');
   assert.equal(get('camera-feed'),retainedFrame);
   assert.deepEqual(get('camera-feed').raster,retainedPixels);
   run(`render({...status,camera:{...status.camera,online:true},detection:{...status.detection,
@@ -761,15 +819,16 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
       progress:{phase:'preparing',stage:id === 'arc' ? 'compiling_tracker_memory_update' : 'compiling'},
       frame_sequence:null,frame_url:null})});
   }
-  assert.equal(devices.arc.element('detection-status').textContent, 'Preparing tracking graph…');
+  assert.equal(devices.arc.element('detection-status').hidden, true);
   assert.equal(devices.arc.element('detection-status').textContent, devices.thor.element('detection-status').textContent);
   for (const [id, stream] of [['arc', arcStream], ['thor', thorStream]]) {
     stream.onmessage({data: JSON.stringify({...states[id].detection, revision:2,
       model:'sam3.1-tracking', state:'running',progress:{phase:'running',stage:'running'},
       frame_sequence:3,frame_age_ms:5,frame_url:'/api/detection/frame/2-3.jpg',
       latency_ms:220,timing:{model_ms:null,tracking_ms:218},pipeline_timing:{cycle_ms:240},mask_overflow:{}})});
-    assert.match(devices[id].element('detection-status').textContent, /^0 masks · [\d.—]+ FPS · 218 ms tracking · 240 ms total$/);
+    assert.equal(devices[id].element('detection-status').textContent, '');
+    assert.equal(devices[id].element('detection-status').hidden, true);
   }
-  console.log('validated identical Arc/Thor phase and timing labels from different worker states');
+  console.log('validated quiet Arc/Thor preparation and hidden running summaries');
   console.log('validated side-by-side panel isolation: prompts, streams, image URLs, Start/Stop and focused Escape');
 })().catch(error => { console.error(error); process.exitCode = 1; });
