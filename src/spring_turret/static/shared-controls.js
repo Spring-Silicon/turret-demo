@@ -11,12 +11,18 @@ function mountSharedControls(document, devices) {
   const states = new Map(), clients = new Map(), offline = new Set(), drafts = new Map();
   let model = null, initialized = false, busy = false, error = '', dirty = false;
   let renderedModel = null;
-
   const readRows = () => [...rows.children].map(row => row.querySelector('.detection-prompt').value.trim());
   const normalized = values => [...new Map(values.filter(Boolean).map(value => [value.toLowerCase(), value])).values()];
   const detections = () => devices.map(device => states.get(device.id)?.detection);
   const limit = () => Math.min(...detections().map(d => d?.max_prompts || 8));
-  const available = id => detections().every(d => d?.enabled && d.models?.some(m => m.id === id && m.available));
+  // v18 is an Intel implementation of the temporal profile. Thor keeps its
+  // existing CUDA tracking implementation, not the Intel-only worker ID.
+  const effectiveModel = (id, device) => id === 'sam3.1-v18' && device.id === 'thor' ? 'sam3.1-tracking' : id;
+  const availableOn = (id, device) => {
+    const d = states.get(device.id)?.detection;
+    return d?.enabled && d.models?.some(m => m.id === effectiveModel(id, device) && m.available);
+  };
+  const available = id => devices.every(device => availableOn(id, device));
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   function makeRow(value = '') {
@@ -73,8 +79,9 @@ function mountSharedControls(document, devices) {
     for (const option of modelSelector.options) {
       const disabled = !available(option.value);
       if (option.disabled !== disabled) option.disabled = disabled;
-      const missing = devices.filter(d => !states.get(d.id)?.detection?.models?.some(m => m.id === option.value && m.available));
-      const title = missing.length ? `Unavailable on ${missing.map(d => d.label).join(', ')}` : '';
+      const missing = devices.filter(d => !availableOn(option.value, d));
+      const title = missing.length ? `Unavailable on ${missing.map(d => d.label).join(', ')}`
+        : option.value === 'sam3.1-v18' ? 'Arc: Israel v18 tracking; Thor: SAM 3.1 Tracking' : '';
       if (option.title !== title) option.title = title;
     }
     add.disabled = !ready || busy || rows.children.length >= limit();
@@ -88,7 +95,7 @@ function mountSharedControls(document, devices) {
       row.querySelector('.remove-prompt').disabled = !ready || busy;
       const applied = prompt && !seen.has(prompt) && devices.every(device => {
         const d = states.get(device.id)?.detection;
-        return !offline.has(device.id) && d?.model === model && d.prompts.includes(prompt);
+        return !offline.has(device.id) && d?.model === effectiveModel(model, device) && d.prompts.includes(prompt);
       });
       seen.add(prompt);
       const selected = applied && devices.every(d => states.get(d.id)?.tracking?.target === prompt);
@@ -103,7 +110,7 @@ function mountSharedControls(document, devices) {
     });
     const mismatched = initialized && devices.filter(device => {
       const d = states.get(device.id)?.detection;
-      return d && (d.model !== model || !same(d.prompts, normalized(readRows())));
+      return d && (d.model !== effectiveModel(model, device) || !same(d.prompts, normalized(readRows())));
     });
     const notices = [];
     if (!busy && mismatched?.length) notices.push(dirty ? 'Unapplied changes' : 'Device settings differ; Update prompts applies this selection to both');
@@ -138,8 +145,9 @@ function mountSharedControls(document, devices) {
     const selectedModel = model, prompts = normalized(readRows());
     drafts.set(model, prompts);
     const ok = await fanOut(async (client, device) => {
-      if (states.get(device.id)?.detection?.model !== selectedModel)
-        await client.command('/api/detection/model', {model: selectedModel});
+      const deviceModel = effectiveModel(selectedModel, device);
+      if (states.get(device.id)?.detection?.model !== deviceModel)
+        await client.command('/api/detection/model', {model: deviceModel});
       let result = await client.command('/api/detection/prompts', {prompts});
       states.set(device.id, result); offline.delete(device.id);
       if (targetPrompt !== undefined) {
@@ -167,7 +175,7 @@ function mountSharedControls(document, devices) {
     const selected = drafts.get(next) || oldPrompts;
     setRows(selected);
     await fanOut(async (client, device) => {
-      const result = await client.command('/api/detection/model', {model: next});
+      const result = await client.command('/api/detection/model', {model: effectiveModel(next, device)});
       states.set(device.id, result); offline.delete(device.id);
       const applied = await client.command('/api/detection/prompts', {prompts: normalized(selected)});
       states.set(device.id, applied);

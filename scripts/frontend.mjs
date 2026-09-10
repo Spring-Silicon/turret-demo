@@ -15,7 +15,7 @@ const GET_PATHS = new Set(['/api/status', '/api/detection/status',
 const POST_PATHS = new Set(['/api/detection/model', '/api/detection/prompts',
   '/api/detection/prompt', '/api/tracking/target', '/api/tracking/instance',
   '/api/servo/arm', '/api/servo/disable', '/api/servo/recalibrate',
-  '/api/servo/keepalive', '/api/servo/position']);
+  '/api/servo/keepalive', '/api/servo/position', '/api/servo/gains', '/api/servo/gains/reset']);
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/index.html', ['index.html', 'text/html; charset=utf-8']],

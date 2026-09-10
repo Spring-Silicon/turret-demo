@@ -145,8 +145,9 @@ def install_tracking_graphs(torch, model, device_type, *, progress=None, backend
 No quantization, memory-policy changes, frame skipping, mask omission or
 whole-session capture. CPU association and variable Python bookkeeping stay
 eager. Exact shape specializations do not pad/drop objects or truncate memory.
-The image encoder uses Inductor; the remaining stages use AOTAutograd's native
-ATen graph backend, avoiding the temporal drift seen with full Inductor fusion.
+The legacy stage layout's hybrid backend retains native ATen heads. The current
+regional CUDA path uses the separately qualified unquantized Inductor heads;
+the XPU regional policy is unchanged. Text remains cached outside frame replay.
 """
     import torch._dynamo
     torch._dynamo.config.cache_size_limit = 128

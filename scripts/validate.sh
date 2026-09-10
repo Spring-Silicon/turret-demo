@@ -31,6 +31,7 @@ python3 tests/test-tracking.py
 python3 tests/test-target-lock.py
 python3 tests/test-temporal.py
 python3 tests/test-native-tracking.py
+python3 tests/test-v18-tracking.py
 python3 tests/test-track-lifetime.py
 python3 tests/test-shared-policy.py
 python3 tests/test-tracking-suppression.py
@@ -38,6 +39,7 @@ python3 tests/test-recovery.py
 python3 tests/test-startup.py
 python3 tests/test-deployment-bundle.py
 python3 tests/test-tracking-graphs.py
+python3 tests/test-tracking-compiler.py
 python3 tests/test-tracking-masks.py
 python3 tests/test-geometry.py
 python3 tests/test-pose-history.py

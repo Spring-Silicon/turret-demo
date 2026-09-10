@@ -19,10 +19,15 @@ header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 18px;
   border-bottom: 1px solid var(--line);
 }
 
-h1 { margin: 0; font-size: 18px; font-weight: 600; }
+h1 { margin: 0; font-size: inherit; font-weight: 600; }
+#latency-counter { margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: baseline; gap: .35em; font-size: inherit; font-variant-numeric: tabular-nums; }
+#latency-counter > span { white-space: nowrap; }
 
 main {
   max-width: 1440px;

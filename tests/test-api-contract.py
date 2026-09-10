@@ -16,7 +16,7 @@ from spring_turret.models import MODELS, model_available, model_prompts
 class ContractTests(unittest.TestCase):
     def test_yolo_removed_from_registry_legacy_snapshots_and_command_boundary(self):
         from spring_turret.viewer import ViewerApplication
-        self.assertEqual(set(MODELS), {"sam3.1", "sam3.1-mask", "sam3.1-tracking"})
+        self.assertEqual(set(MODELS), {"sam3.1", "sam3.1-mask", "sam3.1-tracking", "sam3.1-v18"})
         self.assertFalse(model_available("yolo26x", {"enabled":True, "yolo26x_checkpoint":"/old"}))
         with self.assertRaises(ValueError): model_prompts("yolo26x", ["person"])
         for model in MODELS:

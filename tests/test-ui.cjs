@@ -177,6 +177,33 @@ run('renderFps(null);');
 assert.equal(get('fps-value').textContent, '—');
 assert.equal(get('fps-counter').getAttribute('aria-label'), 'Frames per second unavailable');
 
+run(`renderLatency({...fpsDetection, timing:{model_ms:64.42,tracking_ms:90,worker_total_ms:68},
+  pipeline_timing:{cycle_ms:69.07}});`);
+assert.equal(get('model-latency').textContent, '64.4');
+assert.equal(get('overhead-latency').textContent, (69.07 - 64.42).toFixed(1));
+assert.equal(get('total-latency').textContent, '69.1');
+run(`renderLatency({...fpsDetection, timing:{model_ms:null,tracking_ms:218,worker_total_ms:240}});`);
+assert.equal(get('model-latency').textContent, '218.0');
+assert.equal(get('overhead-latency').textContent, '22.0');
+assert.equal(get('total-latency').textContent, '240.0');
+run('renderLatency({...fpsDetection, timing:{model_ms:0,worker_total_ms:0}});');
+assert.equal(get('overhead-latency').textContent, '0.0');
+run('renderLatency({...fpsDetection, timing:{model_ms:20,worker_total_ms:19}});');
+assert.equal(get('overhead-latency').textContent, '—'); // Inconsistent timings are not zero overhead.
+run('renderLatency({...fpsDetection, latency_ms:0});');
+assert.equal(get('model-latency').textContent, '0.0');
+assert.equal(get('total-latency').textContent, '—'); // Never label model-only timing as total.
+assert.equal(get('overhead-latency').textContent, '—');
+for (const detection of ['null', '{...fpsDetection,state:"compiling"}',
+    '{...fpsDetection,progress:{phase:"preparing"}}', '{...fpsDetection,frame_age_ms:6000}',
+    '{...fpsDetection,latency_ms:NaN,timing:{model_ms:-1},pipeline_timing:{cycle_ms:Infinity}}']) {
+  run(`renderLatency(${detection});`);
+  assert.equal(get('model-latency').textContent, '—');
+  assert.equal(get('overhead-latency').textContent, '—');
+  assert.equal(get('total-latency').textContent, '—');
+}
+console.log('validated model/overhead/total latency, exact subtraction, tracking fallback, zero, missing, invalid and stale timing');
+
 run(`status.servo = {online: true, ready: true, armed: false, axes: {
   x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
   y: {degrees: -3, goal_degrees: null, min_degrees: -30, max_degrees: 30, torque: false}
@@ -828,6 +855,9 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
       latency_ms:220,timing:{model_ms:null,tracking_ms:218},pipeline_timing:{cycle_ms:240},mask_overflow:{}})});
     assert.equal(devices[id].element('detection-status').textContent, '');
     assert.equal(devices[id].element('detection-status').hidden, true);
+    assert.equal(devices[id].element('model-latency').textContent, '218.0');
+    assert.equal(devices[id].element('overhead-latency').textContent, '22.0');
+    assert.equal(devices[id].element('total-latency').textContent, '240.0');
   }
   console.log('validated quiet Arc/Thor preparation and hidden running summaries');
   console.log('validated side-by-side panel isolation: prompts, streams, image URLs, Start/Stop and focused Escape');

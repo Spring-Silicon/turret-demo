@@ -8,8 +8,13 @@ else:
 MODELS = {
     "sam3.1": {"label": "SAM 3.1", "worker": "sam31_worker.py", "classes": None},
     "sam3.1-tracking": {"label": "SAM 3.1 Tracking", "worker": "sam31_tracking_worker.py", "classes": None},
+    "sam3.1-v18": {"label": "SAM 3.1 v18", "worker": "sam31_tracking_v18_worker.py", "classes": None},
     "sam3.1-mask": {"label": "SAM 3.1 Mask", "worker": "sam31_mask_worker.py", "classes": None},
 }
+
+
+def is_tracking_model(model):
+    return model in ("sam3.1-tracking", "sam3.1-v18")
 
 
 def model_available(model, config):
@@ -17,6 +22,10 @@ def model_available(model, config):
         return False
     if model == "sam3.1-tracking":
         return config.get("device_type", "xpu") in ("xpu", "cuda") and bool(config.get("sam31_tracking_bundle"))
+    if model == "sam3.1-v18":
+        return (config.get("device_type", "xpu") == "xpu"
+                and bool(config.get("sam31_tracking_bundle"))
+                and bool(config.get("sam31_tracking_v18_bundle")))
     if model == "sam3.1-mask":
         return config.get("device_type", "xpu") == "cuda" or bool(config.get("sam31_mask_bundle"))
     return model == "sam3.1"

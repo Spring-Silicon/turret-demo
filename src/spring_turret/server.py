@@ -46,6 +46,8 @@ COMMAND_FIELDS = {
     "/api/servo/recalibrate": set(),
     "/api/servo/keepalive": None,
     "/api/servo/position": {"axis", "degrees"},
+    "/api/servo/gains": {"axis", "p", "d"},
+    "/api/servo/gains/reset": {"axis"},
 }
 
 
@@ -304,6 +306,8 @@ class TurretApplication:
         elif path == "/api/servo/recalibrate": self.tracking.recalibrate()
         elif path == "/api/servo/keepalive": self.servo.keepalive()
         elif path == "/api/servo/position": self.tracking.manual_move(body["axis"], body["degrees"])
+        elif path == "/api/servo/gains": self.servo.set_gains(body["axis"], body["p"], body["d"])
+        elif path == "/api/servo/gains/reset": self.servo.reset_gains(body["axis"])
         return self.status()
 
 

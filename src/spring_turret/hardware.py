@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any, Protocol
-from .models import MODELS
+from .models import MODELS, is_tracking_model
 
 
 @dataclass
@@ -33,8 +33,15 @@ class XpuRuntime:
         packed = (self.config.get("model", "sam3.1") == "sam3.1" and sam_bundle is not None
                   and packed_profile(Path(sam_bundle)))
         cache = Path(self.config["cache_dir"])
+        tracking = is_tracking_model(self.config.get("model"))
+        v18 = self.config.get("model") == "sam3.1-v18"
+        native_tracking_bundle = self.config.get("sam31_tracking_v18_bundle" if v18 else "sam31_tracking_native_bundle")
+        if v18 and not native_tracking_bundle:
+            raise ValueError("SAM 3.1 v18 requires its pinned native tracking bundle")
         if self.config.get("model") == "sam3.1-mask":
             cache /= "sam31-mask-20260908"
+        elif v18:
+            cache /= "sam31-tracking-israel-full1008-v18"
         elif self.config.get("model") == "sam3.1-tracking":
             cache /= "sam31-tracking-israel-native672-v24" if self.config.get("sam31_tracking_native_bundle") else "sam31-tracking"
         elif w4a4:
@@ -78,15 +85,15 @@ class XpuRuntime:
             # buffers in /dev/shm. Each worker gets an isolated directory.
             self.native_temp = tempfile.TemporaryDirectory(prefix="turret-native-", dir="/dev/shm")
             env["SPRING_NATIVE_IPC_DIR"] = self.native_temp.name
-        if self.config.get("model") == "sam3.1-tracking" and self.config.get("device_type", "xpu") == "xpu":
-            if self.config.get("sam31_tracking_native_bundle"):
-                env["SPRING_SAM31_TRACKING_NATIVE_BUNDLE"] = self.config["sam31_tracking_native_bundle"]
+        if tracking and self.config.get("device_type", "xpu") == "xpu":
+            if native_tracking_bundle:
+                env["SPRING_SAM31_TRACKING_NATIVE_BUNDLE"] = native_tracking_bundle
             tracking_bundle = Path(self.config["sam31_tracking_bundle"])
             env["LD_LIBRARY_PATH"] = str(Path(self.config["python"]).parent.parent / "lib") + ":" + env.get("LD_LIBRARY_PATH", "")
             if (tracking_bundle / "runtime/graphics").is_dir():
                 env["LD_LIBRARY_PATH"] = str(verify_graphics(tracking_bundle)) + ":" + env["LD_LIBRARY_PATH"]
-            if self.config.get("sam31_tracking_native_bundle"):
-                env["LD_LIBRARY_PATH"] = str(Path(self.config["sam31_tracking_native_bundle"]) / "lib") + ":" + env["LD_LIBRARY_PATH"]
+            if native_tracking_bundle:
+                env["LD_LIBRARY_PATH"] = str(Path(native_tracking_bundle) / "lib") + ":" + env["LD_LIBRARY_PATH"]
         return WorkerSpec(
             [
                 self.config["python"],
@@ -99,13 +106,13 @@ class XpuRuntime:
                 "--device",
                 str(self.config.get("device", 0)),
                 *(["--device-type", self.config.get("device_type", "xpu")]
-                  if self.config.get("model", "sam3.1") in ("sam3.1", "sam3.1-tracking", "sam3.1-mask") else []),
+                  if self.config.get("model", "sam3.1") in MODELS else []),
                 "--precision",
-                "bfloat16" if self.config.get("model") == "sam3.1-tracking" else self.config.get("precision", "float16"),
+                "bfloat16" if tracking else self.config.get("precision", "float16"),
                 "--confidence",
                 str(self.config.get("confidence", 0.5)),
                 *(["--source-bundle", self.config["sam31_tracking_bundle"]]
-                  if self.config.get("model") == "sam3.1-tracking" else []),
+                  if tracking else []),
                 *(["--mask-bundle", self.config["sam31_mask_bundle"]]
                   if self.config.get("model") == "sam3.1-mask" and self.config.get("sam31_mask_bundle") else []),
                 *(["--compiled-bundle", self.config["sam31_mask_compiled_bundle"]]
@@ -131,8 +138,10 @@ class CudaRuntime:
     def prepare(self):
         config = self.config
         model = config.get("model", "sam3.1")
+        if model == "sam3.1-v18":
+            raise ValueError("SAM 3.1 v18 is Intel-only; select SAM 3.1 Tracking on CUDA")
         if any(config.get(k) for k in ("sam31_native_bundle", "sam31_w8a8_development_bundle",
-               "sam31_w4a4_bundle", "sam31_tracking_native_bundle", "sam31_mask_bundle")):
+               "sam31_w4a4_bundle", "sam31_tracking_native_bundle", "sam31_tracking_v18_bundle", "sam31_mask_bundle")):
             raise ValueError("Intel native bundles cannot be loaded by CUDA")
         cache = Path(config["cache_dir"]) / {
             "sam3.1": "sam31-cuda", "sam3.1-mask": "sam31-mask-20260908",

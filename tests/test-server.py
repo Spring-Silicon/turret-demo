@@ -28,7 +28,7 @@ class FakePort:
 class FakePacket:
     def __init__(self):
         defaults = {10: 0, 11: 4, 12: 255, 20: 0, 48: 4095, 52: 0,
-                    64: 0, 70: 0, 98: 0, 116: 100, 132: 2048}
+                    64: 0, 70: 0, 80: 0, 82: 0, 84: 400, 98: 0, 116: 100, 132: 2048}
         self.registers = {1: defaults.copy(), 2: defaults.copy()}
         self.writes = []
         self.fail = None
@@ -58,6 +58,117 @@ class FakePacket:
 
 
 class ControllerTests(unittest.TestCase):
+    def test_gain_status_is_read_only_cached_and_does_not_arm(self):
+        self.controller._poll_locked()
+        self.packet.writes.clear()
+        with patch.object(self.controller, '_read', wraps=self.controller._read) as read:
+            for _ in range(3): self.controller._poll_locked(); self.controller.status()
+            self.assertFalse(any(call.args[1] in (80,82,84) for call in read.call_args_list))
+        self.assertEqual(self.packet.writes, [])
+        state = self.controller.status()
+        self.assertEqual(state['axes']['x']['position_gains'], dict(p=400,i=0,d=0))
+        self.assertFalse(state['armed'])
+
+    def test_live_gains_preserve_i_other_axis_pose_and_torque_and_reset(self):
+        self.packet.registers[2][82] = 25
+        self.controller.arm()
+        before = copy.deepcopy(self.config)
+        self.packet.writes.clear()
+        self.controller.set_gains('x', 800, 100)
+        self.assertEqual(self.packet.writes, [(2,84,800),(2,80,100)])
+        self.assertEqual(self.packet.registers[2][82],25)
+        self.assertTrue(self.controller.armed)
+        self.assertTrue(self.controller.run_requested)
+        self.assertEqual(self.config,before)
+        self.assertEqual(self.controller.status()['axes']['x']['gain_baseline'],dict(p=400,d=0))
+        # Fresh process, same installation; I remains hardware/config owned.
+        restarted = servo.ServoController(copy.deepcopy(before['servo']))
+        self.assertEqual(restarted.gain_settings.values['x'],dict(p=800,d=100))
+        self.controller.disable()
+        self.packet.registers[2].update({80:0,84:400})
+        self.controller.arm()
+        self.assertEqual(self.packet.registers[2][84],800)
+        self.assertEqual(self.packet.registers[2][80],100)
+        self.packet.writes.clear()
+        self.controller.reset_gains('x')
+        self.assertEqual(self.packet.writes,[(2,84,400),(2,80,0)])
+        self.assertTrue(self.controller.armed)
+
+    def test_gain_requests_validate_before_writes_and_preserve_stop(self):
+        self.controller._poll_locked()
+        self.packet.writes.clear()
+        for args in [('z',400,0),([],400,0),('x',True,0),('x',0,0),('x',400,-1),
+                     ('x',16384,0),('x',400,1.5),('x','400',0)]:
+            with self.assertRaises(ValueError): self.controller.set_gains(*args)
+        self.assertEqual(self.packet.writes,[])
+        self.controller.set_gains('y',500,10)
+        self.assertFalse(self.controller.armed)
+        self.assertFalse(self.controller.run_requested)
+
+    def test_failed_gain_write_and_persistence_roll_back_without_saving(self):
+        self.controller.arm()
+        self.packet.fail = ('write',2,80,100)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.set_gains('x',800,100)
+        self.assertEqual(self.packet.registers[2][84],400)
+        self.assertEqual(self.controller.gain_settings.values,{})
+        self.assertTrue(self.controller.armed)
+        self.packet.fail = None
+        with patch.object(self.controller.gain_settings,'save',side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(servo.DeviceUnavailable,'disk full'):
+                self.controller.set_gains('x',800,100)
+        self.assertEqual(self.controller.status()['axes']['x']['position_gains'],dict(p=400,i=0,d=0))
+        self.assertEqual(self.controller.gain_settings.values,{})
+
+    def test_disconnected_and_offline_changes_are_rejected(self):
+        self.controller.arm()
+        self.packet.missing.add(2)
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.set_gains('x',800,100)
+        # No old readback was available: a failed ping must not write anything.
+        self.controller._fault_locked(servo.DeviceUnavailable('disconnected'))
+        self.packet.writes.clear()
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.set_gains('x',800,100)
+        self.assertEqual(self.packet.writes,[])
+
+    def test_gain_readback_mismatch_rolls_back_and_unconfirmed_rollback_faults(self):
+        self.controller.arm()
+        original = self.controller._read_gains_locked
+        calls = 0
+        def mismatch(name):
+            nonlocal calls
+            calls += 1
+            result = original(name)
+            return {**result,'d':42} if calls == 2 else result
+        with patch.object(self.controller,'_read_gains_locked',side_effect=mismatch):
+            with self.assertRaisesRegex(servo.DeviceUnavailable,'readback mismatch'):
+                self.controller.set_gains('x',800,100)
+        self.assertEqual(self.packet.registers[2][84],400)
+        self.assertEqual(self.controller.gain_settings.values,{})
+        self.packet.fail = ('write',2,84,400)
+        with patch.object(self.controller.gain_settings,'save',side_effect=OSError('full')):
+            with self.assertRaisesRegex(servo.DeviceUnavailable,'rollback unconfirmed'):
+                self.controller.set_gains('x',800,100)
+        self.assertFalse(self.controller.armed)
+        self.assertTrue(self.controller.run_requested)
+
+        self.packet.fail = None
+        self.controller._tick_locked()
+        self.assertTrue(self.controller.armed)
+        self.assertEqual(self.packet.registers[2][84],400)
+        self.assertEqual(self.packet.registers[2][80],0)
+
+    def test_saved_gain_identity_validation_and_baseline_survive_restart(self):
+        self.controller._poll_locked()
+        self.controller.set_gains('x',900,50)
+        original = copy.deepcopy(self.config['servo'])
+        restarted = servo.ServoController(original)
+        self.assertEqual(restarted.gain_settings.baseline['x'],dict(p=400,d=0))
+        original['axes']['x']['direction'] *= -1
+        with self.assertRaisesRegex(ValueError,'do not match'): servo.ServoController(original)
+        data = json.loads(self.controller.gain_settings.path.read_text())
+        data['values']['x']['p'] = True
+        self.controller.gain_settings.path.write_text(json.dumps(data))
+        with self.assertRaises(ValueError): servo.ServoController(self.config['servo'])
+
     def test_lost_read_retries_once_but_persistent_or_device_faults_fail(self):
         self.controller.arm()
         original=self.packet.read1ByteTxRx
@@ -744,6 +855,16 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(request("/api/servo/position", {"axis": "x", "degrees": 10})[0], 409)
             self.assertEqual(request("/api/servo/arm")[0], 200)
             self.assertEqual(request("/api/servo/recalibrate", {})[0], 409)
+            code, gains = request('/api/servo/gains', {'axis':'x','p':800,'d':100})
+            self.assertEqual(code,200)
+            self.assertEqual(gains['servo']['axes']['x']['position_gains'],dict(p=800,i=0,d=100))
+            self.assertTrue(gains['servo']['armed'])
+            for invalid in ({'axis':'x','p':800}, {'axis':'x','p':True,'d':100},
+                            {'axis':'x','p':800,'d':100,'i':5}):
+                self.assertEqual(request('/api/servo/gains',invalid)[0],400)
+            code, gains = request('/api/servo/gains/reset',{'axis':'x'})
+            self.assertEqual(code,200)
+            self.assertEqual(gains['servo']['axes']['x']['position_gains'],dict(p=400,i=0,d=0))
             code, body = request("/api/servo/position", {"axis": "x", "degrees": 10})
             self.assertEqual(code, 200)
             self.assertEqual(body["servo"]["axes"]["x"]["goal"], 2162)

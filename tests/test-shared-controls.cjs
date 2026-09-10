@@ -40,7 +40,7 @@ const ids = new Map();
 const get = id => {if (!ids.has(id)) ids.set(id, new Element()); return ids.get(id);};
 const document = {getElementById: get, createElement: tag => new Element(tag)};
 get('prompt-row-template').content = {firstElementChild: new Element()};
-for (const id of ['sam3.1', 'sam3.1-mask', 'sam3.1-tracking', 'sam3.1-mask']) {
+for (const id of ['sam3.1', 'sam3.1-mask', 'sam3.1-tracking', 'sam3.1-v18']) {
   const option = new Element('option'); option.value = id; get('detection-model').append(option);
 }
 const ctx = vm.createContext({document});
@@ -68,6 +68,8 @@ for (const {id} of devices) {
       } else if (route === '/api/detection/prompts') state.detection.prompts = [...body.prompts];
       else if (route === '/api/tracking/target') state.tracking = {target:body.target,instance_id:null};
       else if (route === '/api/servo/arm') state.servo.armed = true;
+      else if (route === '/api/servo/gains') Object.assign(state.servo.axes[body.axis].position_gains,{p:body.p,d:body.d});
+      else if (route === '/api/servo/gains/reset') Object.assign(state.servo.axes[body.axis].position_gains,state.servo.axes[body.axis].gain_baseline);
       else throw new Error(`Unexpected mutation ${route}`);
       controller.update(id, structuredClone(state));
       return structuredClone(state);
@@ -75,6 +77,7 @@ for (const {id} of devices) {
   };
   controller.attach(id, clients[id]);
 }
+states.arc.detection.models.push({id:'sam3.1-v18',available:true});
 const rows = () => get('prompt-rows').children;
 const input = i => rows()[i].querySelector('.detection-prompt');
 const values = () => rows().map(row => row.querySelector('.detection-prompt').value);
@@ -236,6 +239,32 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(calls.length,beforeUnavailable);
   assert.equal(get('detection-model').value,'sam3.1-mask');
   console.log('validated partial failures, no automatic retries, in-flight exclusion and common model availability');
+
+  const beforeV18 = calls.length;
+  const v18 = get('detection-model').options.find(o=>o.value==='sam3.1-v18');
+  assert.equal(v18.disabled,false); // Thor has no Intel-only model ID.
+  await changeModel('sam3.1-v18');
+  assert.equal(states.arc.detection.model,'sam3.1-v18');
+  assert.equal(states.thor.detection.model,'sam3.1-tracking');
+  assert.deepEqual(calls.slice(beforeV18).filter(c=>c.route==='/api/detection/model').map(c=>[c.id,c.body.model]),
+    [['arc','sam3.1-v18'],['thor','sam3.1-tracking']]);
+  assert.ok(calls.slice(beforeV18).every(c=>!c.route.includes('/servo/')));
+  assert.equal(get('shared-message').hidden,true); // Intentional mapping is not a mismatch.
+  assert.equal(rows()[0].querySelector('.target-prompt').disabled,false);
+  menuWrites.length=0;
+  for(let i=0;i<50;i++) controller.update(i%2?'arc':'thor',structuredClone(states[i%2?'arc':'thor']));
+  assert.deepEqual(menuWrites,[]);
+  const beforeV18Submit=calls.length;
+  await submit();
+  assert.ok(calls.slice(beforeV18Submit).every(c=>c.route==='/api/detection/prompts'));
+  states.thor.detection.models.find(m=>m.id==='sam3.1-tracking').available=false;
+  controller.update('thor',structuredClone(states.thor));
+  assert.equal(v18.disabled,true);
+  assert.match(v18.title,/Thor/);
+  states.thor.detection.models.find(m=>m.id==='sam3.1-tracking').available=true;
+  controller.update('thor',structuredClone(states.thor));
+  await changeModel('sam3.1-mask');
+  console.log('validated v18 maps to Arc v18 and Thor tracking with shared prompts and stable selection');
 
   // The actual per-device client runs without model/form/template elements
   // when mounted in shared-control mode. Local motor and instance commands

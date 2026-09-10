@@ -358,6 +358,10 @@ Tracking (temporal masks and IDs). All accept free-text prompts, retain multiple
 instances, and support per-class counts and click retargeting. YOLO is removed
 from the selector, API model registry, worker and installation dependencies.
 
+The additional [SAM 3.1 v18 choice](docs/sam31-v18.md) uses Israel's full1008
+native v18 mask tracker on Arc and selects the existing SAM 3.1 Tracking model
+on Thor. The original Tracking option remains available.
+
 Applied prompts and browser drafts are kept separately per model. Switching
 models clears old results and instance IDs and holds automatic motion; it keeps
 the selected class when that class remains in the applied prompts and
@@ -505,6 +509,9 @@ image backend and frame-driven delivery are separate improvements.
 - `POST /api/servo/disable`
 - `POST /api/servo/keepalive` compatibility no-op for older clients; no heartbeat required
 - `POST /api/servo/position` with `{"axis": "x", "degrees": 10.5}` (or `"y"`)
+- `POST /api/servo/gains` with `{"axis": "x", "p": 400, "d": 0}`
+- `POST /api/servo/gains/reset` with `{"axis": "x"}` (or `"y"`)
+
 - `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` temporarily retargets to a box from the displayed frame without arming.
 - `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
   `{"target": null}` to clear it. Selection is not persisted across restarts.
@@ -512,6 +519,11 @@ image backend and frame-driven delivery are separate improvements.
 - `POST /api/detection/prompt` with `{"prompt": "chair"}` (single-category compatibility)
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL
   returned in `status.detection.frame_url`; old revisions return 404)
+
+The combined page shares one P slider, one D slider and Reset across all four
+servos. Standalone pages retain per-axis tuning controls.
+See [servo gains](docs/servo-gains.md) for raw units, persistence, readback and
+reset-baseline behavior. Gain changes do not arm motors or change servo zeros.
 
 ## Validate
 

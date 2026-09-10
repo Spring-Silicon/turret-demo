@@ -1,5 +1,7 @@
 """One device-independent target policy. No Torch, CUDA, XPU or serial imports."""
 
+from .models import is_tracking_model
+
 POLICY_VERSION = "sam-shared-v1"
 DEAD_BAND = .003
 TRACK_RETENTION_SECONDS = 5.0
@@ -7,7 +9,7 @@ TRACK_RETENTION_FRAMES = 16
 
 
 def continuity(model):
-    return "temporal-id" if model == "sam3.1-tracking" else "nearest-of-class"
+    return "temporal-id" if is_tracking_model(model) else "nearest-of-class"
 
 
 def select_candidates(detection, prompt, instance_id, clicked):
