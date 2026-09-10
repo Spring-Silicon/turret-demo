@@ -1,7 +1,9 @@
 # Reproduce the Arc + Thor deployment
 
-This is the authoritative recovery guide for **spring-edge-turret + agxthor-5**,
-captured 2026-09-09. Older `spring-edge-2` / `agxthor-4` instructions are historical.
+This guide records the **spring-edge-turret + agxthor-5** recovery foundation
+captured early on 2026-09-09. For the later quiet boot, saved mask stages and a
+second B580 host, start with [the new-box guide](new-b580.md) and the refreshed
+`arc-20260910.json` lock. The original September 9 locks remain historical snapshots. Older `spring-edge-2` / `agxthor-4` instructions are historical.
 Use the checked-in [deployment locks](../deploy/repro/) and each private recovery
 bundle's `inventory.json`, not “latest” packages or a mutable model directory on
 `sleepy-joe` / `israel`.
@@ -337,6 +339,10 @@ The APIs have no password login, so restrict them to trusted management/cable
 networks; do not forward port 8080 to the public Internet.
 
 ## Updating the application from Git
+
+An enabled saved mask package pins installed worker/helper sources. A full wheel
+update can invalidate it; re-export and qualify the package against the proposed
+installation before activation. Exact recovery keeps the archived venv intact.
 
 Preserve a working private bundle first. Pin a reviewed full Git commit; do not
 use an unreviewed floating `main` for production. This step is a deployment and

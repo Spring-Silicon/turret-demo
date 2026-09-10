@@ -2,6 +2,8 @@
 
 See [the full restore/update runbook](../../docs/reproduce.md).
 
+- `arc-20260910.json`: refreshed Arc runtime with saved mask stages, configured v18
+  bundle, current PID gains and quiet-session files; use for the [new B580 guide](../../docs/new-b580.md).
 - `arc-20260909.json`: Arc configuration, zeros, full host/Python package lists,
   archived paths and integrity hashes for **recovery-20260909-arc-v2**.
 - `thor-20260909.json`: equivalent Thor lock plus immutable NVIDIA container ID.
@@ -38,3 +40,21 @@ actual deployed files, including platform-specific patches.
 Not performed: full base-OS reinstallation, clean-board recovery boot, or fresh
 three-profile GPU/hardware qualification. Those are explicit acceptance steps in
 the runbook, not inferred from a successful archive or Docker build.
+
+## Refreshed Arc export, 2026-09-10
+
+`arc-20260910.json` pins
+`/var/lib/spring-data/turret-recovery/recovery-20260910-arc` on the Arc host.
+The archive is 7,751,685,612 bytes (13,936,568,320-byte uncompressed tar stream).
+SHA256, size, compressed-stream, required-root and archived-file checks passed
+on the source. It includes the saved SAM mask package, currently configured v18
+runtime, current servo gains and the quiet-session assets omitted by the older
+exporter. Ordinary compiler caches remain excluded; the packaged kernel cache
+is included. The updated exporter rejects unrecognized bundle settings instead
+of silently omitting a model dependency.
+
+The full CPU/JavaScript validation passed, as did all 11 recovery-tooling tests.
+Prague's hardware, OS and storage were inspected read-only. This archive has not
+been restored or boot-qualified there, and has not yet been mirrored to Prague.
+See [new-b580.md](../../docs/new-b580.md) for its storage, networking and calibration
+steps. The September 9 records above describe the earlier historical exports.

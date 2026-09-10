@@ -21,6 +21,38 @@ DEMO = USER/'.local/share/turret-demo'
 FRONTEND = USER/'.local/share/spring-turret-frontend'
 HOSTS = {'arc':'spring-edge-turret', 'thor':'agxthor-5'}
 EXCLUDES = ('__pycache__', '*.pyc', '*.pyo')
+ARC_MODELS = ('checkpoint', 'sam31_w4a4_bundle', 'sam31_tracking_bundle',
+              'sam31_tracking_native_bundle', 'sam31_tracking_v18_bundle',
+              'sam31_mask_bundle', 'sam31_mask_compiled_bundle')
+ARC_BOOT_FILES = (
+    '/home/spring/.dmrc', '/var/lib/AccountsService/users/spring',
+    '/usr/local/bin/spring-turret-session',
+    '/usr/share/xsessions/spring-turret.desktop',
+    '/etc/spring-turret-kiosk/openbox.xml',
+    '/usr/local/lib/spring-turret/show-native-logo.py',
+    '/etc/systemd/system/spring-native-logo.service',
+    '/usr/share/plymouth/themes/spring-silicon/spring-silicon.script',
+    '/usr/share/plymouth/themes/spring-silicon/spring-silicon.plymouth',
+    '/usr/share/plymouth/themes/spring-silicon/spring-silicon-plymouth.png',
+)
+
+
+def arc_model_paths(inference):
+    unknown = {key for key in inference if key.endswith('_bundle')} - set(ARC_MODELS)
+    if unknown:
+        raise ValueError(f'Unrecognized model bundle settings; add explicit export coverage: {sorted(unknown)}')
+    paths = []
+    for key in ARC_MODELS:
+        value = inference.get(key)
+        if value is None:
+            if key == 'checkpoint':
+                raise ValueError('Missing checkpoint')
+            continue
+        path = Path(value)
+        if not path.is_relative_to(DEMO) or path == DEMO or '..' in path.parts:
+            raise ValueError(f'Model points outside the expected runtime root: {path}')
+        paths.append(path)
+    return paths
 
 
 def symlink_inventory(paths):
@@ -65,12 +97,7 @@ def paths_for(profile,config):
     for path in (Path(config['servo']['calibration_file']),Path(config['tracking']['geometry_file'])):
         if not path.is_relative_to(state_root) or '..' in path.parts:
             raise ValueError(f'Configuration points outside the expected state root: {path}')
-    if profile=='arc':
-        for key in ('sam31_w4a4_bundle','sam31_tracking_bundle',
-                    'sam31_tracking_native_bundle','sam31_mask_bundle','checkpoint'):
-            path=Path(config['inference'][key])
-            if not path.is_relative_to(DEMO) or '..' in path.parts:
-                raise ValueError(f'Model points outside the expected runtime root: {path}')
+    models = arc_model_paths(config['inference']) if profile == 'arc' else []
     paths = [Path('/etc/udev/rules.d/99-spring-turret-controller.rules'),
         Path('/etc/spring-turret-direct-link.nft'),
         Path('/etc/NetworkManager/dispatcher.d/pre-up.d/90-turret-direct-link')]
@@ -92,10 +119,11 @@ def paths_for(profile,config):
         paths.append((FRONTEND/'runtime').resolve(strict=True))
         headers=USER/'.local/share/uv/python/cpython-3.12-linux-x86_64-gnu'
         paths += [headers,headers.resolve(strict=True)]
-        for key in ('sam31_w4a4_bundle','sam31_tracking_bundle',
-                    'sam31_tracking_native_bundle','sam31_mask_bundle'):
-            paths.append(Path(config['inference'][key]))
-        paths.append(Path(config['inference']['checkpoint']))
+        paths += models
+        # The session marker makes these a required set on the quiet-boot install.
+        # EFI slot selection/grubenv and the target's initramfs are not portable.
+        if Path('/usr/share/xsessions/spring-turret.desktop').exists():
+            paths += [Path(name) for name in ARC_BOOT_FILES]
         # Frozen bundles link to these exact runtime trees. Do not follow arbitrary
         # future links (which could accidentally include credentials or large worktrees).
         paths += [USER/'sam3_1',
@@ -153,6 +181,13 @@ def capture(profile,output,commit):
         inventory['inference_python']=python_inventory([str(DEMO/'inference-venv/bin/python')])
         inventory['node']=run(str(FRONTEND/'runtime/bin/node'),'--version')
         inventory['firefox_snap']=run('snap','list','firefox')
+        inventory['boot_restore'] = {
+            'quiet_session': Path('/usr/share/xsessions/spring-turret.desktop').exists(),
+            'target_actions': ['Reapply Firefox hold', 'Enable restored system/user units',
+                               'Transform target A/B GRUB in place and rebuild target initramfs'],
+            'excluded': ['EFI slot configuration and grubenv', 'source initramfs',
+                         'snapd state and automatic-update hold database'],
+        }
     else:
         image=json.loads(run('docker','inspect','spring-turret-demo'))[0]
         inventory['docker_image_id']=image['Image']
@@ -237,7 +272,7 @@ def public_lock(output):
     names=('schema','profile','hostname','architecture','kernel','os_release',
            'source_commit','captured_utc','config','zeros','roots','files','archives',
            'wired_connection','backend_python','inference_python','node',
-           'firefox_snap','docker_image_id','docker_image_tag','l4t_release','power_mode')
+           'firefox_snap','boot_restore','docker_image_id','docker_image_tag','l4t_release','power_mode')
     result={name:inventory[name] for name in names if name in inventory}
     result['inventory_sha256']=digest(inventory_path)
     result['host_packages']=inventory['packages']

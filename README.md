@@ -7,6 +7,7 @@ For the current **spring-edge-turret (Arc) + agxthor-5** pair, start with the
 [reproducible deployment and recovery guide](docs/reproduce.md). It pins the
 actual runtimes, private model artifacts, physical calibration, wired networking
 and boot services. Older host-specific qualification notes below are historical.
+For another identical Arc machine, use the [new B580 / Prague checklist](docs/new-b580.md).
 
 Optional qualified native SAM image execution from `sleepy-joe` is documented
 in [the native image setup](docs/sam31-native.md). Text/grounding and the default

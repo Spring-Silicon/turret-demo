@@ -1,7 +1,7 @@
 # Automatic demo startup on Spring Edge Turret
 
 For fresh installation, exact runtime/model pins and private recovery archives,
-see [Reproduce both devices](reproduce.md).
+see [Reproduce both devices](reproduce.md) and the [new B580 / Prague guide](new-b580.md).
 
 Deployment: `spring-edge-turret` (Arc, `100.68.74.32`) and `agxthor-5`
 (`100.88.90.48`). These are separate from the older direct-Ethernet deployment
