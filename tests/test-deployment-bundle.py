@@ -46,6 +46,26 @@ class SymlinkTests(unittest.TestCase):
                 bundle.symlink_inventory([root])
 
 
+class ModelExportTests(unittest.TestCase):
+    def test_current_mask_and_v18_without_old_optional_tracker(self):
+        config = {key:str(bundle.DEMO/name) for key,name in [
+            ('checkpoint','models/sam.pt'), ('sam31_tracking_bundle','sam-bundle'),
+            ('sam31_mask_compiled_bundle','sam-artifacts/package'),
+            ('sam31_tracking_v18_bundle','israel-tracking-full1008-v18')]}
+        self.assertEqual(set(bundle.arc_model_paths(config)), {Path(v) for v in config.values()})
+
+    def test_unknown_bundle_is_not_silently_omitted(self):
+        with self.assertRaisesRegex(ValueError, 'Unrecognized model bundle'):
+            bundle.arc_model_paths({'checkpoint':str(bundle.DEMO/'sam.pt'),
+                                    'future_model_bundle':str(bundle.DEMO/'future')})
+
+    def test_compiled_package_cannot_capture_other_home_files(self):
+        for target in ('/home/spring/.ssh', str(bundle.DEMO/'../../.ssh'), str(bundle.DEMO)):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'expected runtime root'):
+                bundle.arc_model_paths({'checkpoint':str(bundle.DEMO/'sam.pt'),
+                                        'sam31_mask_compiled_bundle':target})
+
+
 @unittest.skipUnless(shutil.which('zstd'), 'zstd required for archive tests')
 class VerifyTests(unittest.TestCase):
     def make_bundle(self, root, *, missing=False, wrong_content=False, unsafe=False):
@@ -85,6 +105,16 @@ class VerifyTests(unittest.TestCase):
 
 
 class DeploymentLockTests(unittest.TestCase):
+    def test_refreshed_arc_lock_covers_fast_startup_and_quiet_session(self):
+        lock = json.loads((REPO/'deploy/repro/arc-20260910.json').read_text())
+        package = lock['config']['inference']['sam31_mask_compiled_bundle']
+        self.assertIn(package, lock['roots'])
+        self.assertIn(lock['config']['inference']['sam31_tracking_v18_bundle'], lock['roots'])
+        self.assertTrue(lock['boot_restore']['quiet_session'])
+        for name in bundle.ARC_BOOT_FILES:
+            self.assertIn(name, lock['files'])
+        self.assertNotIn('/boot/efi/EFI/spring/grubenv', lock['files'])
+
     def test_device_specific_locks_and_shared_hardware_contract(self):
         for profile, serial in [('arc','5B3D045331'),('thor','5B3D044488')]:
             lock = json.loads((REPO/f'deploy/repro/{profile}-20260909.json').read_text())
