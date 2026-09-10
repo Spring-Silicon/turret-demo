@@ -149,6 +149,9 @@ pair for their device. Arrow keys keep their normal behavior inside text inputs,
 sliders and dropdowns. **Click a box or mask** also selects that instance. Box
 buttons support keyboard focus and Enter/Space. No class target buttons are needed.
 The selected mask is red; hovered masks are lighter red.
+Other instances use widely spaced dark/light shades of their class color, with
+stable shades while their IDs remain visible. This is viewer-only recoloring;
+source masks, object IDs, model execution and motor aiming are unchanged.
 
 Instance IDs use conservative class/position/size matching between detections,
 with camera-motion compensation from the encoder/frame pairs. This is not SAM

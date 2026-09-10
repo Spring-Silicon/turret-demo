@@ -721,9 +721,10 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     completeFrame();
     const surface = run('visibleFrame.maskSurface');
     const pixel = i => [...surface.pixels.data.slice(i*4, i*4+4)];
+    const shade = id => [...run(`displayInstanceColors(visibleFrame.detection).get(${id})`),160];
     assert.deepEqual([...surface.labels], [1,0,2,0,1,2,2,0]); // Rounded PNG colors, not overlapping boxes.
     assert.deepEqual(pixel(0), [255,32,48,144]);
-    assert.deepEqual(pixel(2), [65,191,144,112]); // Other instances keep their original color.
+    assert.deepEqual(pixel(2), shade(8)); // Display shades do not change source labels.
     assert.equal(get('tracking-overlay').hasAttribute('hidden'), true);
     assert.equal(get('box-targets').children[0].children[0].textContent, '');
     const stableCanvas = get('camera-feed'), frameKey = stableCanvas.getAttribute('data-frame-key');
@@ -741,7 +742,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     assert.equal(stableCanvas.getAttribute('data-frame-key'), frameKey); // Same processed frame, no raw camera refresh.
     assert.equal(run('targetRequests.length'), requestsBefore); // Hover never moves motors.
     get('box-targets').events.pointermove({...mouse,clientX:520}); // Transparent pixel inside both boxes.
-    assert.deepEqual(pixel(2), [65,191,144,112]);
+    assert.deepEqual(pixel(2), shade(8));
     get('box-targets').events.pointerdown({...mouse,clientX:520});
     await get('box-targets').events.pointerup({...mouse,clientX:520});
     assert.equal(run('targetRequests.length'), requestsBefore);
@@ -751,17 +752,17 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     get('box-targets').children[1].events.focus();
     assert.deepEqual(pixel(2), [255,132,142,144]); // Keyboard preview has the same mask highlight.
     get('box-targets').children[1].events.blur();
-    assert.deepEqual(pixel(2), [65,191,144,112]);
+    assert.deepEqual(pixel(2), shade(8));
     get('box-targets').events.pointerdown(mouse);
     await get('box-targets').events.pointerup(mouse);
     assert.equal(run('JSON.stringify(targetRequests.at(-1))'),
       '["/api/tracking/instance",{"revision":31,"frame_sequence":6,"instance_id":8}]');
-    assert.deepEqual(pixel(0), [32,176,128,112]);
+    assert.deepEqual(pixel(0), shade(7));
     assert.deepEqual(pixel(2), [255,32,48,144]);
     // A missing selected instance must not color background or a different ID.
     run('status.tracking.instance_id = 99; renderTracking();');
     assert.deepEqual(pixel(1), [0,0,0,0]);
-    assert.deepEqual(pixel(2), [65,191,144,112]);
+    assert.deepEqual(pixel(2), shade(8));
     run('status.tracking = {target:null}; maskPointer=null; focusedMaskId=null;');
   }
   get('box-targets').rect = null;
@@ -769,6 +770,38 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.match(css, /\.box-target\.mask-instance:focus-visible\s*\{[^}]*border: 0;[^}]*outline: none;[^}]*pointer-events: none;/);
   assert.doesNotMatch(css, /mask-instance:hover \.box-label/);
   console.log('validated both mask modes: red target, light-red pixel hover, overlap/background hit tests and keyboard retarget');
+
+  const shadesFor = (ids, revision=501, backend=10) => run(`displayInstanceColors({
+    model:'sam3.1-mask', revision:${revision}, prompts:['hand'],
+    categories:[{prompt:'hand',color:'#55e8ce'}], boxes:${JSON.stringify(ids)}.map(instance_id =>
+      ({instance_id,prompt:'hand',color:'#55e8ce'}))},${backend})`);
+  const firstShades = shadesFor([10,20,30]);
+  const luminance = rgb => (Math.max(...rgb)+Math.min(...rgb))/510;
+  assert.ok(Math.abs(luminance(firstShades.get(10))-.30)<.005);
+  assert.ok(Math.abs(luminance(firstShades.get(20))-.86)<.005);
+  assert.ok(Math.abs(luminance(firstShades.get(30))-.58)<.005);
+  for (const [a,b] of [[10,20],[20,30],[10,30]]) {
+    const visibleDistance = Math.max(...firstShades.get(a).map((v,i)=>Math.abs(v-firstShades.get(b)[i]))) * 160/255;
+    assert.ok(visibleDistance>40); // Clearly separated even after overlay blending.
+  }
+  const hue = rgb => {
+    const high=Math.max(...rgb), low=Math.min(...rgb), delta=high-low;
+    return (60 * (high===rgb[0] ? (rgb[1]-rgb[2])/delta : high===rgb[1]
+      ? (rgb[2]-rgb[0])/delta+2 : (rgb[0]-rgb[1])/delta+4)+360)%360;
+  };
+  for (const color of firstShades.values()) assert.ok(Math.abs(hue(color)-hue([85,232,206]))<1);
+  for (const [id,color] of shadesFor([30,20,10])) assert.deepEqual([...color],[...firstShades.get(id)]);
+  const newShades = shadesFor([5,20,30]);
+  assert.deepEqual([...newShades.get(20)],[...firstShades.get(20)]);
+  assert.deepEqual([...newShades.get(30)],[...firstShades.get(30)]);
+  const returned = shadesFor([10,5,20,30]);
+  assert.deepEqual([...returned.get(5)],[...newShades.get(5)]);
+  assert.equal(new Set([...returned.values()].map(String)).size,4);
+  assert.deepEqual([...shadesFor([20],502).get(20)],[...firstShades.get(10)]);
+  assert.deepEqual([...shadesFor([30],502,11).get(30)],[...firstShades.get(10)]);
+  for (let i=0;i<300;i++) shadesFor([i],600);
+  assert.ok(run('classShades.get("hand").assigned.size')<=256);
+  console.log('validated high-contrast same-hue shades, stable visible IDs, bounded history and session resets');
 
   run(`displayedDetection = null; activeModel = 'sam3.1-tracking'; draftInitialized = true;
     detectionStreamOpen = false; streamFrame = null; loadingFrame = null;

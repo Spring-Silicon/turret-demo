@@ -64,6 +64,59 @@ let fpsRevision = null;
 let fpsSamples = [];
 let pressedBox = null;
 let messageExpiresAt = 0;
+const displayColorCache = new WeakMap();
+let shadeSession = null;
+const classShades = new Map();
+// Spread the first few instances widely before filling intermediate shades.
+const shadeLightness = [.30, .86, .58, .44, .72, .22, .96, .51,
+  .65, .37, .79, .90, .26, .40, .62, .82];
+
+function displayInstanceColors(detection, backendPid = frameBackendPid) {
+  if (displayColorCache.has(detection)) return displayColorCache.get(detection);
+  const session = JSON.stringify([backendPid, detection.model, detection.revision]);
+  if (session !== shadeSession) { classShades.clear(); shadeSession = session; }
+  const groups = new Map(), result = new Map();
+  for (const box of detection.boxes || []) {
+    if (!Number.isInteger(box.instance_id)) continue;
+    if (!groups.has(box.prompt)) groups.set(box.prompt, []);
+    groups.get(box.prompt).push(box);
+  }
+  for (const [prompt, boxes] of groups) {
+    if (!classShades.has(prompt)) classShades.set(prompt, {assigned: new Map(), visible: new Set()});
+    const history = classShades.get(prompt), assigned = history.assigned, used = new Set();
+    const base = detection.categories?.find(c => c.prompt === prompt)?.color
+      || detection.colors?.[boxes[0].prompt_index ?? detection.prompts?.indexOf(prompt)]
+      || '#55e8ce';
+    const rgb = /^#[0-9a-f]{6}$/i.test(base)
+      ? [1, 3, 5].map(i => parseInt(base.slice(i, i+2), 16)/255) : [.33, .91, .81];
+    const high = Math.max(...rgb), low = Math.min(...rgb), delta = high-low;
+    const hue = delta === 0 ? 0 : 60 * ((high === rgb[0] ? (rgb[1]-rgb[2])/delta
+      : high === rgb[1] ? (rgb[2]-rgb[0])/delta + 2 : (rgb[0]-rgb[1])/delta + 4) + 6) % 360;
+    // Reserve continuing objects first; new/returning IDs cannot steal a visible shade.
+    const ids = [...new Set(boxes.map(b => b.instance_id))].sort((a,b) =>
+      Number(history.visible.has(b))-Number(history.visible.has(a))
+      || Number(assigned.has(b))-Number(assigned.has(a)) || a-b);
+    for (const id of ids) {
+      let slot = assigned.get(id);
+      if (slot === undefined || used.has(slot)) {
+        slot = 0;
+        while (used.has(slot)) slot++;
+      }
+      used.add(slot);
+      assigned.delete(id); assigned.set(id, slot); // Bounded recent-ID history.
+      const lightness = shadeLightness[slot] ?? (.22 + .74 * ((slot * .618033988749895) % 1));
+      const amplitude = .90 * Math.min(lightness, 1-lightness);
+      result.set(id, [0, 8, 4].map(n => {
+        const k = (n + hue/30) % 12;
+        return Math.round(255 * (lightness - amplitude * Math.max(-1, Math.min(k-3, 9-k, 1))));
+      }));
+    }
+    while (assigned.size > 256) assigned.delete(assigned.keys().next().value);
+    history.visible = new Set(ids);
+  }
+  displayColorCache.set(detection, result);
+  return result;
+}
 
 function detectionFps(detection, now = performance.now()) {
   if (!isDetectionFresh(detection) || !Number.isInteger(detection.frame_sequence)) {
@@ -136,6 +189,8 @@ function prepareMaskSurface(pending) {
   const original = new Uint8ClampedArray(pixels.data);
   const labels = new Uint16Array(canvas.width * canvas.height);
   const boxes = pending.detection.boxes;
+  const displayColors = displayInstanceColors(pending.detection, pending.backendPid);
+  const shades = boxes.map(box => displayColors.get(box.instance_id));
   const colors = boxes.map((box, index) => ({index: index + 1, box,
     rgb: /^#[0-9a-f]{6}$/i.test(box.color || "")
       ? [1, 3, 5].map(i => parseInt(box.color.slice(i, i+2), 16)) : null}));
@@ -157,6 +212,11 @@ function prepareMaskSurface(pending) {
       palette.set(rgb, label);
     }
     labels[i] = palette.get(rgb);
+    const shade = shades[labels[i]-1];
+    if (shade) {
+      original[p] = shade[0]; original[p+1] = shade[1]; original[p+2] = shade[2];
+      original[p+3] = 160;
+    }
   }
   return {canvas, context, pixels, original, labels, boxes, key: null};
 }
@@ -417,7 +477,8 @@ function renderBoxTargets() {
     button.title = masked ? "" : `Track this ${box.prompt}`;
     button.classList.toggle("client-overlay", frameDetection.client_overlay === true && !masked);
     button.classList.toggle("mask-instance", masked);
-    button.style.setProperty("--box-color", box.color || "#55e8ce");
+    const shade = displayInstanceColors(frameDetection).get(id);
+    button.style.setProperty("--box-color", shade ? `rgb(${shade.join(',')})` : box.color || "#55e8ce");
     button.children[0].textContent = frameDetection.client_overlay === true && !masked
       ? `${box.prompt.slice(0, 48)} ${Math.round(box.score * 100)}%` : "";
   }
