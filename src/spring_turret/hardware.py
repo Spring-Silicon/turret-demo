@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any, Protocol
-from .models import MODELS, is_tracking_model
+from .models import MODELS, PROTEUS_MODELS, is_tracking_model
 
 
 @dataclass
@@ -27,6 +27,9 @@ class XpuRuntime:
         self.config, self.native_temp = config, None
 
     def prepare(self):
+        if self.config.get("model") in PROTEUS_MODELS:
+            from .proteus_runtime import prepare
+            return prepare(self.config)
         from .sam31_w8a8 import packed_profile, verify_graphics
         w4a4 = self.config.get("model", "sam3.1") == "sam3.1" and self.config.get("sam31_w4a4_bundle")
         sam_bundle = self.config.get("sam31_w8a8_development_bundle")
@@ -138,6 +141,8 @@ class CudaRuntime:
     def prepare(self):
         config = self.config
         model = config.get("model", "sam3.1")
+        if model in PROTEUS_MODELS:
+            raise ValueError("Proteus EfficientSAM variants are Intel-only; use their paired Thor model")
         if model == "sam3.1-v18":
             raise ValueError("SAM 3.1 v18 is Intel-only; select SAM 3.1 Tracking on CUDA")
         if any(config.get(k) for k in ("sam31_native_bundle", "sam31_w8a8_development_bundle",
@@ -145,12 +150,12 @@ class CudaRuntime:
             raise ValueError("Intel native bundles cannot be loaded by CUDA")
         cache = Path(config["cache_dir"]) / {
             "sam3.1": "sam31-cuda", "sam3.1-mask": "sam31-mask-20260908",
-            "sam3.1-tracking": "sam31-tracking"}[model]
+            "sam3.1-tracking": "sam31-tracking", "sam3.1-nomem": "sam31-mask-20260908"}[model]
         cache.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "OMP_NUM_THREADS":"4", "TORCHINDUCTOR_COMPILE_THREADS":"2",
                "TORCHINDUCTOR_CACHE_DIR":str(cache/"inductor"),
                "TRITON_CACHE_DIR":str(cache/"triton"), "XDG_CACHE_HOME":str(cache)}
-        if model == "sam3.1-mask":
+        if model in ("sam3.1-mask", "sam3.1-nomem"):
             env["TORCHINDUCTOR_FREEZING"] = "1"
         command = [config["python"], "-u", str(Path(__file__).with_name(MODELS[model]["worker"])),
                    "--checkpoint", config["checkpoint"], "--device", str(config.get("device", 0)),

@@ -17,22 +17,25 @@ from typing import Any
 
 from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
-from spring_turret.models import MODELS, model_available, model_prompts, is_tracking_model
+from spring_turret.models import (MODELS, PROTEUS_MODELS, model_available, model_prompts,
+                                 is_tracking_model, is_session_model, max_prompts)
 from spring_turret.worker_protocol import JPEG_BYTES, encode_request
 from spring_turret.tracking_masks import valid_mask_centroid
 from spring_turret.api_contract import API_VERSION, detection_result
 from spring_turret.hardware import inference_runtime
 
 
-def validate_tracking_result(result, prompts):
+def validate_tracking_result(result, prompts, *, temporal=True, backend="sam31-object-multiplex"):
     """The temporal mode has a distinct, honest contract from compiled detectors."""
     def valid_id(value):
         return type(value) is int and 0 <= value < 2**53
-    if (result.get("temporal_tracking") is not True
-            or result.get("tracking_backend") != "sam31-object-multiplex"
+    if (result.get("temporal_tracking") is not temporal
+            or result.get("tracking_backend") != backend
             or type(result.get("tracking_frame")) is not int or result["tracking_frame"] < 1
             or type(result.get("memory_frames")) is not int or result["memory_frames"] < 0):
         raise RuntimeError("Worker did not verify SAM temporal tracking")
+    if not temporal and result["memory_frames"] != 0:
+        raise RuntimeError("No-memory worker reported temporal memories")
     active = result.get("active_instance_ids")
     if not isinstance(active, list) or not all(map(valid_id, active)) or len(set(active)) != len(active):
         raise RuntimeError("Tracker returned invalid active object IDs")
@@ -74,6 +77,15 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(f"inference.{key} must be an absolute path")
     if config.get("model", "sam3.1") not in MODELS:
         raise ValueError("inference.model must be one of " + ", ".join(MODELS))
+    for key in ("proteus_bundle", "proteus_memory_bundle"):
+        if key not in config:
+            continue
+        if (not isinstance(config[key], str)
+                or not Path(config[key]).is_absolute()
+                or config.get("device_type", "xpu") != "xpu"):
+            raise ValueError(f"inference.{key} requires an absolute path and XPU")
+    if config.get("model") in (*PROTEUS_MODELS, "sam3.1-nomem") and not model_available(config["model"], config):
+        raise ValueError("The selected experimental model is not configured for this device")
     if "sam31_mask_bundle" in config:
         path = config["sam31_mask_bundle"]
         if not isinstance(path, str) or not Path(path).is_absolute():
@@ -229,7 +241,7 @@ class WorkerClient:
             "client_overlay": True,
             "prepared_token": prepared_token,
         }
-        if is_tracking_model(self.config.get("model")):
+        if is_session_model(self.config.get("model")):
             body.update(session_revision=session_revision, captured_at=captured_at, camera_identity=camera_identity)
         self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
         self.process.stdin.flush()
@@ -402,7 +414,7 @@ class DetectionController:
                 "classes": MODELS[self.model]["classes"],
                 "prompt": self.prompts[0] if len(self.prompts) == 1 else "",
                 "prompts": list(self.prompts),
-                "max_prompts": MAX_PROMPTS,
+                "max_prompts": max_prompts(self.model),
                 "colors": COLORS,
                 "revision": self.revision,
                 "state": self.state,
@@ -550,7 +562,7 @@ class DetectionController:
                             return prefetched
                     extra = ({"prepared_token":prepared_token, "prepare_next":prepare_next}
                              if getattr(self.worker, "prefetch_supported", False) else {})
-                    if is_tracking_model(model):
+                    if is_session_model(model):
                         camera_state = self.camera.status()
                         identity = camera_state.get("identity")
                         if "connection_generation" in camera_state:
@@ -565,7 +577,12 @@ class DetectionController:
                         **extra,
                     )
                     graph_key = "cuda_graph" if self.config.get("device_type") == "cuda" else "sycl_graph"
-                    if is_tracking_model(model):
+                    if model in PROTEUS_MODELS:
+                        if result.get("experimental_profile") != model:
+                            raise RuntimeError("Experimental worker returned the wrong model profile")
+                        validate_tracking_result(result, prompts, temporal=is_tracking_model(model),
+                                                 backend="proteus-" + model)
+                    elif is_tracking_model(model):
                         validate_tracking_result(result, prompts)
                     elif result.get("torch_compile") is not True or result.get(graph_key) is not True:
                         raise RuntimeError(
@@ -589,7 +606,7 @@ class DetectionController:
                     with self.condition:
                         if revision != self.revision:
                             continue  # Never display boxes from an obsolete prompt.
-                        if not is_tracking_model(model):
+                        if not is_session_model(model):
                             result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
                         self._cache_frame(key, annotated, result["boxes"], captured_at)
                         self.result = {

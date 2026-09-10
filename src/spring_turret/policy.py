@@ -1,6 +1,9 @@
 """One device-independent target policy. No Torch, CUDA, XPU or serial imports."""
 
-from .models import is_tracking_model
+if __package__:
+    from .models import is_tracking_model
+else:
+    from models import is_tracking_model
 
 POLICY_VERSION = "sam-shared-v1"
 DEAD_BAND = .003

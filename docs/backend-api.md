@@ -35,6 +35,7 @@ Missing measurements are omitted. Both masked modes count masks, not boxes.
 | `/api/tracking/instance` | POST | `{"revision":1,"frame_sequence":42,"instance_id":7}` |
 | `/api/servo/arm`, `/api/servo/disable` | POST | No body required |
 | `/api/servo/recalibrate` | POST | `{}`; requires stopped, stationary servos |
+| `/api/servo/recover-gains` | POST | `{}`; while stopped, backs up/discards an invalid saved override; no register writes |
 | `/api/servo/position` | POST | `{"axis":"x","degrees":20}` |
 
 The legacy single `/api/detection/prompt` and `/api/servo/keepalive` endpoints are retained. Validation errors

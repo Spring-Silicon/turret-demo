@@ -338,6 +338,11 @@ networks; do not forward port 8080 to the public Internet.
 
 ## Updating the application from Git
 
+For the current original-to-replica workflow, use [Git-pinned application
+releases](git-deployments.md), including the Arc native-adapter compatibility
+overlay and current Thor base image. The frozen recovery baseline below is for
+recovery, not a reason to downgrade an already updated deployment.
+
 Preserve a working private bundle first. Pin a reviewed full Git commit; do not
 use an unreviewed floating `main` for production. This step is a deployment and
 requires stopping/restarting the corresponding backend, separate from export.

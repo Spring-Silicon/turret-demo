@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from spring_turret.servo import DeviceUnavailable, ServoDisarmed
-from spring_turret.geometry import Geometry
+from spring_turret.geometry import GeometryResource
 from spring_turret.bearing_filter import BearingFilter
 from spring_turret.tracking_masks import valid_mask_centroid
 from spring_turret.interfaces import CameraDevice, MotorDevice, DetectionSource
@@ -18,7 +18,7 @@ from spring_turret.policy import POLICY_VERSION, DEAD_BAND, continuity, select_c
 
 LOGGER = logging.getLogger("spring-turret.tracking")
 DEFAULTS = {
-    "calibrated": False,
+    "calibrated": False,  # Legacy mapping metadata, not an operator-approval gate.
     "x_direction": 1, "y_direction": -1,
     "x_degrees_per_frame": 160.0, "y_degrees_per_frame": 90.0,
     "deadband": DEAD_BAND,
@@ -105,7 +105,8 @@ class TrackingController:
     def __init__(self, config: dict, detection: DetectionSource, servo: MotorDevice, camera: CameraDevice):
         validate_config(config)
         self.config = {**DEFAULTS, **config}
-        self.geometry = Geometry.load(self.config["geometry_file"]) if self.config["geometry_file"] else None
+        self.geometry_resource = GeometryResource(self.config["geometry_file"])
+        self.geometry = self.geometry_resource.value
         filtering = self.config["bearing_filter"]
         self.bearing_filter = BearingFilter(**filtering) if filtering else None
         self.detection, self.servo, self.camera = detection, servo, camera
@@ -235,9 +236,13 @@ class TrackingController:
     def recalibrate(self) -> None:
         with self.lock:
             self.servo.recalibrate()
-            self.target = self.instance_id = None
+            # Keep the selected class so Set zeros -> Start resumes tracking;
+            # discard the instance and all coordinates from the old zero frame.
+            self.instance_id = None
+            self.clicked = False
+            self.lock_revision = None
             self.moving = False
-            self._pause("off")
+            self._pause("stopped" if self.target else "off")
             self.last_frame = None
             self.ignore_before = time.monotonic()
             self.error = None
@@ -249,12 +254,19 @@ class TrackingController:
             self.instance_id = None
             self._pause("off")
 
+    def _setup_reason(self):
+        if self.geometry_resource.error:
+            return self.geometry_resource.error
+        return None
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             model = getattr(self.detection, "model", None)
             return {"target": self.target, "instance_id": self.instance_id,
                     "selection": "retarget" if self.clicked and self.instance_id is not None else "class",
-                    "state": self.state, "error": self.error,
+                    "state": self.state, "error": self.error or self._setup_reason(),
+                    "calibrated": self.config["calibrated"],
+                    "configured_directions": {a: self.config[a + "_direction"] for a in ("x", "y")},
                     "box": self.box, "frame": list(self.frame) if self.frame else None,
                     "error_pixels": self.error_pixels, "mode": "absolute-angle",
                     "mapping": "fisheye-kinematics" if self.geometry else "linear",
@@ -264,9 +276,13 @@ class TrackingController:
 
     def _tick(self) -> None:
         with self.lock:
+            if self.geometry_resource.error:
+                self.geometry = self.geometry_resource.refresh()
             if not self.target:
                 return
-            if not self.config["calibrated"]:
+            # Physical zero readiness is enforced by servo.arm(). Do not add a
+            # second approval gate for the configured camera-to-angle mapping.
+            if self.geometry_resource.error:
                 self._pause("uncalibrated")
                 return
             servo = self.servo.status()

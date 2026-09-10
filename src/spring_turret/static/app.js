@@ -8,6 +8,8 @@ const apiUrl = path => apiPrefix + path;
 const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };
 const motorToggle = document.getElementById("motor-toggle");
 const recalibrateButton = document.getElementById("recalibrate");
+const recoverGainsButton = document.getElementById("recover-gains");
+const setupHint = document.getElementById("setup-hint");
 const message = document.getElementById("message");
 const editingAxes = new Set();
 const pendingAngles = new Map();
@@ -114,13 +116,15 @@ function clickableFrame() {
 
 function hasTrackingMask(detection) {
   return ((["sam3.1-tracking", "sam3.1-v18"].includes(detection?.model) && detection?.temporal_tracking === true) ||
+      (["efficient-nomem", "hybrid-nomem", "efficient-tracking", "efficient-memory", "sam3.1-nomem"].includes(detection?.model) && detection?.mask_detection === true) ||
       (detection?.model === "sam3.1-mask" && detection?.mask_detection === true)) &&
     detection.mask_overlay?.format === "indexed-png" &&
     typeof detection.mask_overlay.png === "string" && detection.mask_overlay.png.length > 0;
 }
 
 function isMaskMode(detection) {
-  return ["sam3.1-mask", "sam3.1-tracking", "sam3.1-v18"].includes(detection?.model);
+  return ["sam3.1-mask", "sam3.1-tracking", "sam3.1-v18", "efficient-nomem",
+    "hybrid-nomem", "efficient-tracking", "efficient-memory", "sam3.1-nomem"].includes(detection?.model);
 }
 
 function trackedBox(detection, backendPid = frameBackendPid) {
@@ -605,7 +609,7 @@ function renderDetection(detection) {
   const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
   renderFps(detectionFps(preparing ? null : detection));
   renderLatency(detection);
-  detectionMessage.textContent = promptError || (frameDetection ? detection?.error : "") || "";
+  detectionMessage.textContent = promptError || detection?.error || detection?.warning || "";
   detectionMessage.hidden = !detectionMessage.textContent;
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
   // The viewer is a sink for completed worker results, never the raw camera.
@@ -652,9 +656,16 @@ function renderMotors() {
   const stop = shouldStop(servo);
   motorToggle.disabled = arming || stopping || (!stop && (recalibrating || !(servo.can_start ?? servo.ready)));
   recalibrateButton.disabled = arming || stopping || recalibrating || !servo.can_recalibrate;
-  recalibrateButton.textContent = recalibrating ? "Saving zeros…" : "Recalibrate zeros";
+  recalibrateButton.textContent = recalibrating ? "Saving…" : servo.calibrated === false ? "Set zeros" : "Recalibrate zeros";
+  recalibrateButton.title = servo.recalibrate_reason || "Save current X/Y positions as 0°. Motors stay stopped.";
+  recoverGainsButton.hidden = !servo.gain_error;
+  recoverGainsButton.disabled = arming || stopping || recalibrating || !servo.can_recover_gains;
+  setupHint.textContent = servo.calibrated === false
+    ? servo.recalibrate_reason || "With motors stopped, position X/Y at your intended zero, then click Set zeros."
+    : "";
+  setupHint.hidden = !setupHint.textContent;
   motorToggle.setAttribute("aria-label", stop ? "Stop motors" : "Start motors");
-  motorToggle.title = stop ? "Stop motors (Escape)" : "Start motors (Enter)";
+  motorToggle.title = stop ? "Stop motors (Escape)" : servo.start_reason || "Start motors (Enter)";
   motorToggle.classList.toggle("stopping", stop);
   // SVGElement does not reflect a .hidden property into the HTML attribute.
   document.getElementById("start-icon").toggleAttribute("hidden", stop);
@@ -695,8 +706,13 @@ function render(next) {
   renderTracking();
   options.onStatus?.(next);
   // A 30 FPS detection update must not erase a rejected click's error instantly.
-  if (performance.now() >= messageExpiresAt || (frameDetection && (servo.error || camera.error)))
-    showMessage(frameDetection ? servo.error || camera.error || "" : "", Boolean(frameDetection && (servo.error || camera.error)));
+  if (performance.now() >= messageExpiresAt) {
+    const error = servo.error || camera.error || "";
+    showMessage(error, Boolean(error));
+    // Background state is not a transient command failure: clear immediately
+    // on recovery, but never overwrite a command error before its deadline.
+    messageExpiresAt = 0;
+  }
 }
 
 async function request(path, options = {}) {
@@ -729,7 +745,6 @@ async function startMotors() {
 
 async function recalibrateZeros() {
   if (arming || stopping || recalibrating || !status?.servo?.can_recalibrate) return;
-  if (!window.confirm("Set the current X and Y positions as 0°? Position the camera at your intended zero first. Motors stay off; angle limits remain relative to the new zero.")) return;
   recalibrating = true;
   pendingAngles.clear();
   editingAxes.clear();
@@ -744,6 +759,19 @@ async function recalibrateZeros() {
   }
 }
 recalibrateButton.addEventListener("click", recalibrateZeros);
+
+async function recoverSetup(path, capability, confirmation) {
+  if (arming || stopping || recalibrating || !capability()) return;
+  if (!window.confirm(confirmation)) return;
+  recalibrating = true;
+  renderMotors();
+  try { await request(path, {method: "POST", body: "{}"}); }
+  catch (error) { showMessage(error.message, true); }
+  finally { recalibrating = false; renderMotors(); }
+}
+recoverGainsButton.addEventListener("click", () => recoverSetup("/api/servo/recover-gains",
+  () => status?.servo?.can_recover_gains,
+  "Back up and discard the unreadable saved gain overrides? Configured gains or the current hardware gains will be used at the next Start. No motors will move now."));
 
 async function stopMotors() {
   if (stopping) return;
@@ -816,14 +844,20 @@ async function poll() {
   try {
     await request("/api/status");
   } catch (error) {
-    // A backend still starting is expected; keep the initial loader quiet.
-    if (frameDetection) showMessage(error.message, true);
+    // No first frame must not hide a dead backend or a disconnected wire.
+    showMessage(error.message, true);
+    if (status?.servo) {
+      status = {...status, servo: {...status.servo, online: false, ready: false,
+        can_start: false, can_recalibrate: false, can_recover_gains: false,
+        recalibrate_reason: "Backend unavailable; waiting for reconnection"}};
+      renderMotors(); // Preserve unknown torque/Start intent; Stop stays reachable.
+    }
     options.onOffline?.(error);
     updatePromptColors(null);
     renderFps(detectionFps(null));
     renderLatency(null);
     detectionMessage.textContent = "Detector connection lost";
-    detectionMessage.hidden = !frameDetection;
+    detectionMessage.hidden = false;
     detectionMessage.classList.add("error");
     document.getElementById("tracking-overlay").toggleAttribute("hidden", true);
     boxTargets.hidden = true;

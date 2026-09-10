@@ -1,0 +1,12 @@
+# Application-only overlay. Verify BASE_IMAGE's local ID before building.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG SOURCE_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/Spring-Silicon/turret-demo" \
+      org.opencontainers.image.revision="${SOURCE_COMMIT}"
+USER root
+COPY dist/*.whl /tmp/turret-release/
+RUN python3 -m pip install --no-index --no-deps --force-reinstall /tmp/turret-release/*.whl
+COPY app /opt/turret-demo
+COPY release.json /opt/turret-demo/release.json
+USER 1000:1000

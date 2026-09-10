@@ -135,7 +135,7 @@ class TrackingGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'real failure'):
             stage(Tensor(1,'xpu'),mode='new')
 
-    def stage(self, kind, *, corrupt=False, composed=False):
+    def stage(self, kind, *, corrupt=False, composed=False, **cache):
         captures, compiling = [], []
         class Graph:
             def replay(self):
@@ -160,9 +160,10 @@ class TrackingGraphTests(unittest.TestCase):
             self.assertEqual(a.value if isinstance(a,Tensor) else a,
                              b.value if isinstance(b,Tensor) else b)
         torch = SimpleNamespace(Tensor=Tensor, compile=compile, **{kind:runtime},
+            compiler=SimpleNamespace(set_stance=lambda value:nullcontext()),
             testing=SimpleNamespace(assert_close=close))
         with patch.dict(sys.modules, {'torch.utils':SimpleNamespace(_pytree=Tree)}):
-            stage = TrackingGraphStage(torch, compiled, 'memory', kind, composed=composed)
+            stage = TrackingGraphStage(torch, compiled, 'memory', kind, composed=composed, **cache)
         return stage, compiling
 
     def test_replay_never_overwrites_retained_temporal_outputs(self):
@@ -201,6 +202,45 @@ class TrackingGraphTests(unittest.TestCase):
         self.assertFalse(stage.variants)
         self.assertEqual(stage.calls,0)
         self.assertEqual(stage.captures,0)
+
+    def test_repeated_temporal_shapes_stop_recapturing(self):
+        stage, _ = self.stage('cuda', max_variants=4, cache_policy='retain', capture_repetitions=3)
+        for i in range(8): stage(Tensor(i), mode='startup-' + str(i))
+        self.assertEqual(stage.captures, 0)  # Do not capture growing startup memories.
+        for i in range(60):
+            result = stage(Tensor(i), mode=i % 3)
+            self.assertEqual(result['memory'].value, 2*i)
+            result['memory'].value = -1
+        self.assertEqual(stage.captures, 3)
+        self.assertEqual(stage.evictions, 0)
+        self.assertEqual(stage.replay_calls, 51)
+        self.assertEqual(stage.direct_calls, 14)
+        self.assertEqual(stage.calls, 68)
+
+    def test_full_retained_cache_runs_exact_uncached_operation_without_recapture(self):
+        stage, _ = self.stage('cuda', max_variants=2, cache_policy='retain', capture_repetitions=2)
+        stage.torch.compiler.set_stance = lambda value: (_ for _ in ()).throw(AssertionError('No eager fallback'))
+        for mode in (0,1):
+            stage(Tensor(1), mode=mode)
+            stage(Tensor(2), mode=mode)
+        first = stage(Tensor(4), mode=0)
+        for mode in range(2,200):
+            result = stage(Tensor(mode), mode=mode)
+            self.assertEqual(result['memory'].value, 2*mode)
+            self.assertEqual(result['flag'], mode)
+        self.assertEqual(stage(Tensor(8), mode=0)['memory'].value, 16)
+        self.assertEqual(first['memory'].value, 8)
+        self.assertEqual((stage.captures,stage.evictions,len(stage.variants)), (2,0,2))
+        self.assertFalse(stage.admission_counts)
+
+    def test_temporal_admission_metadata_is_bounded_and_failed_direct_call_propagates(self):
+        stage, _ = self.stage('cuda', cache_policy='retain', capture_repetitions=3)
+        for i in range(200): stage(Tensor(i), mode=i)
+        self.assertEqual(stage.captures, 0)
+        self.assertEqual(len(stage.admission_counts), 128)
+        stage.compiled = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('real error'))
+        with self.assertRaisesRegex(RuntimeError, 'real error'): stage(Tensor(1), mode='failure')
+        self.assertEqual(stage.calls, 200)
 
     def test_no_cpu_tensors_or_unknown_python_objects_hidden_in_capture(self):
         stage,_ = self.stage('xpu')

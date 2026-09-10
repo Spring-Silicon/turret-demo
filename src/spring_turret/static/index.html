@@ -26,6 +26,11 @@
             <option value="sam3.1-tracking">SAM 3.1 Tracking</option>
             <option value="sam3.1-v18">SAM 3.1 v18</option>
             <option value="sam3.1-mask">SAM 3.1 Mask</option>
+            <option value="efficient-nomem">Efficient NoMem</option>
+            <option value="hybrid-nomem">Hybrid NoMem</option>
+            <option value="efficient-tracking">Efficient Tracking</option>
+            <option value="efficient-memory">Efficient Memory</option>
+            <option value="sam3.1-nomem">SAM NoMem</option>
           </select>
         </label>
         <form id="detection-form">
@@ -78,6 +83,8 @@
           <input id="y-slider" type="range" min="-90" max="90" value="0" step="0.5" aria-label="Y tilt angle in degrees" disabled>
         </div>
         <button id="recalibrate" type="button" title="Save current X/Y positions as 0°. Motors must be stopped." disabled>Recalibrate zeros</button>
+        <button id="recover-gains" type="button" hidden>Discard invalid saved gains</button>
+        <p id="setup-hint" role="status" hidden></p>
         <p id="message" role="status" hidden></p>
       </section>
     </main>

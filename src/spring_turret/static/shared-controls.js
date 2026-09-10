@@ -14,15 +14,19 @@ function mountSharedControls(document, devices) {
   const readRows = () => [...rows.children].map(row => row.querySelector('.detection-prompt').value.trim());
   const normalized = values => [...new Map(values.filter(Boolean).map(value => [value.toLowerCase(), value])).values()];
   const detections = () => devices.map(device => states.get(device.id)?.detection);
+  const connected = () => devices.filter(device => states.has(device.id) && !offline.has(device.id));
   const limit = () => Math.min(...detections().map(d => d?.max_prompts || 8));
   // v18 is an Intel implementation of the temporal profile. Thor keeps its
   // existing CUDA tracking implementation, not the Intel-only worker ID.
-  const effectiveModel = (id, device) => id === 'sam3.1-v18' && device.id === 'thor' ? 'sam3.1-tracking' : id;
+  const thorPairs = {'sam3.1-v18':'sam3.1-tracking', 'efficient-nomem':'sam3.1-nomem',
+    'hybrid-nomem':'sam3.1-nomem', 'efficient-tracking':'sam3.1-tracking',
+    'efficient-memory':'sam3.1-tracking'};
+  const effectiveModel = (id, device) => device.id === 'thor' ? thorPairs[id] || id : id;
   const availableOn = (id, device) => {
     const d = states.get(device.id)?.detection;
     return d?.enabled && d.models?.some(m => m.id === effectiveModel(id, device) && m.available);
   };
-  const available = id => devices.every(device => availableOn(id, device));
+  const available = id => connected().length > 0 && connected().every(device => availableOn(id, device));
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   function makeRow(value = '') {
@@ -39,7 +43,7 @@ function mountSharedControls(document, devices) {
     row.querySelector('.target-prompt').addEventListener('click', () => {
       if (busy || row.querySelector('.target-prompt').disabled) return;
       const prompt = input.value.trim();
-      const stop = devices.every(d => {
+      const stop = connected().every(d => {
         const tracking = states.get(d.id)?.tracking;
         return tracking?.target === prompt && tracking.instance_id == null;
       });
@@ -65,7 +69,7 @@ function mountSharedControls(document, devices) {
     }
     // Once initialized, polls only update availability. Never overwrite
     // a user's draft with another device's result or auto-resubmit on mismatch.
-    const ready = initialized && detections().some(d => d?.enabled);
+    const ready = initialized && connected().some(d => states.get(d.id)?.detection?.enabled);
     const disabled = !ready || busy;
     if (modelSelector.disabled !== disabled) modelSelector.disabled = disabled;
     const selection = model || 'sam3.1';
@@ -79,9 +83,10 @@ function mountSharedControls(document, devices) {
     for (const option of modelSelector.options) {
       const disabled = !available(option.value);
       if (option.disabled !== disabled) option.disabled = disabled;
-      const missing = devices.filter(d => !availableOn(option.value, d));
+      const missing = connected().filter(d => !availableOn(option.value, d));
       const title = missing.length ? `Unavailable on ${missing.map(d => d.label).join(', ')}`
-        : option.value === 'sam3.1-v18' ? 'Arc: Israel v18 tracking; Thor: SAM 3.1 Tracking' : '';
+        : option.value === 'sam3.1-v18' ? 'Arc: Israel v18 tracking; Thor: SAM 3.1 Tracking'
+        : thorPairs[option.value] ? `Experimental Arc model; Thor: ${thorPairs[option.value] === 'sam3.1-nomem' ? 'SAM NoMem' : 'SAM Tracking (memory on)'}` : '';
       if (option.title !== title) option.title = title;
     }
     add.disabled = !ready || busy || rows.children.length >= limit();
@@ -93,19 +98,20 @@ function mountSharedControls(document, devices) {
       input.disabled = !ready || busy;
       input.setAttribute('aria-label', `Object ${index + 1} to find`);
       row.querySelector('.remove-prompt').disabled = !ready || busy;
-      const applied = prompt && !seen.has(prompt) && devices.every(device => {
+      const applied = prompt && !seen.has(prompt) && connected().length > 0 && connected().every(device => {
         const d = states.get(device.id)?.detection;
         return !offline.has(device.id) && d?.model === effectiveModel(model, device) && d.prompts.includes(prompt);
       });
       seen.add(prompt);
-      const selected = applied && devices.every(d => states.get(d.id)?.tracking?.target === prompt);
-      const nearest = selected && devices.some(d => states.get(d.id)?.tracking?.instance_id != null);
+      const selected = applied && connected().every(d => states.get(d.id)?.tracking?.target === prompt);
+      const nearest = selected && connected().some(d => states.get(d.id)?.tracking?.instance_id != null);
       const target = row.querySelector('.target-prompt');
-      const label = nearest ? `Track nearest ${prompt} on both` : selected ? `Stop tracking ${prompt} on both` : `Track ${prompt || 'object'} on both`;
+      const scope = connected().length === devices.length ? 'both' : 'connected devices';
+      const label = nearest ? `Track nearest ${prompt} on ${scope}` : selected ? `Stop tracking ${prompt} on ${scope}` : `Track ${prompt || 'object'} on ${scope}`;
       target.disabled = !ready || busy || !applied;
       target.setAttribute('aria-pressed', String(Boolean(selected)));
       target.setAttribute('aria-label', label);
-      target.title = applied ? label : 'Apply this prompt to both devices first';
+      target.title = applied ? label : `Apply this prompt to ${scope} first`;
       row.style.setProperty('--prompt-color', detections().find(d => d?.model === model)?.colors?.[index] || '#55e8ce');
     });
     const mismatched = initialized && devices.filter(device => {
@@ -113,6 +119,10 @@ function mountSharedControls(document, devices) {
       return d && (d.model !== effectiveModel(model, device) || !same(d.prompts, normalized(readRows())));
     });
     const notices = [];
+    const unavailable = devices.filter(d => offline.has(d.id) || !states.has(d.id));
+    if (unavailable.length) notices.push(connected().length
+      ? `${unavailable.map(d => d.label).join(', ')} offline; controls apply to connected devices`
+      : 'No devices connected; waiting for reconnection');
     if (!busy && mismatched?.length) notices.push(dirty ? 'Unapplied changes' : 'Device settings differ; Update prompts applies this selection to both');
     message.textContent = error || notices.join(' · ');
     message.hidden = !message.textContent;
@@ -125,6 +135,7 @@ function mountSharedControls(document, devices) {
     clients.forEach(client => client.setSharedBusy(true)); render();
     try {
       const results = await Promise.allSettled(devices.map(async device => {
+        if (offline.has(device.id) || !states.has(device.id)) throw new Error('Offline; skipped');
         const client = clients.get(device.id);
         if (!client) throw new Error('Device is not ready');
         return action(client, device);

@@ -5,3 +5,5 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
 user_pref("browser.startup.page", 0);
 user_pref("browser.sessionstore.resume_from_crash", false);
+// Suppress the second-start "Open previous tabs?" infobar in the kiosk.
+user_pref("browser.startup.couldRestoreSession.count", -1);

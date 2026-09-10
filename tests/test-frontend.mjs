@@ -2,7 +2,22 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import {once} from 'node:events';
 import {test} from 'node:test';
-import {createFrontend, frontendOptions} from '../scripts/frontend.mjs';
+import {createFrontend, frontendOptions, resolveWiredInterface} from '../scripts/frontend.mjs';
+
+test('stable Ethernet MAC survives PCI interface renumbering without selecting Wi-Fi', () => {
+  const device = {interfaceMac:'9c:6b:00:f1:92:49', localAddress:'192.168.249.1'};
+  const wifi = [{mac:'08:f9:7e:aa:0d:c1', address:'10.105.47.234'}];
+  const wired = [{mac:device.interfaceMac, address:device.localAddress}];
+  assert.equal(resolveWiredInterface(device, {wlp8s0:wifi,enp15s0:wired}), 'enp15s0');
+  assert.equal(resolveWiredInterface(device, {wlp8s0:wifi,enp7s0:wired}), 'enp7s0');
+  assert.equal(resolveWiredInterface(device, {wlp8s0:wifi}), undefined);
+  const options = frontendOptions({thor:'http://192.168.249.2:8080', 'thor-mac':device.interfaceMac,
+    'thor-local-address':device.localAddress});
+  assert.equal(options.singleDevice.interfaceMac, device.interfaceMac);
+  const frontend = createFrontend(options); frontend.close();
+  assert.throws(() => createFrontend(frontendOptions({thor:'http://192.168.249.2:8080',
+    'thor-mac':'bad', 'thor-local-address':device.localAddress})), /Wired/);
+});
 
 test('named Arc, Thor and combined modes share the same launcher', async t => {
   for (const name of ['arc','thor']) {
@@ -123,6 +138,17 @@ test('SSE and MJPEG stream immediately; disconnect releases upstream', async t =
       const timer = setTimeout(() => reject(new Error('stream leaked upstream')), 1500); timer.unref();
     })]);
   }
+});
+
+test('setup recovery commands reach the backend through the frontend', async t => {
+  const calls = [];
+  const {local} = await fixture(t, (req, res) => {
+    calls.push(req.url); res.setHeader('Content-Type', 'application/json'); res.end('{}');
+  });
+  for (const path of ['/api/servo/recalibrate', '/api/servo/recover-gains']) {
+    assert.equal((await fetch(local + path, {method:'POST', body:'{}'})).status, 200);
+  }
+  assert.deepEqual(calls, ['/api/servo/recalibrate', '/api/servo/recover-gains']);
 });
 
 test('commands are never retried after a lost reply; header stalls time out', async t => {

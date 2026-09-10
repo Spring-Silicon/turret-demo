@@ -163,11 +163,22 @@ class ControllerTests(unittest.TestCase):
         restarted = servo.ServoController(original)
         self.assertEqual(restarted.gain_settings.baseline['x'],dict(p=400,d=0))
         original['axes']['x']['direction'] *= -1
-        with self.assertRaisesRegex(ValueError,'do not match'): servo.ServoController(original)
+        invalid = servo.ServoController(original)
+        self.assertIn('do not match', invalid.status()['gain_error'])
+        with self.assertRaises(servo.DeviceUnavailable): invalid.arm()
         data = json.loads(self.controller.gain_settings.path.read_text())
         data['values']['x']['p'] = True
         self.controller.gain_settings.path.write_text(json.dumps(data))
-        with self.assertRaises(ValueError): servo.ServoController(self.config['servo'])
+        invalid = servo.ServoController(self.config['servo'])
+        self.assertIsNotNone(invalid.status()['gain_error'])
+        self.packet.writes.clear()
+        invalid.recover_gains()
+        self.assertEqual(self.packet.writes, [])
+        self.assertIsNone(invalid.status()['gain_error'])
+        self.assertFalse(invalid.armed)
+        self.assertFalse(invalid.gain_settings.path.exists())
+        self.assertTrue(list(invalid.gain_settings.path.parent.glob('*.invalid-*')))
+        self.assertIsNone(servo.ServoController(self.config['servo']).status()['gain_error'])
 
     def test_lost_read_retries_once_but_persistent_or_device_faults_fail(self):
         self.controller.arm()
@@ -271,7 +282,7 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(self.zero_path.exists())
 
     def test_recalibrate_refuses_bad_hardware_or_uncommissioned_device(self):
-        for fault in ("missing", "model", "torque", "mode", "fault", "commissioning"):
+        for fault in ("missing", "model", "torque", "mode", "fault"):
             with self.subTest(fault=fault):
                 before = copy.deepcopy(self.config["servo"]["axes"])
                 self.packet.missing = {1} if fault == "missing" else set()
@@ -279,7 +290,7 @@ class ControllerTests(unittest.TestCase):
                 self.packet.registers[1][64] = 1 if fault == "torque" else 0
                 self.packet.registers[1][11] = 3 if fault == "mode" else 4
                 self.packet.registers[1][70] = 1 if fault == "fault" else 0
-                self.config["servo"]["calibrated"] = fault != "commissioning"
+                self.config["servo"]["calibrated"] = False
                 with self.assertRaises(servo.DeviceUnavailable): self.controller.recalibrate()
                 self.assertEqual(before, self.config["servo"]["axes"])
                 self.assertFalse(self.zero_path.exists())
@@ -308,11 +319,76 @@ class ControllerTests(unittest.TestCase):
     def test_saved_calibration_invalid_or_mismatched_axes_fail_closed(self):
         self.controller.recalibrate()
         saved = json.loads(self.zero_path.read_text())
-        for data in ({}, {**saved, "version": 2}, {**saved, "axes": {"x": saved["axes"]["x"]}},
+        for data in ({}, {**saved, "version": 999}, {**saved, "axes": {"x": saved["axes"]["x"]}},
                      {**saved, "axes": {**saved["axes"], "y": {**saved["axes"]["y"], "id": 2}}},
                      {**saved, "axes": {**saved["axes"], "y": {**saved["axes"]["y"], "center_position": True}}}):
             self.zero_path.write_text(json.dumps(data))
-            with self.assertRaises(ValueError): servo.ServoController(copy.deepcopy(self.config["servo"]))
+            recovered = servo.ServoController(copy.deepcopy(self.config["servo"]))
+            self.assertFalse(recovered.status()["can_start"])
+            self.assertIn("Saved zeros unavailable", recovered.status()["calibration_error"])
+            recovered._poll_locked()
+            self.assertTrue(recovered.status()["can_recalibrate"])
+            with self.assertRaises(servo.DeviceUnavailable): recovered.arm()
+            self.assertEqual(json.loads(self.zero_path.read_text()), data)
+        self.packet.writes.clear()
+        recovered.recalibrate()
+        self.assertEqual(self.packet.writes, [])
+        self.assertTrue(list(self.zero_path.parent.glob('*.invalid-*')))
+        self.assertTrue(recovered.status()["can_start"])
+
+    def test_initial_zeros_are_reachable_persisted_and_do_not_enable_motion(self):
+        self.config["servo"]["calibrated"] = False
+        original = copy.deepcopy(self.config["servo"])
+        self.packet.registers[1][132] = 988  # Outside the placeholder zero's limits.
+        self.controller._poll_locked()
+        state = self.controller.status()
+        self.assertTrue(state["can_recalibrate"])
+        self.assertFalse(state["can_start"])
+        self.assertIsNone(state["axes"]["y"]["degrees"])
+        self.assertNotIn("outside", state["error"])
+        self.packet.writes.clear()
+        self.controller.recalibrate()
+        self.assertEqual(self.packet.writes, [])
+        self.assertTrue(self.controller.status()["can_start"])
+        self.assertFalse(self.controller.status()["run_requested"])
+        self.assertEqual(self.controller.status()["axes"]["y"]["degrees"], 0)
+        restarted = servo.ServoController(original)
+        self.assertTrue(restarted.status()["calibrated"])
+        self.assertFalse(restarted.run_requested)
+        restarted.arm()  # Simulated hardware only; proves no remaining initial-zero gate.
+        restarted.disable()
+        original["device"] += "-different-controller"
+        self.assertFalse(servo.ServoController(original).status()["can_start"])
+
+    def test_storage_defaults_missing_directory_and_failed_first_save(self):
+        config = copy.deepcopy(self.config["servo"])
+        config.pop("calibration_file")
+        config["calibrated"] = False
+        with patch.dict("os.environ", {"XDG_STATE_HOME": str(self.zero_path.parent / "new-state")}):
+            fresh = servo.ServoController(config)
+        self.assertTrue(Path(config["calibration_file"]).is_absolute())
+        fresh._poll_locked()
+        with patch("spring_turret.calibration.os.replace", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(servo.DeviceUnavailable, "disk full"): fresh.recalibrate()
+        self.assertFalse(fresh.status()["can_start"])
+        fresh._poll_locked()
+        self.assertTrue(fresh.status()["can_recalibrate"])
+        fresh.recalibrate()
+        self.assertTrue(Path(config["calibration_file"]).exists())
+
+    def test_calibration_reconnect_and_stop_recovery_capabilities(self):
+        self.controller._poll_locked()
+        self.assertTrue(self.controller.status()["can_recalibrate"])
+        self.controller.arm()
+        self.assertIn("Stop", self.controller.status()["recalibrate_reason"])
+        self.packet.missing = {1}
+        with self.assertRaises(servo.DeviceUnavailable): self.controller.disable()
+        self.assertFalse(self.controller.run_requested)
+        self.assertFalse(self.controller.status()["can_recalibrate"])
+        self.packet.missing.clear()
+        self.controller._tick_locked()
+        self.assertTrue(self.controller.status()["can_recalibrate"])
+        self.assertFalse(self.controller.armed)
 
     def test_arm_holds_both_then_moves_only_selected_axis(self):
         with self.assertRaises(servo.ServoDisarmed): self.controller.move("x", 10)

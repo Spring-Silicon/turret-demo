@@ -12,6 +12,11 @@ spec.loader.exec_module(startup)
 
 
 class StartupTests(unittest.TestCase):
+    def test_kiosk_does_not_show_session_restore_onboarding(self):
+        prefs = path.with_name('firefox-user.js').read_text()
+        self.assertIn('user_pref("browser.sessionstore.resume_from_crash", false);', prefs)
+        self.assertIn('user_pref("browser.startup.couldRestoreSession.count", -1);', prefs)
+
     def test_current_arc_startup_uses_only_direct_ethernet(self):
         repo=path.parents[2]
         unit=(repo/'deploy/startup/spring-turret-frontend.service').read_text()

@@ -8,6 +8,8 @@ bash -n scripts/*.sh
 bash -n deploy/thor/run-container.sh deploy/startup/*.sh
 python3 -m py_compile src/spring_turret/*.py tests/*.py
 python3 tests/test-server.py
+python3 tests/test-setup-recovery.py
+python3 tests/test-wired-recovery.py
 python3 tests/test-servo-feedback.py
 python3 tests/test-isolation.py
 python3 tests/test-detection.py
@@ -30,14 +32,17 @@ python3 tests/test-output-transfer.py
 python3 tests/test-tracking.py
 python3 tests/test-target-lock.py
 python3 tests/test-temporal.py
+python3 tests/test-proteus.py
 python3 tests/test-native-tracking.py
 python3 tests/test-v18-tracking.py
 python3 tests/test-track-lifetime.py
 python3 tests/test-shared-policy.py
+python3 tests/test-policy-import.py
 python3 tests/test-tracking-suppression.py
 python3 tests/test-recovery.py
 python3 tests/test-startup.py
 python3 tests/test-deployment-bundle.py
+python3 tests/test-app-release.py
 python3 tests/test-tracking-graphs.py
 python3 tests/test-tracking-compiler.py
 python3 tests/test-tracking-masks.py

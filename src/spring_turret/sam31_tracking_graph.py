@@ -9,7 +9,8 @@ import sys
 
 
 class TrackingGraphStage:
-    def __init__(self, torch, fn, name, device_type, *, max_variants=2, progress=None, backend="inductor", composed=False):
+    def __init__(self, torch, fn, name, device_type, *, max_variants=2, progress=None, backend="inductor", composed=False,
+                 cache_policy="lru", capture_repetitions=1):
         from torch.utils import _pytree
         self.torch, self.tree = torch, _pytree
         self.fn, self.name, self.device_type = fn, name, device_type
@@ -28,8 +29,13 @@ class TrackingGraphStage:
         self.compiled = fn if composed else torch.compile(fn, backend=backend, fullgraph=True,
                                       dynamic=False, **({"options":options} if backend == "inductor" else {}))
         self.variants = OrderedDict()
+        if cache_policy not in ("lru", "retain") or max_variants < 1 or capture_repetitions < 1:
+            raise ValueError("Invalid tracking graph cache policy")
         self.max_variants = max_variants
+        self.cache_policy, self.capture_repetitions = cache_policy, capture_repetitions
+        self.admission_counts = OrderedDict()
         self.calls = self.captures = 0
+        self.cache_misses = self.evictions = self.replay_calls = self.direct_calls = 0
         self.progress = progress
         self.max_replay_nrmse = 0.
 
@@ -69,10 +75,29 @@ class TrackingGraphStage:
         key = self.signature(value)
         state = self.variants.pop(key, None)
         if state is None:
+            self.cache_misses += 1
+            if self.cache_policy == "retain":
+                # Growing or rarely-used temporal shapes do not deserve a
+                # capture. Never evict a resident graph to recapture it later.
+                count = self.admission_counts.pop(key, 0) + 1
+                if len(self.variants) < self.max_variants:
+                    self.admission_counts[key] = count
+                    if len(self.admission_counts) > 128:
+                        self.admission_counts.popitem(last=False)
+                if len(self.variants) >= self.max_variants or count < self.capture_repetitions:
+                    # A cache miss is still the identical full model operation.
+                    # Keep the same Inductor numerical path, including on
+                    # cold shapes. Dynamo may compile a genuinely new shape
+                    # once; an evicted graph must not add repeated captures.
+                    outputs = self.invoke(value)
+                    self.calls += 1
+                    self.direct_calls += 1
+                    return self.clone(outputs)
             # Evict BEFORE capture, bounding GPU ownership even at peak.
             if len(self.variants) >= self.max_variants:
                 self.runtime.synchronize()
                 self.variants.popitem(last=False)
+                self.evictions += 1
             print(f"Tracking compile/capture: {self.name}", file=sys.stderr, flush=True)
             if self.progress is not None:
                 self.progress("compiling_tracker_" + self.name)
@@ -126,6 +151,9 @@ class TrackingGraphStage:
                     self.torch.testing.assert_close(actual, reference, rtol=.001, atol=.001)
             state = (inputs, graph, outputs, stream)
             self.captures += 1
+            self.admission_counts.pop(key, None)
+            if len(self.variants) + 1 >= self.max_variants:
+                self.admission_counts.clear()
         else:
             inputs, graph, outputs, stream = state
             sources, _ = self.tree.tree_flatten(value)
@@ -134,6 +162,7 @@ class TrackingGraphStage:
                 if isinstance(source, self.torch.Tensor):
                     target.copy_(source)
             graph.replay()
+            self.replay_calls += 1
         self.variants[key] = state
         self.calls += 1
         return self.clone(state[2])
@@ -173,7 +202,8 @@ the XPU regional policy is unchanged. Text remains cached outside frame replay.
     }
     for name, module in modules.items():
         selected_backend = ("inductor" if name == "image_encoder" else "aot_eager") if backend == "hybrid" else backend
-        stage = TrackingGraphStage(torch, module.forward, name, device_type, progress=progress, backend=selected_backend)
+        cache = {"max_variants":16, "cache_policy":"retain", "capture_repetitions":3} if device_type == "cuda" and name == "memory_attention" else {}
+        stage = TrackingGraphStage(torch, module.forward, name, device_type, progress=progress, backend=selected_backend, **cache)
         module.forward = stage
         stages[name] = stage
     return stages
@@ -186,6 +216,12 @@ def tracking_graph_status(stages, device_type):
             "compilation_scope":"tensor-regions" if any(getattr(s, "composed", False) for s in stages.values()) else "tensor-stages",
             "graph_stages": {name:{"calls":stage.calls, "captures":stage.captures,
                                    "cached_shapes":len(stage.variants), "compiler_backend":stage.backend,
+                                   "cache_policy":getattr(stage, "cache_policy", "lru"),
+                                   "cache_capacity":stage.max_variants,
+                                   "cache_misses":getattr(stage, "cache_misses", 0),
+                                   "evictions":getattr(stage, "evictions", 0),
+                                   "replay_calls":getattr(stage, "replay_calls", 0),
+                                   "direct_calls":getattr(stage, "direct_calls", 0),
                                    "replay_rtol":stage.replay_rtol,
                                    "max_replay_nrmse":stage.max_replay_nrmse}
                              for name,stage in stages.items()}}
