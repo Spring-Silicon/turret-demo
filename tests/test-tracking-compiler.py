@@ -57,6 +57,10 @@ class CompilerPolicyTests(unittest.TestCase):
         self.assertEqual(stages['image_and_detection']['backend'],'inductor-image+inductor-heads')
         for name in ('memory_encoder','memory_attention','tracking_masks'):
             self.assertEqual(stages[name]['backend'],'inductor')
+        self.assertEqual(stages['memory_attention']['cache_policy'], 'retain')
+        self.assertEqual(stages['memory_attention']['max_variants'], 16)
+        self.assertEqual(stages['memory_attention']['capture_repetitions'], 3)
+        self.assertNotIn('cache_policy', stages['memory_encoder'])
         self.assertNotIn('memory_attention_and_mask',stages)
         self.assertEqual(sharing,[False])
 

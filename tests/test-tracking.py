@@ -290,12 +290,15 @@ class TrackingTests(unittest.TestCase):
         before = self.servo.calls.copy()
         self.tracker.recalibrate()
         self.assertEqual(self.servo.calls, before)
-        self.assertIsNone(self.tracker.target)
+        self.assertEqual(self.tracker.target, "cup")
         self.assertIsNone(self.tracker.instance_id)
         self.assertIsNone(self.tracker.previous_pose)
         self.assertIsNone(self.tracker.last_frame)
-        self.assertEqual(self.tracker.state, "off")
+        self.assertEqual(self.tracker.state, "stopped")
         self.assertFalse(self.servo.armed)
+        self.tracker.arm()
+        self.frame([box()])
+        self.assertEqual(self.tracker.state, "tracking")
 
     def test_model_change_keeps_class_clears_instance_and_holds_without_arming(self):
         self.start()
@@ -621,12 +624,14 @@ class TrackingTests(unittest.TestCase):
                        {"unknown": 1}, {"calibrated": 1}, []):
             with self.assertRaises(ValueError): validate_config(config)
 
-    def test_uncalibrated_directions_never_move(self):
+    def test_configured_mapping_needs_no_extra_confirmation(self):
         self.tracker = TrackingController({}, self.detection, self.servo, self.camera)
         self.start()
         self.frame([box()])
-        self.assertEqual(self.servo.calls, [])
-        self.assertEqual(self.tracker.state, "uncalibrated")
+        self.assertTrue(self.servo.calls)
+        self.assertEqual(self.tracker.state, "tracking")
+        self.assertIsNone(self.tracker.status()["error"])
+        self.assertFalse(self.tracker.status()["calibrated"])  # Not an optical-calibration claim.
 
 
 if __name__ == "__main__":

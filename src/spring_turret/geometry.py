@@ -3,7 +3,27 @@ import json
 import math
 import os
 import stat
+import time
 from pathlib import Path
+
+
+class GeometryResource:
+    """Keep the viewer alive if optional geometry is missing; retry repairs."""
+    def __init__(self, path):
+        self.path, self.value, self.error = path, None, None
+        self.retry_at = 0
+        self.refresh()
+
+    def refresh(self):
+        if not self.path or self.value is not None or time.monotonic() < self.retry_at:
+            return self.value
+        self.retry_at = time.monotonic() + 2
+        try:
+            self.value = Geometry.load(self.path)
+            self.error = None
+        except (OSError, ValueError, TypeError) as error:
+            self.error = f"Tracking geometry unavailable: {error}. Restore {self.path}; retrying automatically."
+        return self.value
 
 
 def usb_identity(device):

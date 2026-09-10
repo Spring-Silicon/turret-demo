@@ -13,7 +13,7 @@ def validate_pd(value):
 
 
 class GainSettings:
-    def __init__(self, config):
+    def __init__(self, config, *, load_saved=True):
         self.path = (Path(config["calibration_file"]).with_suffix(".gains.json")
                      if config.get("calibration_file") else None)
         self.identity = {name: {k: axis[k] for k in ("id", "direction")}
@@ -21,7 +21,7 @@ class GainSettings:
         self.values = {}
         self.baseline = {name: {k: axis["position_gains"][k] for k in ("p", "d")}
                          for name, axis in config["axes"].items() if axis.get("position_gains")}
-        if self.path and self.path.exists():
+        if load_saved and self.path and self.path.exists():
             data = json.loads(self.path.read_text())
             if (not isinstance(data, dict) or data.get("version") != 1
                     or data.get("identity") != self.identity):
@@ -41,6 +41,7 @@ class GainSettings:
     def save(self, name, value):
         values = {**self.values, name: dict(value)}
         if self.path:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = None
             try:
                 with tempfile.NamedTemporaryFile(mode="w", dir=self.path.parent,

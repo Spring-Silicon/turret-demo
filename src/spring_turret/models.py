@@ -6,11 +6,18 @@ else:
     from prompts import normalize_prompts
 
 MODELS = {
-    "sam3.1": {"label": "SAM 3.1", "worker": "sam31_worker.py", "classes": None},
-    "sam3.1-tracking": {"label": "SAM 3.1 Tracking", "worker": "sam31_tracking_worker.py", "classes": None},
+    "sam3.1": {"label": "SAM 3.1 Box", "worker": "sam31_worker.py", "classes": None},
+    "sam3.1-tracking": {"label": "SAM 3.1 Mem", "worker": "sam31_tracking_worker.py", "classes": None},
     "sam3.1-v18": {"label": "SAM 3.1 v18", "worker": "sam31_tracking_v18_worker.py", "classes": None},
     "sam3.1-mask": {"label": "SAM 3.1 Mask", "worker": "sam31_mask_worker.py", "classes": None},
 }
+
+MENU_MODELS = ("sam3.1", "sam3.1-mask", "sam3.1-tracking")
+
+
+def public_model_id(model):
+    """Keep legacy v18 deployments working without a fourth UI profile."""
+    return "sam3.1-tracking" if model == "sam3.1-v18" else model
 
 
 def is_tracking_model(model):

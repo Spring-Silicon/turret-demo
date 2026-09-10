@@ -27,9 +27,11 @@ class SharedPolicyTests(unittest.TestCase):
         worker = WorkerClient({})
         worker.process = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+        process = worker.process
         with patch("spring_turret.detection.os.killpg") as signal_group:
             worker.stop()
-            self.assertEqual(worker.process.returncode, 0)
+            self.assertEqual(process.returncode, 0)
+            self.assertIsNone(worker.process)
             # The only remaining signal is cleanup of any surviving descendants.
             self.assertTrue(all(call.args[1] == 9 for call in signal_group.call_args_list))
 

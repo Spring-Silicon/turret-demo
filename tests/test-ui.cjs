@@ -125,7 +125,7 @@ assert.doesNotMatch(fs.readFileSync(path.join(__dirname, "../src/spring_turret/s
 assert.match(fs.readFileSync(path.join(__dirname, "../src/spring_turret/static/app.css"), "utf8"), /object-fit: contain/);
 console.log("validated uncropped full-frame display regardless of old saved FOV");
 assert.match(fs.readFileSync(path.join(__dirname, "../src/spring_turret/static/index.html"), "utf8"),
-  /<option value="sam3\.1-tracking">SAM 3\.1 Tracking<\/option>/);
+  /<option value="sam3\.1-tracking">SAM 3\.1 Mem<\/option>/);
 run(`status = { detection: { enabled: true, state: "running", revision: 1,
   frame_age_ms: 200, latency_ms: 150, max_prompts: 8, prompts: ["finger", "person"],
   categories: [{prompt: "finger", count: 9, color: "green"}, {prompt: "person", count: 2, color: "orange"}]
@@ -491,9 +491,7 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     status.servo.armed = false; renderMotors();
     request = async (path, options) => {zeroRequests.push([path, options]); return status;};`);
   assert.equal(get("recalibrate").disabled, false); // Outside range is precisely why zeros may need resetting.
-  await get("recalibrate").events.click();
-  assert.equal(run('zeroRequests.length'), 0); // Cancel leaves calibration untouched.
-  run('window.confirm = () => true;');
+  run('window.confirm = () => {throw Error("Set zeros must not open a confirmation dialog")};');
   await get("recalibrate").events.click();
   assert.equal(run('JSON.stringify(zeroRequests)'), '[["/api/servo/recalibrate",{"method":"POST","body":"{}"}]]');
   assert.equal(run('status.servo.armed'), false);
@@ -506,7 +504,56 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(get("motor-toggle").disabled, true);
   await get("recalibrate").events.click();
   assert.equal(run('zeroRequests.length'), 1);
-  console.log("validated zero calibration confirmation, no auto-arm and pending-request exclusion");
+  console.log("validated one-click zero calibration, no auto-arm and pending-request exclusion");
+  run(`recalibrating = false; status.servo.calibrated = false; status.servo.can_start = false;
+    status.servo.recalibrate_reason = null; renderMotors();`);
+  assert.equal(get('recalibrate').textContent, 'Set zeros');
+  assert.equal(get('recalibrate').disabled, false);
+  assert.equal(get('motor-toggle').disabled, true);
+  assert.match(get('setup-hint').textContent, /position X\/Y/);
+  run(`status.servo.can_recalibrate = false;
+    status.servo.recalibrate_reason = 'Reconnect both servos'; renderMotors();`);
+  assert.match(get('recalibrate').title, /Reconnect/);
+  assert.match(get('setup-hint').textContent, /Reconnect/);
+  run(`status.servo.calibrated = true; status.servo.can_start = true; status.servo.can_recalibrate = true;
+    status.tracking.mapping = 'linear'; renderMotors();`);
+  assert.equal(get('setup-hint').hidden, true);
+  assert.equal(get('motor-toggle').disabled, false);
+  assert.equal(run('status.servo.armed'), false);
+  run(`window.confirm = () => true; status.servo.gain_error = 'Invalid saved gains'; status.servo.can_recover_gains = true; renderMotors();`);
+  assert.equal(get('recover-gains').hidden, false);
+  await get('recover-gains').events.click();
+  assert.equal(run('zeroRequests.at(-1)[0]'), '/api/servo/recover-gains');
+  run(`request = async () => {throw Error('disk full')};`);
+  await get('recalibrate').events.click();
+  assert.equal(run('recalibrating'), false);
+  assert.equal(get('recalibrate').disabled, false);
+  assert.equal(get('message').textContent, 'disk full');
+  run(`globalThis.savedFrame = frameDetection; frameDetection = null;
+    cameraFeed.parentElement = {style: {}};
+    messageExpiresAt = 0; status.camera.error = 'Camera disconnected'; status.servo.error = null;
+    render(status);`);
+  assert.equal(get('message').textContent, 'Camera disconnected');
+  assert.equal(get('message').hidden, false);
+  run(`status.camera.error = null; render(status);`);
+  assert.equal(get('message').hidden, true);
+  run(`status.detection.error = 'Worker could not load'; render(status);`);
+  assert.equal(get('detection-status').textContent, 'Worker could not load');
+  run(`frameDetection = savedFrame; status.detection.error = null;
+    status.servo.gain_error = null;
+    status.servo.recalibrate_reason = null; render(status);`);
+  console.log('validated initial setup recovery, blocked reasons, retry after failed save and pre-frame errors');
+  run(`globalThis.beforeConnectionLoss = status; globalThis.beforeConnectionFrame = frameDetection;
+    frameDetection = null; status = {...status, servo: {...status.servo, armed: true, run_requested: true,
+    can_recalibrate: true}};
+    polling = false; request = async () => {throw Error('Wired backend link unavailable')};`);
+  await run('poll()');
+  assert.equal(get('message').textContent, 'Wired backend link unavailable');
+  assert.equal(get('message').hidden, false);
+  assert.equal(get('recalibrate').disabled, true);
+  assert.equal(get('motor-toggle').disabled, false);
+  assert.equal(get('motor-toggle').getAttribute('aria-label'), 'Stop motors');
+  run(`status = beforeConnectionLoss; frameDetection = beforeConnectionFrame; messageExpiresAt = 0; render(status);`);
   run(`cameraFeed.parentElement = {style: {}};
     status.camera = {online: true, width: 1280, height: 720};
     status.detection = {...status.detection, frame_sequence: 200, revision: 20};

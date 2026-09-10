@@ -88,6 +88,21 @@ def fake_backend(directory, port):
 
 
 class IsolationTests(unittest.TestCase):
+    def test_stale_backend_cannot_offer_setup_actions_or_claim_stop(self):
+        initial = metadata()
+        initial['state']['servo'].update(armed=True, run_requested=True,
+            can_recalibrate=True, can_recover_gains=True)
+        write_snapshot(self.directory, initial, b'camera', b'1')
+        store = SnapshotStore(self.directory)
+        self.addCleanup(store.close)
+        store.metadata['published_at'] -= 3
+        state = store.status()
+        for key in ('can_recalibrate', 'can_recover_gains'):
+            self.assertFalse(state['servo'][key])
+        self.assertTrue(state['servo']['run_requested'])
+        self.assertTrue(state['servo']['armed'])  # Unknown, not a false torque-off acknowledgement.
+        self.assertIn('Backend unavailable', state['servo']['recalibrate_reason'])
+
     def test_video_serialization_is_shared_and_does_not_replay_on_stale_backend(self):
         write_snapshot(self.directory, metadata(), b"camera", b"1")
         store = SnapshotStore(self.directory)

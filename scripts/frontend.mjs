@@ -15,6 +15,7 @@ const GET_PATHS = new Set(['/api/status', '/api/detection/status',
 const POST_PATHS = new Set(['/api/detection/model', '/api/detection/prompts',
   '/api/detection/prompt', '/api/tracking/target', '/api/tracking/instance',
   '/api/servo/arm', '/api/servo/disable', '/api/servo/recalibrate',
+  '/api/servo/recover-gains',
   '/api/servo/keepalive', '/api/servo/position', '/api/servo/gains', '/api/servo/gains/reset']);
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
@@ -30,27 +31,35 @@ const SECURITY = {
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'",
 };
 
-export function wiredLinkReady({interfaceName, localAddress}) {
-  if (!interfaceName) return true;
+export function resolveWiredInterface({interfaceName, interfaceMac}, interfaces = networkInterfaces()) {
+  if (interfaceMac) return Object.keys(interfaces).find(name =>
+    (!interfaceName || name === interfaceName) && interfaces[name].some(info => info.mac?.toLowerCase() === interfaceMac.toLowerCase()));
+  return interfaceName;
+}
+
+export function wiredLinkReady(device) {
+  if (!device.interfaceName && !device.interfaceMac) return true;
+  const interfaces = networkInterfaces(), interfaceName = resolveWiredInterface(device, interfaces);
+  if (!interfaceName) return false;
   try {
     return readFileSync(`/sys/class/net/${interfaceName}/carrier`, 'utf8').trim() === '1' &&
-      (networkInterfaces()[interfaceName] || []).some(info => info.address === localAddress);
+      (interfaces[interfaceName] || []).some(info => info.address === device.localAddress);
   } catch { return false; }
 }
 
 export function frontendOptions(values) {
   const {backend, arc, thor, name, 'thor-interface':interfaceName,
-    'thor-local-address':localAddress} = values;
+    'thor-mac':interfaceMac, 'thor-local-address':localAddress} = values;
   if (backend && (arc || thor)) throw new Error('Choose --backend or --arc/--thor');
   if (!backend && !arc && !thor) throw new Error('Choose --arc, --thor, or both');
-  if ((interfaceName || localAddress) && !thor) throw new Error('Wired options require --thor');
-  const thorDevice = {url:thor, label:'NVIDIA Jetson Thor', interfaceName, localAddress};
+  if ((interfaceName || interfaceMac || localAddress) && !thor) throw new Error('Wired options require --thor');
+  const thorDevice = {url:thor, label:'NVIDIA Jetson Thor', interfaceName, interfaceMac, localAddress};
   if (arc && thor) return {name:name || 'Spring Silicon + NVIDIA Jetson Thor',
     backends:{arc:{url:arc,label:'Spring Silicon'},thor:thorDevice}};
   // A single named device uses the original standalone UI and unprefixed API.
   return {backend:backend || arc || thor, name:name || (arc ? 'Spring Silicon' : thor ? 'NVIDIA Jetson Thor' : 'Turret Demo'),
           loadingLabel: thor ? 'Thor is Loading' : 'Spring is Coming',
-          ...(thor && (interfaceName || localAddress) ? {singleDevice:thorDevice} : {})};
+          ...(thor && (interfaceName || interfaceMac || localAddress) ? {singleDevice:thorDevice} : {})};
 }
 
 export function createFrontend({backend, backends, name = 'Turret Demo', timeoutMs = 15000,
@@ -59,20 +68,22 @@ export function createFrontend({backend, backends, name = 'Turret Demo', timeout
   const unified = Boolean(backends);
   const entries = unified ? Object.entries(backends) : [['default', {...singleDevice, url: backend, label: name}]];
   if (!entries.length || entries.length > 8) throw new Error('Between one and eight devices required');
-  const devices = new Map(entries.map(([id, {url, label, localAddress, interfaceName}]) => {
+  const devices = new Map(entries.map(([id, {url, label, localAddress, interfaceName, interfaceMac}]) => {
     if (!/^[a-z][a-z0-9-]*$/.test(id)) throw new Error('Invalid device ID');
     const target = new URL(url);
     if (!['http:', 'https:'].includes(target.protocol) || target.username ||
         target.password || target.pathname !== '/' || target.search || target.hash) {
       throw new Error('Backend must be an HTTP(S) origin without credentials or a path');
     }
-    if ((interfaceName || localAddress) && (!isIP(localAddress || '') || !isIP(target.hostname) ||
-        !/^[a-zA-Z0-9_.:-]{1,15}$/.test(interfaceName || ''))) {
+    if ((interfaceName || interfaceMac || localAddress) && (!isIP(localAddress || '') || !isIP(target.hostname) ||
+        !(interfaceName || interfaceMac) ||
+        (interfaceName && !/^[a-zA-Z0-9_.:-]{1,15}$/.test(interfaceName)) ||
+        (interfaceMac && !/^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(interfaceMac)))) {
       throw new Error('Wired backend requires an interface and literal source/destination IPs');
     }
     const transport = target.protocol === 'https:' ? https : http;
     return [id, {id, label: label || id, prefix: unified ? `/devices/${id}` : '', target, transport,
-      localAddress, interfaceName,
+      localAddress, interfaceName, interfaceMac,
       agents: [false, true].map(() => new transport.Agent({keepAlive: true, maxSockets: 16, maxFreeSockets: 4})),
       activeReads: 0, activeCommands: 0}];
   }));
@@ -209,6 +220,7 @@ export function createFrontend({backend, backends, name = 'Turret Demo', timeout
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   const {values} = parseArgs({options: {backend: {type: 'string'}, arc: {type: 'string'}, thor: {type: 'string'}, port: {type: 'string', default: '8080'},
     'thor-interface': {type: 'string'}, 'thor-local-address': {type: 'string'},
+    'thor-mac': {type: 'string'},
     name: {type: 'string'}, help: {type: 'boolean'}}});
   if (values.help) {
     console.log(`Usage: node ${fileURLToPath(import.meta.url)} (--backend http://HOST:8080 | --arc http://ARC:8080 | --thor http://THOR:8080 | --arc http://ARC:8080 --thor http://THOR:8080) [--port 8080] [--name TITLE] [--thor-interface enp8s0 --thor-local-address 192.168.249.1]`);

@@ -1,6 +1,6 @@
 # Spring turret demo
 
-Camera feed, switchable SAM 3.1 / SAM 3.1 Mask / SAM 3.1 Tracking, and manual or opt-in automatic
+Camera feed, switchable SAM 3.1 Box / SAM 3.1 Mask / SAM 3.1 Mem, and manual or opt-in automatic
 X/Y camera framing.
 
 For the current **spring-edge-turret (Arc) + agxthor-5** pair, start with the
@@ -100,9 +100,10 @@ It resets on model/prompt changes and shows `—` during startup/unavailable dat
 
 **Recalibrate zeros** saves the current pan and tilt encoder positions as X=0°,
 Y=0°. Stop the motors, support the camera and position it at the intended zero,
-then click and confirm. No motion or EEPROM writes occur. Both fresh readings
+then click once. No confirmation dialog, motion or EEPROM writes occur. Both fresh readings
 must be stationary and torque-off; an active motor, missing axis or failed save
-rejects the operation. Tracking selection is cleared and Start remains manual.
+rejects the operation. The selected class is retained, old instance/coordinate
+state is cleared, and Start remains manual.
 The numeric angle limits, axis directions and motor settings are unchanged;
 the allowed physical travel is now relative to the new zero.
 
@@ -112,8 +113,15 @@ provide this directory with `StateDirectory=spring-turret-demo` and
 `StateDirectoryMode=0750`. Both zeros are atomically saved in that file and
 loaded on restart; no write access to `/etc` is needed. Existing commissioned
 zeros remain the fallback until the first save. Invalid saved data or changed
-axis IDs/directions fail closed; the button does not replace initial hardware
-commissioning (`servo.calibrated` must already be true).
+axis IDs/directions fail closed but leave the API and **Set zeros** recovery
+button available. Initial zeroing no longer requires `servo.calibrated: true`:
+the command verifies both live model IDs, operating modes, torque-off state and
+stationary encoders before saving. Version-2 records bind the controller and
+axes and persist successful initial zeroing across restarts. If no path is
+configured, a controller-specific path under `$XDG_STATE_HOME/spring-turret`
+(default `~/.local/state/spring-turret`) is used. Storage directories are created
+on save. A failed save leaves the old calibration intact and permits retry.
+This does not program duplicate servo IDs or change EEPROM configuration.
 
 Enter
 one object category per row (for example `person`, `cup`, `keyboard`). Each row
@@ -188,12 +196,15 @@ are unchanged. The existing uncapped motor profile registers are also unchanged.
 The tracker reports `angle limit` when centering would require travel outside
 the configured range. Faster corrections can be more abrupt.
 
-Camera-axis direction must be commissioned separately from the mechanical zero:
-add `"tracking": {"calibrated": true, "x_direction": 1, "y_direction": -1,
+Tracking uses the configured camera-axis mapping immediately after **Set zeros**
+and **Start/Enter**. There is no separate mapping-confirmation button or saved
+approval file; legacy `tracking.calibrated` is metadata, not an enablement gate.
+Mechanical zeroing does not calibrate the lens. Configure the actual assembly's
+mapping, for example `"tracking": {"x_direction": 1, "y_direction": -1,
 "x_degrees_per_frame": 161.6, "y_degrees_per_frame": 82.8}` to
 the device config **only after checking the assembly**. These signs were measured
-on spring-edge-2: +X moves the background left, +Y moves it down. Defaults remain
-uncalibrated so another installation cannot move on assumed camera directions.
+on spring-edge-2: +X moves the background left, +Y moves it down. Physical
+servo zeros and hardware readiness are still required by Start.
 Those scales are **initial linear estimates**, derived from the earlier small
 encoder/phase-correlation measurements (640 × 360): 640 × 2.02 / 8 and
 360 × 1.15 / 5 degrees per frame. They are not measured full lens fields of view
@@ -353,14 +364,19 @@ curl http://127.0.0.1:8080/api/status
 
 ## Model selector
 
-The demo offers SAM 3.1 (boxes), SAM 3.1 Mask (per-frame masks), and SAM 3.1
-Tracking (temporal masks and IDs). All accept free-text prompts, retain multiple
+The demo offers SAM 3.1 Box (boxes), SAM 3.1 Mask (per-frame masks), and SAM 3.1
+Mem (temporal masks and IDs). All accept free-text prompts, retain multiple
 instances, and support per-class counts and click retargeting. YOLO is removed
 from the selector, API model registry, worker and installation dependencies.
 
-The additional [SAM 3.1 v18 choice](docs/sam31-v18.md) uses Israel's full1008
-native v18 mask tracker on Arc and selects the existing SAM 3.1 Tracking model
-on Thor. The original Tracking option remains available.
+Mem is the existing Tracking model, renamed; it does not add or import a model.
+The legacy [v18 implementation](docs/sam31-v18.md) remains supported for existing
+configurations but is no longer a separate menu choice. Status exposes its
+actual worker ID as `implementation_model`; its public profile is Mem. Selecting
+Mem again does not replace an already-running v18 worker.
+
+For a Git-pinned application-only deployment that preserves each device's model
+runtime, see [application releases](docs/git-deployments.md).
 
 Applied prompts and browser drafts are kept separately per model. Switching
 models clears old results and instance IDs and holds automatic motion; it keeps

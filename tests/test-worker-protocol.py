@@ -6,7 +6,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 import unittest
+from unittest.mock import Mock, patch
 from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +24,55 @@ class ShortReads(io.BytesIO):
 
 
 class ProtocolTests(unittest.TestCase):
+    def stalled_worker(self):
+        client = WorkerClient({})
+        client.process = subprocess.Popen([sys.executable, '-u', '-c',
+            'import time; print(\'{"type":"ready"}\',flush=True); time.sleep(60)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+        client.receive(5)
+        return client
+
+    def test_full_request_pipe_is_cancellable(self):
+        client = self.stalled_worker()
+        timer = threading.Timer(.1, client.cancel)
+        try:
+            timer.start()
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, 'cancelled during request transfer'):
+                client.send(b'x' * (2 * 1024 * 1024))
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            timer.cancel()
+            client.process.terminate()
+            client.stop()
+        self.assertIsNone(client.process)
+        client.stop()  # No signal sent to a potentially recycled process ID.
+
+    def test_full_request_pipe_has_a_deadline_without_cancellation(self):
+        client = self.stalled_worker()
+        try:
+            started = time.monotonic()
+            with self.assertRaisesRegex(TimeoutError, 'stopped reading requests'):
+                client.send(b'x' * (2 * 1024 * 1024), timeout=.1)
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            client.process.terminate()
+            client.stop()
+
+    def test_cleanup_close_failure_does_not_break_recovery_and_is_idempotent(self):
+        client = WorkerClient({})
+        client.process = Mock(pid=987654321)
+        client.process.poll.return_value = 1
+        client.process.stdin.close.side_effect = BrokenPipeError('worker exited')
+        client.process.stdout.close.side_effect = OSError('already gone')
+        temporary = client.native_temp = Mock()
+        with patch('spring_turret.detection.os.killpg') as kill:
+            client.stop()
+            client.stop()
+            self.assertEqual(kill.call_count, 1)
+        temporary.cleanup.assert_called_once()
+        self.assertIsNone(client.process)
+
     def test_adjacent_binary_and_legacy_frames_preserve_arbitrary_bytes(self):
         jpeg = bytes(range(256))*7 + b'\n{"id":999}\n'
         payload = b''.join(encode_request({'id':i,'prompts':['chair']}, jpeg+bytes([i]), mode)

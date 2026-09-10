@@ -126,6 +126,8 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 #motor-toggle.stopping { color: var(--error); }
 #motor-toggle svg { fill: currentColor; }
 #recalibrate { grid-column: 1 / -1; justify-self: center; padding: 0 14px; }
+#recover-gains { grid-column: 1 / -1; justify-self: center; padding: 0 14px; }
+#setup-hint { grid-column: 1 / -1; margin: 0; font-size: 12px; text-align: center; }
 #message { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 #message.error { color: var(--error); }
 

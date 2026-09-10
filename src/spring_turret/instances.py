@@ -1,13 +1,14 @@
 """Short-lived spatial instance IDs; no appearance re-identification or GPU work."""
 
 import math
-from spring_turret.geometry import Geometry
+from spring_turret.geometry import GeometryResource
 
 
 class InstanceAssociator:
     def __init__(self, config):
         self.config = config
-        self.geometry = Geometry.load(config["geometry_file"]) if config.get("geometry_file") else None
+        self.geometry_resource = GeometryResource(config.get("geometry_file"))
+        self.geometry = self.geometry_resource.value
         self.tracks = {}
         self.next_id = 1
 
@@ -16,7 +17,7 @@ class InstanceAssociator:
 
     def _predicted(self, track, pose):
         coords = list(track["box"]["xyxy"])
-        if pose and track["pose"]:
+        if pose and track["pose"] and not self.geometry_resource.error:
             if self.geometry:
                 try:
                     w,h=self.geometry.width,self.geometry.height
@@ -50,6 +51,8 @@ class InstanceAssociator:
         return math.hypot(dx/gx, dy/gy) + (1-iou)*.25
 
     def update(self, boxes, pose, captured_at):
+        if self.geometry_resource.error:
+            self.geometry = self.geometry_resource.refresh()
         self.tracks = {i: t for i, t in self.tracks.items() if 0 <= captured_at-t["at"] <= .75}
         boxes = [dict(b) for b in boxes if isinstance(b, dict) and
                  isinstance(b.get("xyxy"), (list, tuple)) and len(b["xyxy"]) == 4 and

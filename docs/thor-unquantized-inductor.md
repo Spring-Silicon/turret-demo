@@ -23,6 +23,53 @@ The compiler policy lives in `sam31_tracking_regions.py`.
 the comparison baseline; the CUDA default is `"inductor"`. This is an internal
 qualification override, not a new frontend model option.
 
+## Temporal graph cache
+
+The original two-entry LRU recaptured memory-attention graphs when memory-frame
+and object-pointer counts cycled through more than two exact signatures. A live
+Thor snapshot recorded 92 captures in 493 calls. Startup also created short-lived
+graphs while the memory bank filled.
+
+CUDA memory attention now admits a signature after its third occurrence and
+retains up to 16 graphs without eviction. Other signatures execute the same
+Inductor operation directly, preserving all original inputs, temporal memory,
+object counts and output ownership. A genuinely new shape can compile once;
+compiled direct execution does not repeatedly warm/capture/validate a graph.
+The initial eager-on-recompile fallback candidate was rejected after regression
+differences; production never switches this stage to eager on a cache miss.
+
+Per-stage telemetry now exposes cache policy/capacity, misses, evictions, replay
+calls and direct calls as well as captures. Capture validation remains enabled.
+The code affects the CUDA Tracking worker (including the shared v18 selection),
+not Arc's separately pinned native tracking implementation or the Mask model.
+
+### Cache repair qualification: 2026-09-10
+
+On agxthor-2, alternating three recorded memory-attention signatures for 36 calls
+reproduced 36 captures with the old cache and only three with the retained cache;
+outputs were bitwise identical. A separate 128-frame causal tracking regression
+also produced bitwise-identical published boxes, masks, scores, centroids and
+IDs, with memory-attention captures reduced from 16 to one. This verifies parity
+with the installed model, not accuracy against ground truth. Nineteen cache
+contract tests and four compiler-policy tests passed locally and inside the
+deployment image.
+
+After hot-deploying just the two inference modules, 64 distinct live processed
+frames passed validation. Memory attention ended with 53 calls, one capture and
+zero evictions. The control backend was not restarted, and the previous Mask
+model/prompt selection was restored. Persistent image:
+`spring-turret-demo:thor2-retained-graphs-20260910`.
+
+The same two qualified modules were ported to `agxthor-5`, paired with
+`spring-edge-turret`, without additional benchmark or smoke runs. Installed
+package hashes match the agxthor-2 candidate exactly. Its persistent image is
+`spring-turret-demo:thor5-retained-graphs-20260910`, layered on the existing
+`proteus-menu-20260910` image so the model menu and other optimizations remain.
+The effective launcher is `/opt/spring/turret-demo/run-container-overhead.sh`.
+Only the inference subprocess is reloaded; the control backend, model/prompt
+selection, configuration, calibration and motor intent are preserved. Deployment
+scripts and rollback files are in `/home/spring/thor-retained-graphs.MZ6h8S`.
+
 ## Qualification: 2026-09-09
 
 Paired tests ran on agxthor-2 with Torch

@@ -17,7 +17,7 @@ from typing import Any
 
 from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
-from spring_turret.models import MODELS, model_available, model_prompts, is_tracking_model
+from spring_turret.models import MODELS, MENU_MODELS, model_available, model_prompts, is_tracking_model, public_model_id
 from spring_turret.worker_protocol import JPEG_BYTES, encode_request
 from spring_turret.tracking_masks import valid_mask_centroid
 from spring_turret.api_contract import API_VERSION, detection_result
@@ -155,6 +155,7 @@ class WorkerClient:
         self.request_transport = "json-base64"
         self.prefetch_supported = False
         self.previous_prompts = None
+        self.stop_lock = threading.Lock()
 
     def launch(self) -> None:
         if self.config.get("model", "sam3.1") not in MODELS:
@@ -218,6 +219,30 @@ class WorkerClient:
                 if len(self.pending) > 4 * 1024 * 1024:
                     raise RuntimeError("Model worker response exceeded 4 MiB")
 
+    def send(self, payload: bytes, timeout: float = 30) -> None:
+        """A wedged worker must not block cancellation in a full stdin pipe."""
+        assert self.process and self.process.stdin
+        fd = self.process.stdin.fileno()
+        os.set_blocking(fd, False)
+        remaining = memoryview(payload)
+        deadline = time.monotonic() + timeout
+        with selectors.DefaultSelector() as selector:
+            selector.register(fd, selectors.EVENT_WRITE)
+            while remaining:
+                if self.cancelled.is_set():
+                    raise RuntimeError("Model worker cancelled during request transfer")
+                seconds = deadline - time.monotonic()
+                if seconds <= 0:
+                    raise TimeoutError("Model worker stopped reading requests")
+                try:
+                    sent = os.write(fd, remaining)
+                except BlockingIOError:
+                    selector.select(min(seconds, .05))
+                    continue
+                if sent == 0:
+                    raise BrokenPipeError("Model worker request pipe closed")
+                remaining = remaining[sent:]
+
     def detect(
         self, request_id: int, jpeg: bytes, prompts: list[str], progress: Any,
         *, prepared_token=None, prepare_next=None, session_revision=None, captured_at=None, camera_identity=None,
@@ -231,8 +256,7 @@ class WorkerClient:
         }
         if is_tracking_model(self.config.get("model")):
             body.update(session_revision=session_revision, captured_at=captured_at, camera_identity=camera_identity)
-        self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
-        self.process.stdin.flush()
+        self.send(encode_request(body, jpeg, self.request_transport))
         sent = 0
         last_token = None
         prepared_sent_at = None
@@ -242,9 +266,8 @@ class WorkerClient:
                 return
             candidate = prepare_next()
             if candidate is not None and candidate["token"] != last_token:
-                self.process.stdin.write(encode_request({"kind":"prepare", "token":candidate["token"]},
-                                                         candidate["jpeg"], self.request_transport))
-                self.process.stdin.flush()
+                self.send(encode_request({"kind":"prepare", "token":candidate["token"]},
+                                         candidate["jpeg"], self.request_transport))
                 prepared_sent_at = time.monotonic()
                 last_token = candidate["token"]
                 sent += 1
@@ -265,6 +288,10 @@ class WorkerClient:
         return result
 
     def stop(self) -> None:
+        with self.stop_lock:
+            self._stop()
+
+    def _stop(self) -> None:
         process = self.process
         if process is not None:
             if process.poll() is None:
@@ -285,7 +312,10 @@ class WorkerClient:
                     try:
                         process.wait(timeout=3)
                     except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
                         process.wait(timeout=3)
             # Reap surviving descendants even if the worker itself exited early.
             try:
@@ -294,7 +324,11 @@ class WorkerClient:
                 pass
             for stream in (process.stdin, process.stdout):
                 if stream:
-                    stream.close()
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+            self.process = None
         if self.native_temp is not None:
             self.native_temp.cleanup()
             self.native_temp = None
@@ -375,7 +409,7 @@ class DetectionController:
         if not model_available(model, self.config):
             raise ValueError(f"{MODELS[model]['label']} is not configured on this device")
         with self.condition:
-            if model == self.model:
+            if model == self.model or model == public_model_id(self.model):
                 return
             self.model = model
             self.set_prompts(self.saved_prompts[model])
@@ -396,9 +430,10 @@ class DetectionController:
                 "api_version": API_VERSION,
                 "enabled": self.enabled,
                 "device_type": self.config.get("device_type", "xpu"),
-                "model": self.model,
-                "models": [{"id": key, "label": value["label"], "available": model_available(key, self.config)}
-                           for key, value in MODELS.items()],
+                "model": public_model_id(self.model),
+                "implementation_model": self.model,
+                "models": [{"id": key, "label": MODELS[key]["label"], "available": model_available(key, self.config)}
+                           for key in MENU_MODELS],
                 "classes": MODELS[self.model]["classes"],
                 "prompt": self.prompts[0] if len(self.prompts) == 1 else "",
                 "prompts": list(self.prompts),

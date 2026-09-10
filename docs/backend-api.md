@@ -35,6 +35,7 @@ Missing measurements are omitted. Both masked modes count masks, not boxes.
 | `/api/tracking/instance` | POST | `{"revision":1,"frame_sequence":42,"instance_id":7}` |
 | `/api/servo/arm`, `/api/servo/disable` | POST | No body required |
 | `/api/servo/recalibrate` | POST | `{}`; requires stopped, stationary servos |
+| `/api/servo/recover-gains` | POST | `{}`; while stopped, backs up/discards an invalid saved override; no register writes |
 | `/api/servo/position` | POST | `{"axis":"x","degrees":20}` |
 
 The legacy single `/api/detection/prompt` and `/api/servo/keepalive` endpoints are retained. Validation errors
@@ -50,6 +51,13 @@ hardware is unavailable/unverified. `can_start` permits queuing Start for a
 commissioned assembly; it does not bypass hardware checks. See [device recovery](recovery.md).
 
 ## Common detection fields
+
+The public menu contains exactly `sam3.1` (SAM 3.1 Box), `sam3.1-mask`
+(SAM 3.1 Mask), and `sam3.1-tracking` (SAM 3.1 Mem), in that order.
+These IDs are unchanged, so saved selections and clients remain compatible.
+`implementation_model` retains the actual worker ID. A legacy `sam3.1-v18`
+deployment reports public `model: sam3.1-tracking` without swapping its worker.
+Direct legacy v18 API requests remain supported when configured.
 
 `api_version`, `model`, `models` (including per-device `available` capabilities),
 `prompts`, `revision`, `state`, `error`, `frame_sequence`, `frame_url`,

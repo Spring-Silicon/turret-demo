@@ -3,7 +3,7 @@
 Workers may report extra diagnostics, but viewers consume this common contract.
 Missing measurements are null, never invented zero-latency/GPU-only numbers.
 """
-from spring_turret.models import MODELS
+from spring_turret.models import MODELS, MENU_MODELS, public_model_id
 
 API_VERSION = 1
 
@@ -62,10 +62,14 @@ def detection_status(result):
                   progress_stage=result.get("progress_stage"),
                   progress={"phase":phase, "stage":stage})
     fields["pipeline_timing"] = {"cycle_ms":None, **result.get("pipeline_timing", {})}
+    if "model" in result:
+        fields["implementation_model"] = result.get("implementation_model", result["model"])
+        fields["model"] = public_model_id(result["model"])
     if "models" in result:
         # Also cover an older, still-running hardware process during deployment.
-        fields["models"] = [{**item, "label":MODELS[item["id"]]["label"]}
-                            for item in result["models"] if item.get("id") in MODELS]
+        choices = {item.get("id"): item for item in result["models"]}
+        fields["models"] = [{**choices[key], "label":MODELS[key]["label"]}
+                            for key in MENU_MODELS if key in choices]
     return fields
 
 

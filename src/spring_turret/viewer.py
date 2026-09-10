@@ -83,6 +83,7 @@ class SnapshotStore:
             if elapsed > 2:
                 if "camera" in state: state["camera"].update(online=False, error="Backend snapshot unavailable")
                 if "servo" in state: state["servo"].update(online=False, ready=False, can_recalibrate=False,
+                                      can_recover_gains=False, recalibrate_reason="Backend unavailable; waiting for reconnection",
                                       error="Backend unavailable; motor state unconfirmed")
                 if "detection" in state:
                     state["detection"].update(state="error", error="Backend snapshot unavailable", boxes=[], mask_overlay=None)

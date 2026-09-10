@@ -10,7 +10,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from spring_turret.calibration import load_zeros, save_zeros
+from spring_turret.calibration import load_zeros, save_zeros, ensure_storage, preserve_invalid
 from spring_turret.pose_history import interpolate_pose
 from spring_turret.servo_gains import GainSettings, validate_pd
 
@@ -109,8 +109,18 @@ def nearest_center(axis: dict, position: int) -> int:
 class ServoController:
     def __init__(self, config: dict[str, Any]):
         self.config = config
-        load_zeros(config)
-        self.gain_settings = GainSettings(config)
+        ensure_storage(config)
+        self.calibration_error = self.gain_error = None
+        try:
+            load_zeros(config)
+        except (OSError, ValueError, TypeError) as error:
+            config["calibrated"] = False
+            self.calibration_error = f"Saved zeros unavailable: {error}. Position the axes, then Set zeros."
+        try:
+            self.gain_settings = GainSettings(config)
+        except (OSError, ValueError, TypeError) as error:
+            self.gain_settings = GainSettings(config, load_saved=False)
+            self.gain_error = f"Saved gains unavailable: {error}. Discard invalid saved gains to recover."
         self.lock = threading.RLock()
         self.pose_lock = threading.Lock()
         self.cached_pose: dict | None = None
@@ -468,6 +478,8 @@ class ServoController:
 
     def arm(self) -> None:
         with self.lock:
+            if self.gain_error:
+                raise DeviceUnavailable(self.gain_error)
             if not self.config["calibrated"]:
                 raise DeviceUnavailable("X/Y IDs and mechanical zero must be calibrated first")
             self.run_requested = True
@@ -536,8 +548,6 @@ class ServoController:
         with self.lock:
             if self.armed or self.run_requested:
                 raise ServoDisarmed("Stop motors before recalibrating servo zeros")
-            if not self.config["calibrated"]:
-                raise DeviceUnavailable("Commission the servo IDs and modes before setting zeros")
             if not self.config.get("calibration_file"):
                 raise DeviceUnavailable("Persistent servo calibration storage is not configured")
             try:
@@ -561,15 +571,32 @@ class ServoController:
                     raise DeviceUnavailable("Hold both axes still while setting servo zeros")
                 positions = {name: state["position"] for name, state in self.axes.items()}
                 # Commit both zeros together before changing either in memory.
+                if self.calibration_error:
+                    preserve_invalid(self.config["calibration_file"])
                 save_zeros(self.config, positions)
                 for name, position in positions.items():
                     self.config["axes"][name]["center_position"] = position % 4096
                     self.axes[name].update(origin=position, goal=None)
                     self._recovery_boundary[name] = None
+                self.config["calibrated"] = True
+                self.calibration_error = None
                 self.error = ""
             except Exception as error:
                 self._fault_locked(error)
                 raise DeviceUnavailable(self.error) from error
+
+    def recover_gains(self) -> None:
+        """Discard an unreadable override, never change live registers or arm."""
+        with self.lock:
+            if self.armed or self.run_requested:
+                raise ServoDisarmed("Stop motors before recovering saved gains")
+            if not self.gain_error:
+                return
+            path = self.gain_settings.path
+            preserve_invalid(path)
+            path.unlink(missing_ok=True)
+            self.gain_error = None
+            self.error = ""
 
     def keepalive(self) -> None:
         """Compatibility no-op for already-open clients; never arms or moves."""
@@ -675,28 +702,37 @@ class ServoController:
         with self.lock:
             online = all(state["online"] for state in self.axes.values())
             outside = [name.upper() for name, state in self.axes.items()
-                       if state["position"] is not None and not self._within_limits(name, state["position"])]
+                       if self.config["calibrated"] and state["position"] is not None
+                       and not self._within_limits(name, state["position"])]
             range_error = (f"{'/'.join(outside)} outside configured limits; reposition with torque off"
                            if outside and not self.armed else None)
+            recalibrate_reason = ("Press Stop before setting zeros" if self.armed or self.run_requested else
+                "Reconnect both servos; check controller power, wiring and unique IDs" if not online else
+                "Press Stop and wait for torque-off confirmation" if any(state["torque"] is not False for state in self.axes.values()) else None)
             return {
-                "online": online, "ready": online and self.config["calibrated"] and (self.armed or not outside),
-                "can_recalibrate": bool(self.config.get("calibration_file")) and self.config["calibrated"]
-                    and online and not self.armed and not self.run_requested
-                    and all(state["torque"] is False for state in self.axes.values()),
+                "online": online, "ready": online and self.config["calibrated"] and not self.gain_error and (self.armed or not outside),
+                "calibrated": self.config["calibrated"],
+                "calibration_error": self.calibration_error,
+                "can_recalibrate": recalibrate_reason is None,
+                "recalibrate_reason": recalibrate_reason,
+                "gain_error": self.gain_error,
+                "can_recover_gains": bool(self.gain_error) and not self.armed and not self.run_requested,
                 "device": self.config["device"], "protocol": "dynamixel-2.0",
                 "baudrate": self.config["baudrate"], "armed": self.armed,
                 "run_requested": self.run_requested, "armed_at": self.armed_at,
                 "recovering": self.run_requested and not self.armed,
-                "can_start": self.config["calibrated"],
+                "can_start": self.config["calibrated"] and not self.gain_error,
+                "start_reason": self.gain_error or (None if self.config["calibrated"] else "Set X/Y zeros first"),
                 "read_retries": self.read_retries,
                 "feedback_mode": "packed" if self._feedback_bases else "registers",
-                "error": self.error or range_error or (None if self.config["calibrated"] else "X/Y calibration required"),
+                "error": self.error or self.calibration_error or self.gain_error or range_error or
+                    (None if self.config["calibrated"] else "X/Y calibration required — position both axes at zero, then click Set zeros"),
                 "axes": {name: {**state, "id": self.config["axes"][name]["id"],
                     "position_gains": dict(state["position_gains"]) if state["position_gains"] else None,
                     "gain_baseline": dict(self.gain_settings.baseline[name])
                         if name in self.gain_settings.baseline else None,
                     "direction": self.config["axes"][name]["direction"],
-                    "degrees": to_degrees(self._axis_config(name), state["position"]),
+                    "degrees": to_degrees(self._axis_config(name), state["position"]) if self.config["calibrated"] else None,
                     "goal_degrees": to_degrees(self._axis_config(name), state["goal"]),
                     "min_degrees": self.config["axes"][name]["min_degrees"],
                     "max_degrees": self.config["axes"][name]["max_degrees"]}

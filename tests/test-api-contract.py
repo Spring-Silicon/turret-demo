@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from spring_turret.api_contract import API_VERSION, detection_result, detection_status, public_status
 from spring_turret.detection import DetectionController, WorkerClient
-from spring_turret.models import MODELS, model_available, model_prompts
+from spring_turret.models import MODELS, MENU_MODELS, model_available, model_prompts
 
 
 class ContractTests(unittest.TestCase):
@@ -22,7 +22,9 @@ class ContractTests(unittest.TestCase):
         for model in MODELS:
             self.assertEqual(model_prompts(model, ["red shoe"]), ["red shoe"])
         result = detection_status({"models":[{"id":key} for key in [*MODELS, "yolo26x"]]})
-        self.assertEqual({item["id"] for item in result["models"]}, set(MODELS))
+        self.assertEqual([item["id"] for item in result["models"]], list(MENU_MODELS))
+        self.assertEqual([item["label"] for item in result["models"]],
+                         ["SAM 3.1 Box", "SAM 3.1 Mask", "SAM 3.1 Mem"])
         app = ViewerApplication.__new__(ViewerApplication)
         with patch("spring_turret.viewer.command_request") as command:
             with self.assertRaises(ValueError): app.command("/api/detection/model", {"model":"yolo26x"})
@@ -30,6 +32,33 @@ class ContractTests(unittest.TestCase):
         with patch("spring_turret.detection.subprocess.Popen") as launch:
             with self.assertRaises(ValueError): WorkerClient({"model":"yolo26x"}).launch()
             launch.assert_not_called()
+
+    def test_legacy_tracking_implementation_does_not_reload_when_mem_is_selected(self):
+        config = {"enabled":True, "model":"sam3.1-v18", "device_type":"xpu",
+                  "sam31_tracking_bundle":"/sam", "sam31_tracking_v18_bundle":"/v18"}
+        controller = DetectionController(config, None)
+        controller.set_prompts(["hand"])
+        before = controller.status()
+        controller.set_model("sam3.1-tracking")
+        after = controller.status()
+        self.assertEqual(after, before)
+        self.assertEqual(after["model"], "sam3.1-tracking")
+        self.assertEqual(after["implementation_model"], "sam3.1-v18")
+        self.assertEqual([m["id"] for m in after["models"]], list(MENU_MODELS))
+        legacy = detection_status({"model":"sam3.1-v18", "models":[{"id":key} for key in MODELS]})
+        self.assertEqual(legacy["model"], "sam3.1-tracking")
+        self.assertEqual(legacy["implementation_model"], "sam3.1-v18")
+        self.assertEqual(legacy, detection_status(legacy))
+
+    def test_menu_markup_matches_public_contract(self):
+        from html.parser import HTMLParser
+        class Options(HTMLParser):
+            values = []
+            def handle_starttag(self, tag, attrs):
+                if tag == "option": self.values.append(dict(attrs)["value"])
+        parser = Options()
+        parser.feed((Path(__file__).resolve().parents[1] / "src/spring_turret/static/index.html").read_text())
+        self.assertEqual(parser.values, list(MENU_MODELS))
     def test_device_progress_uses_common_phases_without_changing_raw_state(self):
         for raw, phase in (("loading", "loading"), ("loading_tracker", "loading"),
                            ("compiling", "preparing"), ("compiling_tracker_memory_update", "preparing"),

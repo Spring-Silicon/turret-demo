@@ -40,7 +40,7 @@ const ids = new Map();
 const get = id => {if (!ids.has(id)) ids.set(id, new Element()); return ids.get(id);};
 const document = {getElementById: get, createElement: tag => new Element(tag)};
 get('prompt-row-template').content = {firstElementChild: new Element()};
-for (const id of ['sam3.1', 'sam3.1-mask', 'sam3.1-tracking', 'sam3.1-v18']) {
+for (const id of ['sam3.1', 'sam3.1-mask', 'sam3.1-tracking']) {
   const option = new Element('option'); option.value = id; get('detection-model').append(option);
 }
 const ctx = vm.createContext({document});
@@ -77,7 +77,6 @@ for (const {id} of devices) {
   };
   controller.attach(id, clients[id]);
 }
-states.arc.detection.models.push({id:'sam3.1-v18',available:true});
 const rows = () => get('prompt-rows').children;
 const input = i => rows()[i].querySelector('.detection-prompt');
 const values = () => rows().map(row => row.querySelector('.detection-prompt').value);
@@ -240,31 +239,49 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.equal(get('detection-model').value,'sam3.1-mask');
   console.log('validated partial failures, no automatic retries, in-flight exclusion and common model availability');
 
-  const beforeV18 = calls.length;
-  const v18 = get('detection-model').options.find(o=>o.value==='sam3.1-v18');
-  assert.equal(v18.disabled,false); // Thor has no Intel-only model ID.
-  await changeModel('sam3.1-v18');
-  assert.equal(states.arc.detection.model,'sam3.1-v18');
+  const beforeMem = calls.length;
+  const mem = get('detection-model').options.find(o=>o.value==='sam3.1-tracking');
+  assert.equal(mem.disabled,false);
+  await changeModel('sam3.1-tracking');
+  assert.equal(states.arc.detection.model,'sam3.1-tracking');
   assert.equal(states.thor.detection.model,'sam3.1-tracking');
-  assert.deepEqual(calls.slice(beforeV18).filter(c=>c.route==='/api/detection/model').map(c=>[c.id,c.body.model]),
-    [['arc','sam3.1-v18'],['thor','sam3.1-tracking']]);
-  assert.ok(calls.slice(beforeV18).every(c=>!c.route.includes('/servo/')));
-  assert.equal(get('shared-message').hidden,true); // Intentional mapping is not a mismatch.
+  assert.deepEqual(calls.slice(beforeMem).filter(c=>c.route==='/api/detection/model').map(c=>[c.id,c.body.model]),
+    [['arc','sam3.1-tracking'],['thor','sam3.1-tracking']]);
+  assert.ok(calls.slice(beforeMem).every(c=>!c.route.includes('/servo/')));
+  assert.equal(get('shared-message').hidden,true);
   assert.equal(rows()[0].querySelector('.target-prompt').disabled,false);
   menuWrites.length=0;
   for(let i=0;i<50;i++) controller.update(i%2?'arc':'thor',structuredClone(states[i%2?'arc':'thor']));
   assert.deepEqual(menuWrites,[]);
-  const beforeV18Submit=calls.length;
+  const beforeMemSubmit=calls.length;
   await submit();
-  assert.ok(calls.slice(beforeV18Submit).every(c=>c.route==='/api/detection/prompts'));
+  assert.ok(calls.slice(beforeMemSubmit).every(c=>c.route==='/api/detection/prompts'));
   states.thor.detection.models.find(m=>m.id==='sam3.1-tracking').available=false;
   controller.update('thor',structuredClone(states.thor));
-  assert.equal(v18.disabled,true);
-  assert.match(v18.title,/Thor/);
+  assert.equal(mem.disabled,true);
+  assert.match(mem.title,/Thor/);
   states.thor.detection.models.find(m=>m.id==='sam3.1-tracking').available=true;
   controller.update('thor',structuredClone(states.thor));
   await changeModel('sam3.1-mask');
-  console.log('validated v18 maps to Arc v18 and Thor tracking with shared prompts and stable selection');
+  console.log('validated Mem uses the same API on Arc and Thor with shared prompts and stable selection');
+
+  controller.offline('thor');
+  assert.equal(get('update-prompts').disabled, false);
+  assert.equal(rows()[0].querySelector('.target-prompt').disabled, false);
+  assert.match(get('shared-message').textContent, /Thor offline/);
+  const beforeOffline = calls.length;
+  input(0).value = 'offline test'; input(0).events.input();
+  await submit();
+  assert.deepEqual(calls.slice(beforeOffline).map(c => c.id), ['arc']);
+  assert.deepEqual(states.arc.detection.prompts, ['offline test']);
+  assert.match(get('shared-message').textContent, /Thor: Offline; skipped/);
+  const afterOffline = calls.length;
+  controller.update('thor', structuredClone(states.thor));
+  assert.equal(calls.length, afterOffline); // Never replay actions on reconnection.
+  assert.deepEqual(values(), ['offline test']);
+  await submit();
+  assert.deepEqual(states.thor.detection.prompts, ['offline test']);
+  console.log('validated disconnected peer cannot deadlock working peer controls; reconnect stays explicit');
 
   // The actual per-device client runs without model/form/template elements
   // when mounted in shared-control mode. Local motor and instance commands

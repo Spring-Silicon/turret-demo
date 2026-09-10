@@ -93,7 +93,7 @@ See [Thor Inductor qualification and deployment](thor-unquantized-inductor.md)
 for timing boundaries, regression evidence and rollback details.
 
 The XPU regional baseline keeps its Inductor image encoder and `aot_eager`
-heads. The legacy per-stage layout also remains unchanged. The
+heads. The legacy per-stage layout retains its compiler choices. The
 compiled components execute inside larger explicit CUDA or SYCL replay regions:
 
 | Region | Thor | Arc |
@@ -111,8 +111,15 @@ This is **not one graph of the entire stateful tracker**, nor a claim that all
 operators were fused into one kernel. FA3/perflib remain disabled. No weights,
 precision, resolution, memory policy or object limits were reduced.
 
-Thor keeps at most two exact-shape graphs per region; Arc keeps four. New shapes compile/capture on
-demand; the first frames and new object/memory shapes can pause during warmup.
+Thor's memory attention retains up to 16 exact-shape graphs, capturing only
+after a signature occurs three times. It never evicts these graphs: rare shapes
+and misses after capacity is reached use the same compiled operation directly.
+This prevents the old two-entry LRU from repeatedly evicting/recapturing changing
+temporal memory and pointer lengths. One-use startup shapes are not captured.
+Other Thor regions keep two exact-shape graphs; Arc's policy is unchanged.
+Genuinely new signatures can still require a first Inductor compilation, and
+admitted recurring signatures require one capture; there is no eager fallback,
+memory truncation, padding, object dropping or input-resolution change.
 Cached kernels survive process restarts, but graph buffers must be recaptured.
 Inputs own their GPU storage and every returned tensor is cloned, so later
 replay cannot overwrite cached image features or historical mask memories.
@@ -123,7 +130,8 @@ input containers are rebuilt before each compiled call.
 
 `torch_compile` and the device's graph flag become true only after actual
 successful replay. `compilation_scope: tensor-regions` and `graph_stages` expose
-per-stage compiler backends, call/capture counts, bounded cached shapes and
+per-stage compiler backends, call/capture/replay/direct counts, cache misses,
+evictions, cache policy/capacity, bounded cached shapes and
 observed replay error. Capture rejects nonfinite outputs and tensor-scale RMS
 error over `0.001 + 2% * reference RMS` for composed regions (1% for individual
 stages); integer/boolean metadata and large

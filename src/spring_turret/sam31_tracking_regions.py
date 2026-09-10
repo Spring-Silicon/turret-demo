@@ -272,8 +272,10 @@ def install_tracking_regions(torch, model, device_type, *, progress=None, heads_
         for name, module in (('memory_encoder', tracker.maskmem_backbone),
                              ('memory_attention', tracker.transformer.encoder),
                              ('tracking_masks', tracker.sam_mask_decoder)):
+            cache = ({'max_variants':16, 'cache_policy':'retain', 'capture_repetitions':3}
+                     if name == 'memory_attention' else {})
             stage = TrackingGraphStage(torch, module.forward, name, device_type,
-                                       progress=progress, backend=heads_backend)
+                                       progress=progress, backend=heads_backend, **cache)
             module.forward = stage
             regions[name] = stage
     else:
