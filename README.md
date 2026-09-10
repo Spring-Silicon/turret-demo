@@ -358,6 +358,10 @@ Tracking (temporal masks and IDs). All accept free-text prompts, retain multiple
 instances, and support per-class counts and click retargeting. YOLO is removed
 from the selector, API model registry, worker and installation dependencies.
 
+The additional [SAM 3.1 v18 choice](docs/sam31-v18.md) uses Israel's full1008
+native v18 mask tracker on Arc and selects the existing SAM 3.1 Tracking model
+on Thor. The original Tracking option remains available.
+
 Applied prompts and browser drafts are kept separately per model. Switching
 models clears old results and instance IDs and holds automatic motion; it keeps
 the selected class when that class remains in the applied prompts and

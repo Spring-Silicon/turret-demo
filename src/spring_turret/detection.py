@@ -17,7 +17,7 @@ from typing import Any
 
 from spring_turret.prompts import COLORS, MAX_PROMPTS
 from spring_turret.instances import InstanceAssociator
-from spring_turret.models import MODELS, model_available, model_prompts
+from spring_turret.models import MODELS, model_available, model_prompts, is_tracking_model
 from spring_turret.worker_protocol import JPEG_BYTES, encode_request
 from spring_turret.tracking_masks import valid_mask_centroid
 from spring_turret.api_contract import API_VERSION, detection_result
@@ -99,6 +99,14 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError("Native tracking requires XPU and a tracking source bundle")
     if config.get("model") == "sam3.1-tracking" and not model_available("sam3.1-tracking", config):
         raise ValueError("SAM 3.1 Tracking requires a tracking source bundle and XPU or CUDA")
+    if "sam31_tracking_v18_bundle" in config:
+        path = config["sam31_tracking_v18_bundle"]
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError("inference.sam31_tracking_v18_bundle must be an absolute path")
+        if config.get("device_type", "xpu") != "xpu" or not config.get("sam31_tracking_bundle"):
+            raise ValueError("SAM 3.1 v18 requires XPU and a tracking source bundle")
+    if config.get("model") == "sam3.1-v18" and not model_available("sam3.1-v18", config):
+        raise ValueError("SAM 3.1 v18 requires its pinned native tracking bundle")
     if "yolo26x_checkpoint" in config:
         raise ValueError("YOLO support was removed; remove inference.yolo26x_checkpoint")
     if not 0 < float(config.get("confidence", 0.5)) < 1:
@@ -221,7 +229,7 @@ class WorkerClient:
             "client_overlay": True,
             "prepared_token": prepared_token,
         }
-        if self.config.get("model") == "sam3.1-tracking":
+        if is_tracking_model(self.config.get("model")):
             body.update(session_revision=session_revision, captured_at=captured_at, camera_identity=camera_identity)
         self.process.stdin.write(encode_request(body, jpeg, self.request_transport))
         self.process.stdin.flush()
@@ -542,7 +550,7 @@ class DetectionController:
                             return prefetched
                     extra = ({"prepared_token":prepared_token, "prepare_next":prepare_next}
                              if getattr(self.worker, "prefetch_supported", False) else {})
-                    if model == "sam3.1-tracking":
+                    if is_tracking_model(model):
                         camera_state = self.camera.status()
                         identity = camera_state.get("identity")
                         if "connection_generation" in camera_state:
@@ -557,7 +565,7 @@ class DetectionController:
                         **extra,
                     )
                     graph_key = "cuda_graph" if self.config.get("device_type") == "cuda" else "sycl_graph"
-                    if model == "sam3.1-tracking":
+                    if is_tracking_model(model):
                         validate_tracking_result(result, prompts)
                     elif result.get("torch_compile") is not True or result.get(graph_key) is not True:
                         raise RuntimeError(
@@ -581,7 +589,7 @@ class DetectionController:
                     with self.condition:
                         if revision != self.revision:
                             continue  # Never display boxes from an obsolete prompt.
-                        if model != "sam3.1-tracking":
+                        if not is_tracking_model(model):
                             result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
                         self._cache_frame(key, annotated, result["boxes"], captured_at)
                         self.result = {

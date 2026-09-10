@@ -50,14 +50,19 @@ def main() -> None:
     html = (ROOT / "src/spring_turret/static/index.html").read_text()
     server = (ROOT / "src/spring_turret/server.py").read_text()
     controller = (ROOT / "src/spring_turret/servo.py").read_text()
-    assert html.count('type="range"') == 6  # X/Y angle plus per-axis P/D.
+    assert html.count('type="range"') == 2  # X/Y angle controls only.
     dashboard = (ROOT / "src/spring_turret/static/dashboard.html").read_text()
-    assert dashboard.count('type="range"') == 2
-    assert dashboard.count('id="shared-gains-reset"') == 1
+    assert dashboard.count('type="range"') == 0
+    assert 'id="shared-gains"' not in dashboard
     for axis in ('x','y'):
-        assert f'id="{axis}-gains-reset"' in html
+        assert f'id="shared-{axis}-gains-reset"' not in dashboard
+        assert f'id="{axis}-gains-reset"' not in html
         for gain in ('p','d'):
-            assert f'id="{axis}-{gain}-gain"' in html
+            assert f'id="shared-{axis}-{gain}-gain"' not in dashboard
+            assert f'id="shared-{axis}-{gain}-value"' not in dashboard
+            assert f'id="{axis}-{gain}-gain"' not in html
+    for script in ('app.js', 'shared-controls.js'):
+        assert '/api/servo/gains' not in (ROOT / 'src/spring_turret/static' / script).read_text()
     assert html.index('id="x-slider"') < html.index('id="motor-toggle"') < html.index('id="y-slider"')
     assert 'id="start-icon"' in html and 'id="stop-icon"' in html
     assert 'id="position-slider"' not in html

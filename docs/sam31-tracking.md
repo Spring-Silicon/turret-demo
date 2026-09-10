@@ -83,12 +83,20 @@ detection status. This is an experimental quality profile: test actual
 occlusions/crossings in your scene rather than assuming better accuracy from
 stable IDs alone.
 
-The image encoder uses `torch.compile(backend="inductor")`. Text encoding,
-detection encoder/decoder/masks, memory encoding/attention and tracking masks
-use `torch.compile(backend="aot_eager")`, retaining native ATen kernels. The
+On Thor, the image encoder, detection encoder/decoder/masks, memory
+encoding/attention and tracking masks use `torch.compile(backend="inductor")`
+with BF16 inference and `emulate_precision_casts=True`. No quantization or
+TensorRT engine is used. Text encoding remains cached `aot_eager`. This common
+CUDA tracker serves both the Tracking selection and the Thor side of the shared
+v18 selection; Arc's native v18 implementation is not changed.
+See [Thor Inductor qualification and deployment](thor-unquantized-inductor.md)
+for timing boundaries, regression evidence and rollback details.
+
+The XPU regional baseline keeps its Inductor image encoder and `aot_eager`
+heads. The legacy per-stage layout also remains unchanged. The
 compiled components execute inside larger explicit CUDA or SYCL replay regions:
 
-| Region | Thor baseline | Arc |
+| Region | Thor | Arc |
 | --- | --- | --- |
 | Image encoder, geometry, detection encoder/decoder/heads | One replay | One replay; image features shared across prompts |
 | Subsequent text prompt on the same image | Full image/detection replay | Detection-only replay |

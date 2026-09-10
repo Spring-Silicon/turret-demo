@@ -218,21 +218,28 @@ class PropagationRegion:
         return self.no_memory(backbone_features, kwargs, mux_inputs(multiplex_state))
 
 
-def install_tracking_regions(torch, model, device_type, *, progress=None):
-    """Thor baseline: joint detection; Arc: joint detection/propagation/memory.
+def install_tracking_regions(torch, model, device_type, *, progress=None, heads_backend=None):
+    """Thor: unquantized Inductor; Arc: retain its native-ATen head policy.
 
-    Compile the SAME component functions/backends as the qualified stage path,
-    but do not allocate/replay/clone their intermediate outputs individually.
+    CUDA retains separate temporal replay boundaries and CPU NMS. Text stays
+    cached AOT-eager; all per-frame neural stages use Inductor. The explicit
+    override supports baseline qualification without changing the live default.
     """
+    if heads_backend is None:
+        heads_backend = 'inductor' if device_type == 'cuda' else 'aot_eager'
+    if heads_backend not in ('inductor', 'aot_eager'):
+        raise ValueError('Unknown tracking heads compiler backend')
     tracker, detector = model.tracker.model, model.detector
     regions = {}
     def region(name, fn, backend):
+        backend = backend.replace('aot_eager', heads_backend)
         stage = TrackingGraphStage(torch, fn, name, device_type, composed=True,
             progress=progress, backend=backend, max_variants=4 if device_type == 'xpu' else 2)
         regions[name] = stage
         return stage
 
-    def compiled(module, backend='aot_eager'):
+    def compiled(module, backend=None):
+        backend = heads_backend if backend is None else backend
         options = {'emulate_precision_casts':True}
         if device_type == 'cuda': options['triton.cudagraphs'] = False
         module.forward = torch.compile(module.forward, backend=backend, fullgraph=True,
@@ -261,12 +268,12 @@ def install_tracking_regions(torch, model, device_type, *, progress=None):
     detection = DetectionRegion(torch, detector, region, share_image=device_type == 'xpu')
     detector.forward_grounding = detection
     if device_type == 'cuda':
-        # Baseline: retain the already-qualified temporal stage boundaries.
+        # Retain the qualified boundaries; only the tensor compiler changes.
         for name, module in (('memory_encoder', tracker.maskmem_backbone),
                              ('memory_attention', tracker.transformer.encoder),
                              ('tracking_masks', tracker.sam_mask_decoder)):
             stage = TrackingGraphStage(torch, module.forward, name, device_type,
-                                       progress=progress, backend='aot_eager')
+                                       progress=progress, backend=heads_backend)
             module.forward = stage
             regions[name] = stage
     else:

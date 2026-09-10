@@ -1,23 +1,18 @@
-# Servo P/D controls
+# Servo P/D configuration
 
-The combined page has **one P slider, one D slider and one Reset P/D button**
-shared by X/Y on both turrets. Changing P applies P to all four servos while
-preserving each one's D, and vice versa. Reset restores each axis's saved baseline.
-Different readbacks display **Mixed**, not whichever device replied last. All
-devices must be connected to adjust the shared controls; partial failures name
-the device/axis and are not automatically retried. Model and Start/Stop controls
-are unaffected. Standalone device pages retain independent X/Y tuning controls.
+Both installed turrets use these saved gains (September 9, 2026):
 
-A slider commits on release or keyboard
-change. Opening, polling, or reconnecting the page never writes gains. Stop stays
-available during a gain update; changing gains never arms a stopped turret.
+| Axis | P | D |
+| --- | ---: | ---: |
+| X | 400 | 400 |
+| Y | 500 | 250 |
 
-Shared sliders default to **P 1–2000 / D 0–2000**, step 1, with visible endpoints.
-Type exact values into the adjacent number fields and press Enter or leave the
-field to apply. Typing alone does not send commands; Enter here never starts
-motors. Numbers accept the full register range below. The slider expands in
-500-unit increments when a typed or existing gain exceeds 2000, up to 16383.
-Blank, fractional and out-of-range inputs are rejected without motor writes.
+The combined and individual pages do not expose gain sliders, number inputs,
+or gain-reset buttons. Manual angle sliders, Start/Stop, zero calibration,
+models and prompts are unchanged. Loading/reconnecting the viewer never writes
+gains; the backend restores its saved values independently of the browser.
+The administrative gain API remains available, including validated persistence
+and reset to the original baseline. Removing the UI does not change that baseline.
 
 These are the XL330 internal **position-controller raw register values**, not
 the camera tracking controller. P is 1–16383 (retaining the application's positive

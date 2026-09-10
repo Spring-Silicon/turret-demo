@@ -11,131 +11,18 @@ function mountSharedControls(document, devices) {
   const states = new Map(), clients = new Map(), offline = new Set(), drafts = new Map();
   let model = null, initialized = false, busy = false, error = '', dirty = false;
   let renderedModel = null;
-  const gainSliders = Object.fromEntries(['p','d'].map(key => [key, document.getElementById(`shared-${key}-gain`)]));
-  const gainNumbers = Object.fromEntries(['p','d'].map(key => [key, document.getElementById(`shared-${key}-value`)]));
-  const gainReset = document.getElementById('shared-gains-reset');
-  const gainMessage = document.getElementById('shared-gains-message');
-  let gainsBusy = false, gainsError = '';
-  const gainEdits = new Set();
-  const gainNumberDirty = new Set();
-
-  const validGain = (key, value) => Number.isInteger(value) && value >= (key === 'p' ? 1 : 0) && value <= 16383;
-  function scaleGain(key, value) {
-    // Useful drag precision near the installed gains; exact entry can expand
-    // the view without clipping legitimate hardware values.
-    const max = Math.min(16383, Math.max(2000, Math.ceil(value / 500) * 500));
-    gainSliders[key].max = max;
-    document.getElementById(`shared-${key}-max`).textContent = String(max);
-  }
-
-  const gainAxes = () => devices.flatMap(device => ['x','y'].map(axis => ({device, axis,
-    state: states.get(device.id)?.servo?.axes?.[axis]})));
-  const gainsReady = () => devices.every(device => !offline.has(device.id) && clients.has(device.id)
-    && states.get(device.id)?.servo?.online) && gainAxes().every(({state}) => state?.position_gains && state?.gain_baseline);
-
-  function renderGains() {
-    const ready = gainsReady(), axes = gainAxes();
-    for (const key of ['p','d']) {
-      const slider = gainSliders[key];
-      const number = gainNumbers[key];
-      slider.disabled = !ready || gainsBusy;
-      number.disabled = !ready || gainsBusy;
-      if (!gainsBusy && !gainEdits.has(key)) {
-        const values = axes.map(({state}) => state?.position_gains?.[key]);
-        const known = values.every(Number.isInteger);
-        const common = known && values.every(value => value === values[0]);
-        if (known) { scaleGain(key, Math.max(...values)); slider.value = values[0]; }
-        const label = !ready ? '—' : common ? String(values[0]) : 'Mixed';
-        number.value = ready && common ? String(values[0]) : '';
-        number.placeholder = label;
-        number.setAttribute('aria-invalid', 'false');
-        slider.setAttribute('aria-valuetext', label);
-      }
-    }
-    gainReset.disabled = !ready || gainsBusy;
-    gainReset.title = 'Restore the saved P/D baseline on all four servos';
-    gainMessage.textContent = gainsError;
-    gainMessage.hidden = !gainsError;
-  }
-
-  async function applyGain(key, source = 'slider') {
-    if (gainsBusy || !gainsReady()) return;
-    const raw = key === 'reset' ? '' : String((source === 'number' ? gainNumbers : gainSliders)[key].value).trim();
-    const value = key === 'reset' ? null : Number(raw);
-    if (key !== 'reset' && (!raw || !validGain(key, value))) {
-      gainsError = `${key.toUpperCase()} must be a whole number from ${key === 'p' ? 1 : 0} to 16383`;
-      gainEdits.add(key); renderGains();
-      gainNumbers[key].setAttribute('aria-invalid', 'true');
-      return;
-    }
-    if (key !== 'reset') { scaleGain(key, value); gainSliders[key].value = value; }
-    // Freeze each untouched gain before any replies arrive. A P adjustment
-    // never replaces a differing D value with one peer's value (or vice versa).
-    const commands = gainAxes().map(({device, axis, state}) => ({device, axis,
-      body: key === 'reset' ? {axis} : {axis, p:state.position_gains.p, d:state.position_gains.d, [key]:value}}));
-    gainsBusy = true; gainsError = ''; gainEdits.clear(); gainNumberDirty.clear(); renderGains();
-    const failures = [];
-    try {
-      await Promise.all(devices.map(async device => {
-        // Serialize X/Y on each bus; devices run independently. Still attempt
-        // the other axis after a failure and report exactly what failed.
-        for (const {axis, body} of commands.filter(command => command.device.id === device.id)) {
-          try {
-            const result = await clients.get(device.id).command(
-              key === 'reset' ? '/api/servo/gains/reset' : '/api/servo/gains', body);
-            states.set(device.id, result);
-          } catch (error) {
-            failures.push(`${device.label} ${axis.toUpperCase()}: ${error.message || error}`);
-          }
-        }
-      }));
-      gainsError = failures.join(' · ');
-    } finally {
-      gainsBusy = false; renderGains();
-    }
-  }
-  for (const [key, slider] of Object.entries(gainSliders)) {
-    slider.addEventListener('input', () => {
-      gainEdits.add(key);
-      gainNumbers[key].value = slider.value;
-      slider.setAttribute('aria-valuetext', slider.value);
-    });
-    slider.addEventListener('change', () => applyGain(key));
-    for (const event of ['blur','pointercancel'])
-      slider.addEventListener(event, () => { gainEdits.delete(key); renderGains(); });
-    const number = gainNumbers[key];
-    number.addEventListener('focus', () => gainEdits.add(key));
-    number.addEventListener('input', () => {
-      gainEdits.add(key); gainNumberDirty.add(key);
-      number.setAttribute('aria-invalid', 'false');
-      const value = Number(number.value);
-      if (String(number.value).trim() && validGain(key, value)) {
-        scaleGain(key, value); slider.value = value;
-        slider.setAttribute('aria-valuetext', String(value));
-      }
-    });
-    const commitNumber = () => gainNumberDirty.has(key) ? applyGain(key, 'number') : undefined;
-    // Blur/change and Enter may occur together: clear the dirty flag before
-    // awaiting replies so a single edit cannot dispatch a second batch.
-    number.addEventListener('change', commitNumber);
-    number.addEventListener('blur', () => {
-      if (gainNumberDirty.has(key)) return commitNumber();
-      gainEdits.delete(key); renderGains();
-    });
-    number.addEventListener('keydown', event => {
-      if (event.key === 'Enter' && !event.isComposing) {
-        event.preventDefault(); event.stopPropagation?.();
-        if (!event.repeat) return commitNumber();
-      }
-    });
-  }
-  gainReset.addEventListener('click', () => applyGain('reset'));
-
   const readRows = () => [...rows.children].map(row => row.querySelector('.detection-prompt').value.trim());
   const normalized = values => [...new Map(values.filter(Boolean).map(value => [value.toLowerCase(), value])).values()];
   const detections = () => devices.map(device => states.get(device.id)?.detection);
   const limit = () => Math.min(...detections().map(d => d?.max_prompts || 8));
-  const available = id => detections().every(d => d?.enabled && d.models?.some(m => m.id === id && m.available));
+  // v18 is an Intel implementation of the temporal profile. Thor keeps its
+  // existing CUDA tracking implementation, not the Intel-only worker ID.
+  const effectiveModel = (id, device) => id === 'sam3.1-v18' && device.id === 'thor' ? 'sam3.1-tracking' : id;
+  const availableOn = (id, device) => {
+    const d = states.get(device.id)?.detection;
+    return d?.enabled && d.models?.some(m => m.id === effectiveModel(id, device) && m.available);
+  };
+  const available = id => devices.every(device => availableOn(id, device));
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
   function makeRow(value = '') {
@@ -168,7 +55,6 @@ function mountSharedControls(document, devices) {
   }
 
   function render() {
-    renderGains();
     if (!initialized && states.size) {
       // Deterministic initial draft: prefer Arc/config order, not reply order.
       const first = states.get(devices[0].id) || (offline.has(devices[0].id) && states.values().next().value);
@@ -193,8 +79,9 @@ function mountSharedControls(document, devices) {
     for (const option of modelSelector.options) {
       const disabled = !available(option.value);
       if (option.disabled !== disabled) option.disabled = disabled;
-      const missing = devices.filter(d => !states.get(d.id)?.detection?.models?.some(m => m.id === option.value && m.available));
-      const title = missing.length ? `Unavailable on ${missing.map(d => d.label).join(', ')}` : '';
+      const missing = devices.filter(d => !availableOn(option.value, d));
+      const title = missing.length ? `Unavailable on ${missing.map(d => d.label).join(', ')}`
+        : option.value === 'sam3.1-v18' ? 'Arc: Israel v18 tracking; Thor: SAM 3.1 Tracking' : '';
       if (option.title !== title) option.title = title;
     }
     add.disabled = !ready || busy || rows.children.length >= limit();
@@ -208,7 +95,7 @@ function mountSharedControls(document, devices) {
       row.querySelector('.remove-prompt').disabled = !ready || busy;
       const applied = prompt && !seen.has(prompt) && devices.every(device => {
         const d = states.get(device.id)?.detection;
-        return !offline.has(device.id) && d?.model === model && d.prompts.includes(prompt);
+        return !offline.has(device.id) && d?.model === effectiveModel(model, device) && d.prompts.includes(prompt);
       });
       seen.add(prompt);
       const selected = applied && devices.every(d => states.get(d.id)?.tracking?.target === prompt);
@@ -223,7 +110,7 @@ function mountSharedControls(document, devices) {
     });
     const mismatched = initialized && devices.filter(device => {
       const d = states.get(device.id)?.detection;
-      return d && (d.model !== model || !same(d.prompts, normalized(readRows())));
+      return d && (d.model !== effectiveModel(model, device) || !same(d.prompts, normalized(readRows())));
     });
     const notices = [];
     if (!busy && mismatched?.length) notices.push(dirty ? 'Unapplied changes' : 'Device settings differ; Update prompts applies this selection to both');
@@ -258,8 +145,9 @@ function mountSharedControls(document, devices) {
     const selectedModel = model, prompts = normalized(readRows());
     drafts.set(model, prompts);
     const ok = await fanOut(async (client, device) => {
-      if (states.get(device.id)?.detection?.model !== selectedModel)
-        await client.command('/api/detection/model', {model: selectedModel});
+      const deviceModel = effectiveModel(selectedModel, device);
+      if (states.get(device.id)?.detection?.model !== deviceModel)
+        await client.command('/api/detection/model', {model: deviceModel});
       let result = await client.command('/api/detection/prompts', {prompts});
       states.set(device.id, result); offline.delete(device.id);
       if (targetPrompt !== undefined) {
@@ -287,7 +175,7 @@ function mountSharedControls(document, devices) {
     const selected = drafts.get(next) || oldPrompts;
     setRows(selected);
     await fanOut(async (client, device) => {
-      const result = await client.command('/api/detection/model', {model: next});
+      const result = await client.command('/api/detection/model', {model: effectiveModel(next, device)});
       states.set(device.id, result); offline.delete(device.id);
       const applied = await client.command('/api/detection/prompts', {prompts: normalized(selected)});
       states.set(device.id, applied);
@@ -321,7 +209,7 @@ function mountSharedControls(document, devices) {
   });
   render();
   return {
-    attach(id, client) { clients.set(id, client); renderGains(); },
+    attach(id, client) { clients.set(id, client); },
     update(id, state) { states.set(id, state); offline.delete(id); render(); },
     offline(id) { offline.add(id); render(); },
   };

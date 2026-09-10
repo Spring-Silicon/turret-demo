@@ -72,6 +72,7 @@ test('serves local assets without requesting upstream UI, even when offline', as
   const html = await (await fetch(local)).text();
   assert.match(html, /<title>Arc &lt;local&gt;<\/title>/);
   assert.match(html, /id="motor-toggle"/);
+  assert.match(html, /<header>[\s\S]*id="model-latency"[\s\S]*id="overhead-latency"[\s\S]*id="total-latency"[\s\S]*<\/header>/);
   assert.match(await (await fetch(`${local}/app.js`)).text(), /EventSource/);
   assert.match(await (await fetch(`${local}/app.css`)).text(), /\.feed/);
   assert.equal((await fetch(`${local}/app.css`, {method: 'HEAD'})).status, 200);
@@ -205,6 +206,9 @@ test('unified page keeps status, commands and streams pinned to separate backend
   const html = await (await fetch(local)).text();
   assert.match(html, /id="devices"/); assert.doesNotMatch(html, /iframe/);
   const config = await (await fetch(local + '/frontend-config')).json();
+  const panel = await (await fetch(local + '/panel.html')).text();
+  assert.match(panel, /<header>[\s\S]*id="model-latency"[\s\S]*id="overhead-latency"[\s\S]*id="total-latency"[\s\S]*<\/header>/);
+  assert.match(await (await fetch(local + '/app.js')).text(), /renderLatency\(detection\)/);
   assert.deepEqual(config.devices.map(d => d.prefix), ['/devices/arc', '/devices/thor']);
   assert.match(html, /id="shared-controls"/);
   for (const file of ['/panel.html', '/dashboard.js', '/dashboard.css', '/panel.css', '/shared-controls.js']) {

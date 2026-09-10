@@ -15,6 +15,7 @@ from spring_turret.policy import select_candidates, POLICY_VERSION
 from spring_turret.session_policy import ManagedSession
 from spring_turret.hardware import inference_runtime, XpuRuntime, CudaRuntime
 from spring_turret.detection import WorkerClient
+from spring_turret.models import is_tracking_model
 
 spec = importlib.util.spec_from_file_location("tracking_tests", Path(__file__).with_name("test-tracking.py"))
 fixtures = importlib.util.module_from_spec(spec)
@@ -59,7 +60,7 @@ class SharedPolicyTests(unittest.TestCase):
         now = [10.]
         detector, servo, camera = fixtures.Detector(lambda:now[0]), fixtures.Servo(), fixtures.Camera()
         detector.data.update(model=model, device_type=device, active_instance_ids=[1,2],
-                             temporal_tracking=model == "sam3.1-tracking")
+                             temporal_tracking=is_tracking_model(model))
         control = fixtures.TrackingController({"calibrated":True}, detector, servo, camera)
         records = []
         with patch("spring_turret.tracking.time.monotonic", lambda:now[0]):
@@ -96,6 +97,9 @@ class SharedPolicyTests(unittest.TestCase):
         for model in ("sam3.1", "sam3.1-mask", "sam3.1-tracking"):
             with self.subTest(model=model):
                 self.assertEqual(self.replay("xpu",model), self.replay("cuda",model))
+
+    def test_v18_on_arc_has_the_same_policy_as_tracking_on_thor(self):
+        self.assertEqual(self.replay("xpu", "sam3.1-v18"), self.replay("cuda", "sam3.1-tracking"))
 
     def test_class_isolation_even_if_id_matches_wrong_class(self):
         detection = {"boxes":[{"prompt":"bottle","instance_id":1}], "temporal_tracking":False}

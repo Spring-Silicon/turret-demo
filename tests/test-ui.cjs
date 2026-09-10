@@ -177,6 +177,33 @@ run('renderFps(null);');
 assert.equal(get('fps-value').textContent, '—');
 assert.equal(get('fps-counter').getAttribute('aria-label'), 'Frames per second unavailable');
 
+run(`renderLatency({...fpsDetection, timing:{model_ms:64.42,tracking_ms:90,worker_total_ms:68},
+  pipeline_timing:{cycle_ms:69.07}});`);
+assert.equal(get('model-latency').textContent, '64.4');
+assert.equal(get('overhead-latency').textContent, (69.07 - 64.42).toFixed(1));
+assert.equal(get('total-latency').textContent, '69.1');
+run(`renderLatency({...fpsDetection, timing:{model_ms:null,tracking_ms:218,worker_total_ms:240}});`);
+assert.equal(get('model-latency').textContent, '218.0');
+assert.equal(get('overhead-latency').textContent, '22.0');
+assert.equal(get('total-latency').textContent, '240.0');
+run('renderLatency({...fpsDetection, timing:{model_ms:0,worker_total_ms:0}});');
+assert.equal(get('overhead-latency').textContent, '0.0');
+run('renderLatency({...fpsDetection, timing:{model_ms:20,worker_total_ms:19}});');
+assert.equal(get('overhead-latency').textContent, '—'); // Inconsistent timings are not zero overhead.
+run('renderLatency({...fpsDetection, latency_ms:0});');
+assert.equal(get('model-latency').textContent, '0.0');
+assert.equal(get('total-latency').textContent, '—'); // Never label model-only timing as total.
+assert.equal(get('overhead-latency').textContent, '—');
+for (const detection of ['null', '{...fpsDetection,state:"compiling"}',
+    '{...fpsDetection,progress:{phase:"preparing"}}', '{...fpsDetection,frame_age_ms:6000}',
+    '{...fpsDetection,latency_ms:NaN,timing:{model_ms:-1},pipeline_timing:{cycle_ms:Infinity}}']) {
+  run(`renderLatency(${detection});`);
+  assert.equal(get('model-latency').textContent, '—');
+  assert.equal(get('overhead-latency').textContent, '—');
+  assert.equal(get('total-latency').textContent, '—');
+}
+console.log('validated model/overhead/total latency, exact subtraction, tracking fallback, zero, missing, invalid and stale timing');
+
 run(`status.servo = {online: true, ready: true, armed: false, axes: {
   x: {degrees: 2, goal_degrees: null, min_degrees: -45, max_degrees: 45, torque: false},
   y: {degrees: -3, goal_degrees: null, min_degrees: -30, max_degrees: 30, torque: false}
@@ -405,40 +432,6 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run("JSON.stringify(targetRequests.at(-1))"), '["/api/detection/model",{"model":"sam3.1-mask"}]');
   assert.equal(rows()[0].fields.input.value, "cup"); // Mask draft preserved too.
   assert.equal(run("status.servo.armed"), false);
-  run(`globalThis.gainCalls = []; request = async (path, options) => {
-    gainCalls.push([path,JSON.parse(options.body)]);
-    const b = JSON.parse(options.body), a = status.servo.axes[b.axis];
-    a.position_gains = {...a.position_gains, ...(path.endsWith('/reset') ? a.gain_baseline : {p:b.p,d:b.d})};
-    return status;
-  };
-  status.servo.online=true; status.servo.run_requested=true; status.servo.armed=true;
-  for (const axis of ['x','y']) Object.assign(status.servo.axes[axis], {
-    position_gains:{p:400,i:0,d:0},gain_baseline:{p:400,d:0}});
-  renderMotors();`);
-  assert.equal(run('gainCalls.length'),0); // Mount/status cannot tune hardware.
-  assert.equal(get('x-p-gain').value,400);
-  get('x-p-gain').value='900'; get('x-p-gain').events.input();
-  run('renderMotors()');
-  assert.equal(get('x-p-gain').value,'900'); // Poll cannot overwrite an edit.
-  assert.equal(run('gainCalls.length'),0); // Dragging does not flood the bus.
-  await get('x-p-gain').events.change();
-  assert.equal(run('JSON.stringify(gainCalls)'), '[["/api/servo/gains",{"axis":"x","p":900,"d":0}]]');
-  assert.equal(get('x-p-gain').value,900);
-  await get('x-gains-reset').events.click();
-  assert.equal(run('JSON.stringify(gainCalls.at(-1))'),'["/api/servo/gains/reset",{"axis":"x"}]');
-  assert.equal(get('x-p-gain').value,400);
-  assert.equal(run('status.servo.armed'),true);
-  run('gainsSending=true; renderMotors()');
-  assert.equal(get('x-p-gain').disabled,true);
-  assert.equal(get('motor-toggle').disabled,false); // Stop remains usable.
-  await get('y-gains-reset').events.click();
-  assert.equal(run('gainCalls.length'),2);
-  run('gainsSending=false; status.servo.online=false; renderMotors()');
-  assert.equal(get('y-d-gain').disabled,true);
-  await get('y-gains-reset').events.click();
-  assert.equal(run('gainCalls.length'),2);
-  run('status.servo.online=true; status.servo.armed=false; status.servo.run_requested=false;');
-  console.log('validated per-axis P/D, read-only mount, release-only writes, reset, offline and busy behavior');
   run(`globalThis.promptCalls = []; globalThis.rejectTarget = false;
     status.servo.ready=true; status.servo.armed=false; status.servo.run_requested=false;
     request = async (path, options) => {
@@ -862,6 +855,9 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
       latency_ms:220,timing:{model_ms:null,tracking_ms:218},pipeline_timing:{cycle_ms:240},mask_overflow:{}})});
     assert.equal(devices[id].element('detection-status').textContent, '');
     assert.equal(devices[id].element('detection-status').hidden, true);
+    assert.equal(devices[id].element('model-latency').textContent, '218.0');
+    assert.equal(devices[id].element('overhead-latency').textContent, '22.0');
+    assert.equal(devices[id].element('total-latency').textContent, '240.0');
   }
   console.log('validated quiet Arc/Thor preparation and hidden running summaries');
   console.log('validated side-by-side panel isolation: prompts, streams, image URLs, Start/Stop and focused Escape');

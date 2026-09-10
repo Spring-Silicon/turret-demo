@@ -3,9 +3,6 @@
 // Each mounted panel owns all mutable UI state and its fixed API namespace.
 function mountTurret(document, apiPrefix = "", options = {}) {
 const sharedControls = options.sharedControls === true;
-if (sharedControls) {
-  for (const axis of ["x", "y"]) document.getElementById(`${axis}-gains`).hidden = true;
-}
 let sharedBusy = false;
 const apiUrl = path => apiPrefix + path;
 const sliders = { x: document.getElementById("x-slider"), y: document.getElementById("y-slider") };
@@ -19,8 +16,6 @@ let moveTimer = null;
 let arming = false;
 let stopping = false;
 let recalibrating = false;
-let gainsSending = false;
-const editingGains = new Set();
 let status = null;
 let detectionSending = false;
 let feedSource = "";
@@ -32,6 +27,9 @@ const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
 const fpsCounter = document.getElementById("fps-counter");
 const fpsValue = document.getElementById("fps-value");
+const modelLatency = document.getElementById("model-latency");
+const overheadLatency = document.getElementById("overhead-latency");
+const totalLatency = document.getElementById("total-latency");
 const feedLoading = document.getElementById("feed-loading");
 const feedLoadingLabel = document.getElementById("feed-loading-label");
 if (options.loadingLabel) feedLoadingLabel.textContent = options.loadingLabel;
@@ -94,6 +92,19 @@ function renderFps(fps) {
   fpsCounter.setAttribute("aria-label", fps === null ? "Frames per second unavailable" : `${value} frames per second`);
 }
 
+function renderLatency(detection) {
+  const valid = value => Number.isFinite(value) && value >= 0;
+  const running = isDetectionFresh(detection) && detectionPhase(detection) === "running";
+  const model = running ? [detection.timing?.model_ms, detection.timing?.tracking_ms,
+    detection.latency_ms].find(valid) : null;
+  const total = running ? [detection.pipeline_timing?.cycle_ms,
+    detection.timing?.worker_total_ms].find(valid) : null;
+  modelLatency.textContent = valid(model) ? model.toFixed(1) : "—";
+  overheadLatency.textContent = valid(model) && valid(total) && total >= model
+    ? (total - model).toFixed(1) : "—";
+  totalLatency.textContent = valid(total) ? total.toFixed(1) : "—";
+}
+
 function clickableFrame() {
   return frameDetection?.state === "running" && status?.camera?.online &&
     frameBackendPid === (status?.runtime?.backend_pid ?? null) &&
@@ -102,14 +113,14 @@ function clickableFrame() {
 }
 
 function hasTrackingMask(detection) {
-  return ((detection?.model === "sam3.1-tracking" && detection?.temporal_tracking === true) ||
+  return ((["sam3.1-tracking", "sam3.1-v18"].includes(detection?.model) && detection?.temporal_tracking === true) ||
       (detection?.model === "sam3.1-mask" && detection?.mask_detection === true)) &&
     detection.mask_overlay?.format === "indexed-png" &&
     typeof detection.mask_overlay.png === "string" && detection.mask_overlay.png.length > 0;
 }
 
 function isMaskMode(detection) {
-  return ["sam3.1-mask", "sam3.1-tracking"].includes(detection?.model);
+  return ["sam3.1-mask", "sam3.1-tracking", "sam3.1-v18"].includes(detection?.model);
 }
 
 function trackedBox(detection, backendPid = frameBackendPid) {
@@ -593,6 +604,7 @@ function renderDetection(detection) {
   const phase = detectionPhase(detection);
   const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
   renderFps(detectionFps(preparing ? null : detection));
+  renderLatency(detection);
   detectionMessage.textContent = promptError || (frameDetection ? detection?.error : "") || "";
   detectionMessage.hidden = !detectionMessage.textContent;
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
@@ -627,18 +639,6 @@ function renderMotors() {
   if (!servo) return;
   for (const name of ["x", "y"]) {
     const axis = servo.axes[name];
-    for (const key of ["p", "d"]) {
-      const gain = document.getElementById(`${name}-${key}-gain`);
-      gain.disabled = !servo.online || !axis.position_gains || gainsSending || arming || recalibrating || stopping;
-      if (!editingGains.has(name) && !gainsSending) {
-        const value = axis.position_gains?.[key];
-        if (value !== undefined) gain.value = value;
-        document.getElementById(`${name}-${key}-value`).textContent = value ?? "—";
-      }
-    }
-    const reset = document.getElementById(`${name}-gains-reset`);
-    reset.disabled = !servo.online || !axis.gain_baseline || gainsSending || arming || recalibrating || stopping;
-    if (axis.gain_baseline) reset.title = `Reset ${name.toUpperCase()} to P ${axis.gain_baseline.p}, D ${axis.gain_baseline.d}`;
     const slider = sliders[name];
     slider.min = axis.min_degrees;
     slider.max = axis.max_degrees;
@@ -745,39 +745,6 @@ async function recalibrateZeros() {
 }
 recalibrateButton.addEventListener("click", recalibrateZeros);
 
-async function updateGains(axis, reset = false) {
-  if (gainsSending || stopping || arming || recalibrating || !status?.servo?.online) return;
-  const body = reset ? {axis} : {axis,
-    p: Number(document.getElementById(`${axis}-p-gain`).value),
-    d: Number(document.getElementById(`${axis}-d-gain`).value)};
-  gainsSending = true;
-  editingGains.delete(axis);
-  renderMotors();
-  try {
-    await request(reset ? "/api/servo/gains/reset" : "/api/servo/gains",
-      {method: "POST", body: JSON.stringify(body)});
-  } catch (error) {
-    showMessage(error.message, true);
-  } finally {
-    gainsSending = false;
-    renderMotors();
-  }
-}
-for (const axis of ["x", "y"]) {
-  for (const key of ["p", "d"]) {
-    const slider = document.getElementById(`${axis}-${key}-gain`);
-    slider.addEventListener("input", () => {
-      editingGains.add(axis);
-      document.getElementById(`${axis}-${key}-value`).textContent = slider.value;
-    });
-    // One acknowledged write on release/key commit, not a serial-bus flood.
-    slider.addEventListener("change", () => updateGains(axis));
-    slider.addEventListener("pointercancel", () => { editingGains.delete(axis); renderMotors(); });
-    slider.addEventListener("blur", () => { editingGains.delete(axis); renderMotors(); });
-  }
-  document.getElementById(`${axis}-gains-reset`).addEventListener("click", () => updateGains(axis, true));
-}
-
 async function stopMotors() {
   if (stopping) return;
   stopping = true;
@@ -854,6 +821,7 @@ async function poll() {
     options.onOffline?.(error);
     updatePromptColors(null);
     renderFps(detectionFps(null));
+    renderLatency(null);
     detectionMessage.textContent = "Detector connection lost";
     detectionMessage.hidden = !frameDetection;
     detectionMessage.classList.add("error");
