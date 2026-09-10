@@ -137,6 +137,13 @@ Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
 and update to stop detection, retaining the last processed view.
 
+On page startup, the shared model/prompts are applied to mismatching devices
+once, preferring Arc's initial settings (or the available peer if Arc is offline).
+Already-matching devices are left untouched, avoiding unnecessary model/session
+resets. A device first connecting later receives that applied selection, not an
+unsubmitted draft. Startup never changes motor Start/Stop or inference Pause.
+Failed synchronization remains visible and can be retried with Update prompts.
+
 The backend automatically selects a target whenever a usable detection exists.
 It prefers the current class's nearest object, falling back to another applied
 class when necessary. Visible selected IDs remain selected after centering.

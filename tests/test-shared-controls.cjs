@@ -319,6 +319,69 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(states.thor.detection.prompts, ['offline test']);
   console.log('validated disconnected peer cannot deadlock working peer controls; reconnect stays explicit');
 
+  function bootFixture() {
+    const elements=new Map(), mutations=[], rejected=new Set();
+    const element=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
+    element('prompt-row-template').content={firstElementChild:new Element()};
+    for(const id of ['sam3.1','sam3.1-mask','sam3.1-tracking']) {
+      const option=new Element('option');option.value=id;element('detection-model').append(option);
+    }
+    const control=ctx.mountSharedControls({getElementById:element},devices);
+    const state={};
+    for(const {id} of devices) {
+      state[id]={detection:{enabled:true,paused:true,model:'sam3.1-mask',prompts:['person'],max_prompts:8,
+        models:['sam3.1','sam3.1-mask','sam3.1-tracking'].map(id=>({id,available:true}))},
+        tracking:{target:'person'},servo:{armed:false,run_requested:false}};
+      control.attach(id,{setSharedBusy(){},async command(route,body){
+        mutations.push({id,route,body:structuredClone(body)});
+        if(rejected.has(id))throw new Error('Connection lost');
+        if(route==='/api/detection/model') {state[id].detection.model=body.model;state[id].detection.prompts=[];}
+        else if(route==='/api/detection/prompts') {
+          state[id].detection.prompts=[...body.prompts];state[id].tracking.target=body.prompts[0]??null;
+        } else throw new Error('Startup must not issue motor/target/pause commands');
+        control.update(id,structuredClone(state[id]));
+        return structuredClone(state[id]);
+      }});
+    }
+    const update=id=>control.update(id,structuredClone(state[id]));
+    return {control,state,element,mutations,rejected,update};
+  }
+  const boot=bootFixture();
+  boot.state.thor.detection.model='sam3.1';boot.state.thor.detection.prompts=['hand'];
+  boot.state.thor.tracking.target='hand';
+  boot.update('thor');await tick();
+  assert.equal(boot.mutations.length,0); // Wait for primary rather than accepting first reply.
+  boot.update('arc');await tick();
+  assert.deepEqual(boot.mutations,[
+    {id:'thor',route:'/api/detection/model',body:{model:'sam3.1-mask'}},
+    {id:'thor',route:'/api/detection/prompts',body:{prompts:['person']}}]);
+  assert.equal(boot.state.thor.tracking.target,'person');
+  assert.equal(boot.element('shared-message').hidden,true);
+  for(let i=0;i<50;i++) {boot.update('arc');boot.update('thor');}
+  await tick();assert.equal(boot.mutations.length,2);
+  assert.ok(Object.values(boot.state).every(s=>s.detection.paused && !s.servo.run_requested));
+
+  const late=bootFixture();
+  late.update('arc');late.control.offline('thor');await tick();
+  const draft=late.element('prompt-rows').children[0].querySelector('.detection-prompt');
+  draft.value='unsubmitted draft';draft.events.input();
+  late.state.thor.detection.prompts=['hand'];late.update('thor');await tick();
+  assert.deepEqual(late.mutations,[{id:'thor',route:'/api/detection/prompts',body:{prompts:['person']}}]);
+  assert.equal(draft.value,'unsubmitted draft');
+  assert.deepEqual(late.state.thor.detection.prompts,['person']);
+
+  const failedBoot=bootFixture();
+  failedBoot.state.thor.detection.prompts=['hand'];failedBoot.rejected.add('thor');
+  failedBoot.update('arc');failedBoot.update('thor');await tick();
+  assert.equal(failedBoot.mutations.length,1);
+  assert.match(failedBoot.element('shared-message').textContent,/Thor: Connection lost/);
+  for(let i=0;i<20;i++)failedBoot.update('thor');
+  await tick();assert.equal(failedBoot.mutations.length,1); // No repeated graph/session resets after failure.
+  failedBoot.rejected.clear();
+  await failedBoot.element('detection-form').events.submit({preventDefault(){}});
+  assert.deepEqual(failedBoot.state.thor.detection.prompts,['person']);
+  console.log('validated one-shot startup alignment, late devices, draft preservation and explicit retry after failure');
+
   // The actual per-device client runs without model/form/template elements
   // when mounted in shared-control mode. Local motor and instance commands
   // remain namespaced; no new model/prompt/servo writes occur during mounting.

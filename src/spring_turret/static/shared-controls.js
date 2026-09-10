@@ -1,7 +1,7 @@
 "use strict";
 
-// Only explicit user actions fan out. Loading/reconnecting this UI never
-// changes a model, resets temporal state, or starts/stops either motor.
+// On page startup, align each device with the displayed model/prompts once.
+// Matching devices keep their model/session; startup never changes motor or pause intent.
 function mountSharedControls(document, devices) {
   const rows = document.getElementById('prompt-rows');
   const modelSelector = document.getElementById('detection-model');
@@ -12,6 +12,8 @@ function mountSharedControls(document, devices) {
   const states = new Map(), clients = new Map(), offline = new Set(), drafts = new Map();
   let model = null, initialized = false, busy = false, error = '', dirty = false;
   let renderedModel = null;
+  let appliedSelection = null, startupScheduled = false;
+  const startupPending = new Set(devices.map(device => device.id));
   const readRows = () => [...rows.children].map(row => row.querySelector('.detection-prompt').value.trim());
   const normalized = values => [...new Map(values.filter(Boolean).map(value => [value.toLowerCase(), value])).values()];
   const detections = () => devices.map(device => states.get(device.id)?.detection);
@@ -52,10 +54,10 @@ function mountSharedControls(document, devices) {
       if (first) {
         model = first.detection.model;
         initialized = true; setRows(first.detection.prompts || []);
+        appliedSelection = {model, prompts: normalized(readRows())};
       }
     }
-    // Once initialized, polls only update availability. Never overwrite
-    // a user's draft with another device's result or auto-resubmit on mismatch.
+    // Polls never overwrite a user's draft or repeatedly reset model sessions.
     const ready = initialized && connected().some(d => states.get(d.id)?.detection?.enabled);
     const disabled = !ready || busy;
     const paused = connected().some(d => states.get(d.id)?.detection?.paused === true);
@@ -92,7 +94,7 @@ function mountSharedControls(document, devices) {
     });
     const mismatched = initialized && devices.filter(device => {
       const d = states.get(device.id)?.detection;
-      return d && (d.model !== model || !same(d.prompts, normalized(readRows())));
+      return d && !startupPending.has(device.id) && (d.model !== model || !same(d.prompts, normalized(readRows())));
     });
     const notices = [];
     const unavailable = devices.filter(d => offline.has(d.id) || !states.has(d.id));
@@ -105,24 +107,52 @@ function mountSharedControls(document, devices) {
     message.classList.toggle('error', Boolean(error));
   }
 
-  async function fanOut(action) {
+  function scheduleStartupSync() {
+    if (!initialized || busy || startupScheduled || !startupPending.size) return;
+    startupScheduled = true;
+    Promise.resolve().then(async () => {
+      startupScheduled = false;
+      if (busy || !appliedSelection) return;
+      const selection = appliedSelection;
+      const ready = connected().filter(device => startupPending.has(device.id) && clients.has(device.id));
+      // Claim before any async command/update callback to prevent duplicate resets.
+      ready.forEach(device => startupPending.delete(device.id));
+      const changed = ready.filter(device => {
+        const d = states.get(device.id).detection;
+        return d.model !== selection.model || !same(d.prompts, selection.prompts);
+      });
+      if (!changed.length) { if (ready.length) render(); return; }
+      await fanOut(async (client, device) => {
+        if (!availableOn(selection.model, device)) throw new Error('Selected model is unavailable');
+        let current = states.get(device.id);
+        if (current.detection.model !== selection.model)
+          current = await client.command('/api/detection/model', {model: selection.model});
+        if (!same(current.detection.prompts, selection.prompts))
+          current = await client.command('/api/detection/prompts', {prompts: selection.prompts});
+        states.set(device.id, current);
+      }, changed);
+    });
+  }
+
+  async function fanOut(action, scope = devices) {
     if (busy) return false;
     busy = true; error = '';
     clients.forEach(client => client.setSharedBusy(true)); render();
     try {
-      const results = await Promise.allSettled(devices.map(async device => {
+      const results = await Promise.allSettled(scope.map(async device => {
         if (offline.has(device.id) || !states.has(device.id)) throw new Error('Offline; skipped');
         const client = clients.get(device.id);
         if (!client) throw new Error('Device is not ready');
         return action(client, device);
       }));
-      const failures = results.flatMap((r, i) => r.status === 'rejected' ? [`${devices[i].label}: ${r.reason.message || r.reason}`] : []);
+      const failures = results.flatMap((r, i) => r.status === 'rejected' ? [`${scope[i].label}: ${r.reason.message || r.reason}`] : []);
       error = failures.join(' · ');
       // Successful peers are not rolled back, and ambiguous failures are never
       // retried automatically. The next explicit Update can align both again.
       return failures.length === 0;
     } finally {
       busy = false; clients.forEach(client => client.setSharedBusy(false)); render();
+      scheduleStartupSync();
     }
   }
 
@@ -130,6 +160,7 @@ function mountSharedControls(document, devices) {
     if (busy || !initialized || !available(model)) return;
     if (targetPrompt === '') { error = 'Enter an object to target'; render(); return; }
     const selectedModel = model, prompts = normalized(readRows());
+    appliedSelection = {model: selectedModel, prompts};
     drafts.set(model, prompts);
     const ok = await fanOut(async (client, device) => {
       if (states.get(device.id)?.detection?.model !== selectedModel)
@@ -168,6 +199,7 @@ function mountSharedControls(document, devices) {
     const oldPrompts = readRows();
     model = next; dirty = true;
     const selected = drafts.get(next) || oldPrompts;
+    appliedSelection = {model: next, prompts: normalized(selected)};
     setRows(selected);
     await fanOut(async (client, device) => {
       const result = await client.command('/api/detection/model', {model: next});
@@ -216,8 +248,8 @@ function mountSharedControls(document, devices) {
   });
   render();
   return {
-    attach(id, client) { clients.set(id, client); },
-    update(id, state) { states.set(id, state); offline.delete(id); render(); },
-    offline(id) { offline.add(id); render(); },
+    attach(id, client) { clients.set(id, client); scheduleStartupSync(); },
+    update(id, state) { states.set(id, state); offline.delete(id); render(); scheduleStartupSync(); },
+    offline(id) { offline.add(id); render(); scheduleStartupSync(); },
   };
 }
