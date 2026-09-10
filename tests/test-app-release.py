@@ -40,6 +40,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn('FROM ${BASE_IMAGE}', docker)
         self.assertIn('--no-index --no-deps', docker)
         self.assertNotIn('apt-get', docker)
+        self.assertIn('COPY dist/*.whl /tmp/turret-release/${SOURCE_COMMIT}/', docker)
+        self.assertNotIn('/tmp/turret-release/*.whl', docker)
 
 
 if __name__ == '__main__':
