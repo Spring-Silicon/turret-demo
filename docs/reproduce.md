@@ -253,14 +253,15 @@ sudo tar --zstd --xattrs --acls --numeric-owner \
    systemctl --user enable --now spring-turret-inference-startup.service
    ```
 
-5. The restored GDM configuration intentionally enables automatic login for
-   spring. The restored desktop autostart entry launches fullscreen Firefox
-   after login, not from the headless linger session. Firefox uses a dedicated
-   profile and XWayland environment to avoid the observed invisible Wayland
-   kiosk window. Node, launchers and static assets are archived. Firefox itself
-   belongs to the base OS: install/retain the recorded snap revision and its
-   required base snap; a newer revision needs another kiosk check. See
-   [startup.md](startup.md) for service ordering and commands.
+5. Current exports use GDM autologin into the dedicated Spring X11/Openbox
+   session. Restore/select that session and its native-logo assets using the
+   [complete boot checklist](startup.md#boot-installation-checklist). The older
+   September 9 foundation used GNOME autostart with XWayland; its fallback entry
+   alone does not recreate the current quiet desktop transition. Create writable
+   user/profile directories before extraction, restore all launcher scripts,
+   apply the Firefox snap hold, and enable the required units. Firefox belongs
+   to the base OS and is not inside the runtime archive. Preserve a working
+   target revision for its kiosk check; do not update it as part of restoration.
 
 ### Thor
 

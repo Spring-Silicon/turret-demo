@@ -1,0 +1,136 @@
+{
+  "schema": 1,
+  "recorded_utc": "2026-09-10T03:48:50.887636+00:00",
+  "host": "spring-edge-turret",
+  "scope": "Read-only live snapshot followed by comparison against the verified private archive; no reboot performed",
+  "archive_lock": "arc-20260910.json",
+  "archive_inventory_sha256": "51de0b9c0f00d90056335adc59a7b82ba391099916c5eeb53c36755374b5c6a2",
+  "live_snapshot": {
+    "uptime_minutes": 22,
+    "user_units": {
+      "spring-turret-demo.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "spring-turret-frontend.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "spring-turret-inference-startup.service": {
+        "enabled": "enabled",
+        "active": "active"
+      },
+      "spring-turret-kiosk.service": {
+        "enabled": "static",
+        "active": "active"
+      }
+    },
+    "gdm": {
+      "enabled": "static",
+      "active": "active"
+    },
+    "native_logo": {
+      "enabled": "enabled",
+      "active": "inactive",
+      "result": "not observed before disconnect; oneshot may exit normally"
+    },
+    "linger": true,
+    "firefox": {
+      "version": "155.0.1-1",
+      "revision": "8863",
+      "held": true
+    },
+    "framebuffer": {
+      "name": "xedrmfb",
+      "size": [
+        1920,
+        1080
+      ]
+    },
+    "kernel_command_line": "BOOT_IMAGE=/boot/vmlinuz root=PARTLABEL=SPRING-ROOT-A rw rootwait panic=60 quiet splash plymouth.ignore-serial-consoles console=tty0 console=ttyS0,115200n8 loglevel=3 systemd.show_status=false vt.global_cursor_default=0 rauc.slot=A"
+  },
+  "archive_template_matches": [
+    {
+      "installed_path": "/etc/spring-turret-kiosk/openbox.xml",
+      "repository_source": "deploy/startup/clean-boot/openbox.xml",
+      "sha256": "3f90a9fcee624eca8f56cbab62ba8667114924745ef2b06157b2c4395467da3e"
+    },
+    {
+      "installed_path": "/usr/local/lib/spring-turret/show-native-logo.py",
+      "repository_source": "deploy/startup/clean-boot/show-native-logo.py",
+      "sha256": "f437a8907a1c0207e283ebeaf9d2cb3d16c360debfaa31a4be06b85ed4fd0da4"
+    },
+    {
+      "installed_path": "/etc/systemd/system/spring-native-logo.service",
+      "repository_source": "deploy/startup/clean-boot/spring-native-logo.service",
+      "sha256": "64a0a20fcc0305656ad22ff4394806f37eb073a37146dca879b39d59e5c7ebc6"
+    },
+    {
+      "installed_path": "/usr/local/bin/spring-turret-session",
+      "repository_source": "deploy/startup/kiosk-session.sh",
+      "sha256": "44fb8f7a8a8d5ffc9a946a56416be7157806acf2b8e923d13f42003ea74bd18c"
+    },
+    {
+      "installed_path": "/usr/share/xsessions/spring-turret.desktop",
+      "repository_source": "deploy/startup/spring-turret-session.desktop",
+      "sha256": "9201a9b0d8594e0ff199272bc75247e619c053fde56a0920956b3ed11f712433"
+    },
+    {
+      "installed_path": "/usr/share/plymouth/themes/spring-silicon/spring-silicon.script",
+      "repository_source": "deploy/startup/clean-boot/spring-silicon.script",
+      "sha256": "b2834730dcda59e6ba48203dd9264aec87737c96008fffe8782790fdef44c0bb"
+    },
+    {
+      "installed_path": "/home/spring/.config/autostart/spring-turret-kiosk.desktop",
+      "repository_source": "deploy/startup/spring-turret-kiosk.desktop",
+      "sha256": "d2f771d1635bdf598325061b45d7c7bfe035801fc2597ea93a2607e0ba68da5c"
+    },
+    {
+      "installed_path": "/home/spring/.config/systemd/user/spring-turret-frontend.service",
+      "repository_source": "deploy/startup/spring-turret-frontend.service",
+      "sha256": "3b49a9345b3002a01614b98defc68e7de9596fbf584b1b5139ee5163096c030b"
+    },
+    {
+      "installed_path": "/home/spring/.config/systemd/user/spring-turret-kiosk.service",
+      "repository_source": "deploy/startup/spring-turret-kiosk.service",
+      "sha256": "edda7615b13983f370c0de80a03f5198bb883c83a3766bebcd2d3f3827121f97"
+    },
+    {
+      "installed_path": "/home/spring/.config/systemd/user/spring-turret-inference-startup.service",
+      "repository_source": "deploy/startup/spring-turret-inference-startup.service",
+      "sha256": "95c0327c26356e5f82a574dc7713eb15d1114aeaf6d9a1a109b563690c796327"
+    },
+    {
+      "installed_path": "/home/spring/snap/firefox/common/spring-turret-kiosk-profile/user.js",
+      "repository_source": "deploy/startup/firefox-user.js",
+      "sha256": "4ffb5395106ca43dc5189ec2a74aa6a05a8d97d106ddc9421ff94b8edee95d9b"
+    },
+    {
+      "installed_path": "/etc/spring-turret-direct-link.nft",
+      "repository_source": "deploy/direct-ethernet/arc.nft",
+      "sha256": "fe4ec16602d76666a55e8b5a1d302c86f7507420189cf8b7f38dd03d32ec67d9"
+    },
+    {
+      "installed_path": "/etc/NetworkManager/dispatcher.d/pre-up.d/90-turret-direct-link",
+      "repository_source": "deploy/direct-ethernet/90-turret-direct-link",
+      "sha256": "66686448b039db48cc16f32a8841731921412f01207651363ba07ad6fb6ad7e4"
+    }
+  ],
+  "earlier_boot_evidence": {
+    "date": "2026-09-09",
+    "both_hosts_rebooted_automatically": true,
+    "arc_kernel_to_processed_frame_seconds": 44.6,
+    "arc_kiosk_to_processed_frame_seconds": 32.0,
+    "thor_kernel_to_processed_frame_seconds": 101.4
+  },
+  "pending_live_checks": [
+    "Current UEFI boot entry and EFI GRUB contents",
+    "Current GDM/AccountsService settings and native-logo exit result",
+    "Current kiosk handoff journal and processed camera/model readiness"
+  ],
+  "limits": [
+    "Host went offline at 2026-09-10T03:40:00Z during inspection",
+    "Firmware POST logo and monitor input banner require physical verification",
+    "No replacement-machine restore or new full reboot qualification in this audit"
+  ]
+}

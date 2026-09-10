@@ -100,6 +100,8 @@ using a data-backed runtime alone does not repair the existing nearly-full root.
 ## Restore services, host dependencies and peripherals
 
 Follow the matching foundation/permissions steps in [reproduce.md](reproduce.md).
+Apply the [Firefox hold](#quiet-boot-and-browser) as an early setup step, before
+package installation or viewer maintenance.
 Preserve Python 3.12 and the archived custom inference venv and OpenCL environment.
 The backend unit sets `LD_LIBRARY_PATH`, both OpenCL loader variables and `CPATH`;
 restoring only Python files misses these requirements. Host tools include zstd,
@@ -136,6 +138,10 @@ Retain Prague's own hostname, SSH keys, Tailscale enrollment and management
 network configuration. These identities are not part of the runtime restore.
 
 ## Quiet boot and browser
+
+Use the [complete boot installation checklist](startup.md#boot-installation-checklist)
+for file locations, directory ownership, session selection, unit enablement and
+readiness checks. The quiet-boot installer alone does not install the runtime.
 
 Before starting/restarting the viewer, explicitly apply the existing update policy:
 
