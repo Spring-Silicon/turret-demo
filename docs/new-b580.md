@@ -5,6 +5,8 @@ Use the Git checkout **and the private runtime archive**. Git contains the app,
 exporter, boot scripts and documentation; the archive supplies the custom Torch
 installation, native model libraries/weights and the saved SAM mask stages.
 Installing the public Torch requirements alone does not reproduce this runtime.
+For the two-box demo, also follow [Accompanying Thor](#accompanying-thor) below;
+Thor uses a separate private archive and its own CUDA runtime.
 
 ## Prague preflight, 2026-09-10
 
@@ -197,3 +199,55 @@ An empty-cache first use took longer; these figures are a source reference, not
 a Prague measurement. Acceptance requires the quiet session, loading spinner,
 correct camera/masks, default inference, Firefox hold, and motors remaining off
 until Start. No successful Prague installation/reboot test has yet been claimed.
+
+## Accompanying Thor
+
+The B580 archive restores the Arc side. The paired Thor requires the **separate**
+`recovery-20260909-thor` archive, containing `runtime.tar.zst` (3.24 GB) and
+`container.tar.zst` (11.30 GB), plus `inventory.json` and `SHA256SUMS`. It is stored
+at `/home/spring/recovery-20260909-thor` on the original Thor and mirrored at the
+same path on the original Arc. Its integrity lock is
+[thor-20260909.json](../deploy/repro/thor-20260909.json). Allow additional disk space
+for extraction, loaded Docker layers, model files and writable caches.
+
+| What the new Thor needs | Where it comes from |
+| --- | --- |
+| Compatible Jetson OS/kernel and NVIDIA driver | L4T R39.2.1 foundation; not included in the container |
+| Docker and NVIDIA container toolkit | Host packages pinned in the Thor lock |
+| CUDA, Torch, SAM code and frozen runtime patches | Private `container.tar.zst` |
+| SAM checkpoint, launcher, config, udev rules and startup services | Private `runtime.tar.zst` |
+| Current application behavior | Reviewed Git revision, applied with the recovery-image overlay builder |
+| Camera, controller identity, calibration and dedicated Ethernet | Configure for the new physical assembly and NIC |
+
+Install in this order:
+
+1. Check the new Thor's OS/BSP, architecture, account IDs, storage and peripherals
+   against [Frozen foundations](reproduce.md#frozen-foundations). Flash the pinned
+   BSP only if needed, using NVIDIA's procedure for that specific Thor board.
+2. Verify the private bundle with `tools/deployment_bundle.py verify`, compare its
+   inventory checksum with the public lock, then follow
+   [Restore on a matching installation](reproduce.md#restore-on-a-matching-fresh-or-explicitly-retired-installation)
+   and the [Thor restore steps](reproduce.md#thor). These restore host files,
+   load the exact Docker image, and configure the NVIDIA runtime.
+3. Apply the reviewed application revision using
+   [Updating the application from Git](reproduce.md#updating-the-application-from-git)
+   and `scripts/build-thor-from-recovery.sh`. Keep the immutable recovery image;
+   select the new image in the active launcher and validate it before use. The
+   September 9 archive is the frozen foundation, not a claim that later app
+   changes are already inside that image.
+4. Reconcile camera/servo paths and calibration with the actual assembly. Retain
+   serial `5B3D044488`'s zeros only when moving that same assembly. Set up the
+   [dedicated Ethernet link](reproduce.md#direct-ethernet-no-wi-fi-fallback), adapting
+   NIC names/MACs and preserving the new hosts' management networking.
+5. Enable Docker, the system `spring-turret-demo.service`, and the system
+   `spring-turret-inference-startup.service` as shown in the Thor steps. Check
+   the supported power mode and cooling. Arc hosts the combined Firefox view;
+   Thor needs no local Firefox, Node or kiosk installation for this arrangement.
+6. With both devices connected, run [acceptance](reproduce.md#acceptance-and-rollback):
+   select the supported profiles, verify advancing processed frames/masks and
+   CUDA graph execution on Thor, check both frontend proxy routes, then reboot
+   both and confirm default inference starts automatically with motors off.
+
+Thor retains its own compilation/CUDA graph startup path. Arc's saved XPU mask
+package does not accelerate it. Both devices must be independently qualified;
+no clean-board Thor restore has been performed as part of the Prague audit.
