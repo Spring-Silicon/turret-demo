@@ -135,34 +135,29 @@ prompts** to apply every row together without starting stopped motors. Pressing
 also starts the affected panel (both panels from shared controls).
 Edits do not change active detection until submitted. Up to eight categories
 are supported; blank and duplicate prompts are ignored. Remove/empty all rows
-and update to return to the raw feed. Detection alone never moves either servo.
+and update to stop detection, retaining the last processed view.
 
-Select the **target icon** beside an applied object class to follow it; only one
-class can be selected. Click it again to return to manual control. While **Start**
-is active, the camera follows whichever matching aiming point is nearest
-the frame center (distance in image pixels, not apparent object size or depth).
-A dashed white box previews that instance and the center marker shows the framing
-goal. Mask-producing profiles aim at the original mask centroid; box-only models
-use the bounding-box center. An empty mask has no aiming point. The preview and
-both calibrated axis corrections use the same point. Non-tracking class mode
-reconsiders the nearest instance each frame; SAM temporal tracking retains its ID.
+The backend automatically selects a target whenever a usable detection exists.
+It prefers the current class's nearest object, falling back to another applied
+class when necessary. Visible selected IDs remain selected after centering.
+Mask-producing profiles aim at the original mask centroid; Box uses the bounding
+box center. Empty masks are not targets. Selection does not arm stopped motors.
 
-**Click a bounding box** to temporarily retarget to that object, including another
-instance of the same class. The white dashed outline follows the clicked object
-while centering it. Once centered, the original nearest-to-center class tracker
-continues automatically. This is an additional retarget control, not a persistent
-instance-lock mode. The boxes also
-support keyboard focus and Enter/Space. Overlapping boxes prioritize the smaller
-box. Click the class icon to return to nearest-of-class mode, or click another box
-to switch objects. Selection never starts stopped motors.
+**Left/right** cycles Arc targets; **up/down** cycles Thor targets, wrapping through
+the displayed objects in stable ID order. Individual pages accept either arrow
+pair for their device. Arrow keys keep their normal behavior inside text inputs,
+sliders and dropdowns. **Click a box or mask** also selects that instance. Box
+buttons support keyboard focus and Enter/Space. No class target buttons are needed.
+The selected mask is red; hovered masks are lighter red.
 
 Instance IDs use conservative class/position/size matching between detections,
 with camera-motion compensation from the encoder/frame pairs. This is not SAM
-video tracking or appearance-based re-identification: occlusion, fast movement or
+video tracking or appearance-based re-identification in Box/Mask modes: occlusion, fast movement or
 crossing similar objects can lose the association. If the clicked ID disappears,
-the original nearest-of-class tracker takes over immediately. With no matching
-detections it holds, then reacquires automatically when that class returns; it
-does not remain stuck on an expired ID. Updating prompts clears a pending
+the nearest-of-class tracker takes over immediately, falling back across applied
+classes if necessary. Mem retains live temporal IDs through temporary occlusion,
+then reacquires after retirement. With no usable detections it holds position.
+Updating prompts clears a pending
 retarget. The server validates a click against the exact displayed
 JPEG's cached detections and rejects unavailable frames or fabricated object IDs.
 Click metadata is kept independently of the eight-JPEG cache for the last 128
@@ -171,9 +166,9 @@ changes ID before release. Ambiguous old IDs are retired, so one crossing cannot
 cause continuous ID churn after objects separate. Rejected-click errors remain
 visible for five seconds rather than disappearing on the next video frame.
 
-Selecting a class never starts stopped motors. Stop/Escape still releases both
-motors; a manual slider move cancels automatic tracking. Editing/removing the
-selected prompt also cancels tracking. No target, a camera/inference fault, or
+Stop/Escape still releases both motors. Manual sliders accept a position and
+automatic tracking resumes from the next fresh frame. Unsubmitted prompt edits
+do not change the live selection. No detections, a camera/inference fault, or
 a prompt change pauses corrections and holds position;
 there is no automatic search/sweep. New frames resume tracking while Start is
 still active, including when the browser is backgrounded or disconnected.
@@ -530,9 +525,10 @@ image backend and frame-driven delivery are separate improvements.
 - `POST /api/servo/gains` with `{"axis": "x", "p": 400, "d": 0}`
 - `POST /api/servo/gains/reset` with `{"axis": "x"}` (or `"y"`)
 
-- `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` temporarily retargets to a box from the displayed frame without arming.
+- `POST /api/tracking/instance` with `{"revision": 1, "frame_sequence": 25, "instance_id": 7}` selects an object from the displayed frame without arming or resuming inference.
 - `POST /api/tracking/target` with `{"target": "cup"}` (an applied class), or
-  `{"target": null}` to clear it. Selection is not persisted across restarts.
+  `{"target": null}` to reset automatic selection. There is no target-off mode;
+  use motor Stop or inference Pause. Instance IDs are not persisted across restarts.
 - `POST /api/detection/prompts` with `{"prompts": ["person", "cup"]}`; `[]` clears
 - `POST /api/detection/prompt` with `{"prompt": "chair"}` (single-category compatibility)
 - `GET /api/detection/frame/REVISION-SEQUENCE.jpg` (exact annotated frame URL

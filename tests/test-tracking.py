@@ -69,7 +69,7 @@ class TrackingTests(unittest.TestCase):
         first = {**box(cx=.5), "instance_id":10, "mask_centroid":[.5,.5]}
         self.frame([first])
         self.assertEqual(self.tracker.state, "centered")
-        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.tracker.instance_id, 10)
         self.frame([])
         calls = len(self.servo.calls)
         for _ in range(5): self.frame([])
@@ -95,7 +95,7 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.tracker.box["instance_id"], 20)
         self.frame([near])
         self.assertEqual(self.tracker.box["instance_id"], 10)
-        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.tracker.instance_id, 10)
         self.assertEqual(self.tracker.status()["selection"], "class")
         self.tracker.disable()
         calls = len(self.servo.calls)
@@ -157,7 +157,7 @@ class TrackingTests(unittest.TestCase):
         self.start()
         self.frame([{**box(cx=.5), "instance_id":10}])
         self.tracker.manual_move("x", 5)
-        self.assertIsNone(self.tracker.target)
+        self.assertEqual(self.tracker.target, "cup")
         self.start()
         self.assertIsNone(self.tracker.instance_id)
         self.frame([{**box(cx=.5), "instance_id":20}])
@@ -167,7 +167,7 @@ class TrackingTests(unittest.TestCase):
         self.frame([{**box(cx=.5), "instance_id":30}])
         self.tracker.set_model("sam3.1-mask")
         self.assertIsNone(self.tracker.instance_id)
-        self.assertEqual(self.tracker.target, "cup")
+        self.assertEqual(self.tracker.target, "person")
 
     def test_temporal_centering_keeps_identity_and_expiry_allows_reacquisition(self):
         self.detection.data.update(temporal_tracking=True, active_instance_ids=[10, 20])
@@ -300,13 +300,13 @@ class TrackingTests(unittest.TestCase):
         self.frame([box()])
         self.assertEqual(self.tracker.state, "tracking")
 
-    def test_model_change_keeps_class_clears_instance_and_holds_without_arming(self):
+    def test_model_change_selects_applied_class_clears_instance_and_holds_without_arming(self):
         self.start()
         self.frame([box()])
         self.assertTrue(self.tracker.moving)
         self.tracker.instance_id = 42
         self.tracker.set_model("sam3.1-mask")
-        self.assertEqual(self.tracker.target, "cup")
+        self.assertEqual(self.tracker.target, "person")
         self.assertIsNone(self.tracker.instance_id)
         self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
         self.servo.armed = False
@@ -336,6 +336,43 @@ class TrackingTests(unittest.TestCase):
     def start(self):
         self.tracker.set_target("cup")
         self.tracker.arm()
+
+    def test_automatic_target_selection_is_backend_owned_and_never_arms(self):
+        selected = {**box(cx=.5), "instance_id": 10}
+        self.frame([selected])
+        self.assertEqual((self.tracker.target, self.tracker.instance_id), ("cup", 10))
+        self.assertEqual(self.tracker.state, "stopped")
+        self.assertFalse(self.servo.armed)
+        self.assertEqual(self.servo.calls, [])
+        self.tracker.set_target(None)
+        self.frame([selected])
+        self.assertEqual(self.tracker.instance_id, 10)
+        self.assertEqual(self.servo.calls, [])
+
+    def test_automatic_target_falls_back_to_another_applied_class(self):
+        self.tracker.arm()
+        self.frame([{**box(), "instance_id": 10}])
+        replacement = {**box("bottle", cx=.5), "instance_id": 20}
+        self.frame([replacement, {**box("unapplied", cx=.5), "instance_id": 30}])
+        self.assertEqual((self.tracker.target, self.tracker.instance_id), ("bottle", 20))
+        self.assertEqual(self.tracker.box, replacement)
+        self.tracker.set_prompts([])
+        self.tracker._tick()
+        self.assertIsNone(self.tracker.target)
+        self.assertFalse(self.tracker.moving)
+
+    def test_paused_selection_does_not_resume_or_move(self):
+        self.start()
+        self.frame([{**box(), "instance_id": 10}, {**box("bottle"), "instance_id": 20}])
+        self.detection.data.update(paused=True, state="paused")
+        self.tracker._tick()
+        self.tracker.set_instance(1, self.detection.data["frame_sequence"], 20)
+        calls = len(self.servo.calls)
+        self.tracker._tick()
+        self.assertEqual((self.tracker.target, self.tracker.instance_id), ("bottle", 20))
+        self.assertEqual(self.tracker.state, "paused")
+        self.assertEqual(len(self.servo.calls), calls)
+        self.assertTrue(self.detection.data["paused"])
 
     def test_nearest_matching_class_uses_pixel_distance_not_normalized_distance(self):
         horizontal, vertical = box(cx=.6), box(cx=.5, cy=.65)
@@ -486,23 +523,25 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.servo.calls[-1], {"x": 0, "y": 0})
         self.frame([box("bottle")])
         self.tracker.set_prompts(["cup"])
-        self.assertIsNone(self.tracker.target)
-        self.assertEqual(self.tracker.state, "off")
+        self.assertEqual(self.tracker.target, "cup")
+        self.assertEqual(self.tracker.state, "waiting")
         self.tracker.set_target("cup")
         self.tracker.set_prompts(["cup", "bottle"])
         self.assertEqual(self.tracker.target, "cup")
         self.assertEqual(self.tracker.state, "waiting")
 
-    def test_manual_controls_take_over_without_overwriting_their_goal(self):
+    def test_manual_controls_wait_for_a_new_frame_then_resume_targeting(self):
         self.start()
         self.frame([box()])
         calls = len(self.servo.calls)
         self.tracker.manual_move("y", 45)
         self.assertEqual(self.servo.manual, [("y", 45)])
-        self.assertIsNone(self.tracker.target)
+        self.assertEqual(self.tracker.target, "cup")
+        self.assertEqual(len(self.servo.calls), calls)
+        self.tracker._tick()
         self.assertEqual(len(self.servo.calls), calls)
         self.frame([box()])
-        self.assertEqual(len(self.servo.calls), calls)
+        self.assertEqual(len(self.servo.calls), calls + 1)
 
     def test_angle_limit_is_reported(self):
         self.start()
@@ -528,11 +567,11 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.tracker.state, "tracking")
         self.assertEqual(self.tracker.box, left)
         self.assertLess(self.servo.calls[-1]["x"], 0)
-        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.tracker.instance_id, 10)
         self.frame([right, left])
-        self.assertEqual(self.tracker.box, right)
+        self.assertEqual(self.tracker.box, left)
 
-    def test_click_retargets_until_centered_then_resumes_original_nearest_tracking(self):
+    def test_click_keeps_selected_identity_after_centering(self):
         selected = {**box(cx=.3), "instance_id": 10}
         self.frame([selected])
         self.tracker.set_instance(1, self.detection.data["frame_sequence"], 10)
@@ -542,12 +581,12 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.tracker.status()["selection"], "retarget")
         centered = {**box(cx=.5), "instance_id": 10}
         self.frame([centered])
-        self.assertIsNone(self.tracker.instance_id)
+        self.assertEqual(self.tracker.instance_id, 10)
         self.assertEqual(self.tracker.target, "cup")
-        self.assertEqual(self.tracker.status()["selection"], "class")
+        self.assertEqual(self.tracker.status()["selection"], "retarget")
         other = {**box(cx=.52), "instance_id": 20}
         self.frame([{**selected, "xyxy": [.75, .45, .85, .55]}, other])
-        self.assertEqual(self.tracker.box, other)
+        self.assertEqual(self.tracker.box["instance_id"], 10)
 
     def test_lost_clicked_id_does_not_block_reacquiring_a_new_instance(self):
         selected = {**box(cx=.3), "instance_id": 10}
@@ -575,8 +614,8 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(self.tracker.target, "cup")
         pick()
         self.tracker.manual_move("x", 4)
-        self.assertIsNone(self.tracker.instance_id)
-        self.assertIsNone(self.tracker.target)
+        self.assertEqual(self.tracker.instance_id, 10)
+        self.assertEqual(self.tracker.target, "cup")
         pick()
         self.tracker.set_prompts(["cup"])
         self.assertIsNone(self.tracker.instance_id)

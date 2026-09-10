@@ -74,8 +74,7 @@ def main() -> None:
     )[0]
     assert 'class="prompt-count"' not in template
     assert 'class="remove-prompt"' in template
-    assert 'class="target-prompt"' in template
-    assert 'aria-pressed="false"' in template
+    assert 'class="target-prompt"' not in template
     assert 'id="frame-center"' in html and 'id="tracking-overlay"' in html
     assert "Add object" not in template
     assert "password" not in html.lower()

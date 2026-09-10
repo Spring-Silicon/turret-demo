@@ -1,5 +1,11 @@
 # Shared SAM backend policy
 
+Historical v1 audit below. The current Vegas/Thor-2 branch uses
+`sam-shared-v2-auto-target`: automatic selection, visible-ID retention after
+centering, and fallback across applied classes when the previous class is absent.
+Mem's temporary-occlusion retention is unchanged. See the README for current
+keyboard controls. This UI/control update does not change model implementations.
+
 Audited the installed Arc (`spring-edge-turret`) and Thor (`agxthor-5`) packages,
 not just the checkout. Audit date: 2026-09-08 (deployment crosses UTC midnight).
 Policy version: `sam-shared-v1`.

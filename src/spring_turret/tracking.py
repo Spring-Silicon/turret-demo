@@ -76,11 +76,11 @@ def tracking_point(box: dict) -> tuple[float, float] | None:
     return (x1 + x2) / 2, (y1 + y2) / 2
 
 
-def nearest_box(boxes: list[dict], prompt: str, width: int, height: int) -> dict | None:
+def nearest_box(boxes: list[dict], prompt: str | None, width: int, height: int) -> dict | None:
     """Choose aiming-point distance in pixels, not normalized square space."""
     candidates = []
     for box in boxes:
-        if not isinstance(box, dict) or box.get("prompt") != prompt:
+        if not isinstance(box, dict) or (prompt is not None and box.get("prompt") != prompt):
             continue
         coords, score = box.get("xyxy"), box.get("score")
         if not isinstance(coords, (list, tuple)) or len(coords) != 4:
@@ -160,7 +160,8 @@ class TrackingController:
                 prompt not in detection.get("prompts", []) or not detection.get("enabled")
             ):
                 raise ValueError("target must be one of the applied object classes, or null")
-            self._select(prompt, None)
+            # Legacy null requests reset automatic selection, never disable it.
+            self._select(prompt or next(iter(detection.get("prompts", [])), None), None)
 
     def set_instance(self, revision: int, sequence: int, instance_id: int) -> None:
         with self.lock:
@@ -169,6 +170,7 @@ class TrackingController:
 
     def _select(self, prompt: str | None, instance_id: int | None) -> None:
         if (prompt, instance_id) == (self.target, self.instance_id):
+            self.clicked = instance_id is not None
             return
         # Clear first even if holding fails: never leave stale automatic intent.
         self.target = self.instance_id = None
@@ -190,8 +192,9 @@ class TrackingController:
     def set_prompts(self, prompts: Any) -> None:
         with self.lock:
             self.detection.set_prompts(prompts)
-            if self.target not in self.detection.status()["prompts"]:
-                self.target = None
+            applied = self.detection.status()["prompts"]
+            if self.target not in applied:
+                self.target = next(iter(applied), None)
             self.instance_id, self.clicked = None, False
             self._pause("waiting" if self.target else "off")
             self.lock_revision = None
@@ -205,6 +208,8 @@ class TrackingController:
             self.detection.set_model(model)
             current = self.detection.status()
             if previous != current.get("implementation_model", current["model"]):
+                if self.target not in current.get("prompts", []):
+                    self.target = next(iter(current.get("prompts", [])), None)
                 self.instance_id, self.clicked = None, False
                 self._pause("waiting" if self.target else "off")
                 self.lock_revision = None
@@ -252,9 +257,10 @@ class TrackingController:
     def manual_move(self, axis: str, degrees: float) -> None:
         with self.lock:
             self.servo.move(axis, degrees)
-            self.target, self.moving = None, False
-            self.instance_id = None
-            self._pause("off")
+            self.moving = False
+            self._pause("waiting")
+            self.last_frame = None
+            self.ignore_before = time.monotonic()
 
     def _setup_reason(self):
         if self.geometry_resource.error:
@@ -276,8 +282,40 @@ class TrackingController:
                     "hold_reason": "temporary-occlusion" if self.state == "lost" and self.instance_id is not None else None,
                     "goal_degrees": self.goal_degrees}
 
+    def _target_box(self, detection: dict, camera: dict) -> tuple[dict | None, bool]:
+        """Select independently of motor readiness and browser connections."""
+        prompts = detection.get("prompts", [])
+        if self.target not in prompts:
+            self.target = next(iter(prompts), None)
+            self.instance_id, self.clicked = None, False
+        if detection.get("state") not in ("running", "paused"):
+            return None, False
+        if self.lock_revision is not None and detection["revision"] != self.lock_revision:
+            self.instance_id, self.clicked = None, False
+        self.lock_revision = detection["revision"]
+        boxes, retained_id, clicked, holding = select_candidates(
+            detection, self.target, self.instance_id, self.clicked)
+        if holding:
+            return None, True  # Mem retains a live identity through occlusion.
+        box = nearest_box(boxes, self.target, camera["width"], camera["height"])
+        if box is None:
+            box = nearest_box([b for b in detection.get("boxes", []) if b.get("prompt") in prompts],
+                              None, camera["width"], camera["height"])
+        if box is None:
+            self.instance_id, self.clicked = retained_id, clicked
+            return None, False
+        selected = (box["prompt"], box.get("instance_id"))
+        if selected != (self.target, self.instance_id):
+            self._pause("waiting")
+            self.target, self.instance_id = selected
+            self.clicked = clicked if retained_id == self.instance_id else False
+            self.last_frame = None
+        return box, False
+
     def _tick(self) -> None:
         with self.lock:
+            camera, detection = self.camera.status(), self.detection.status()
+            box, holding = self._target_box(detection, camera)
             if self.geometry_resource.error:
                 self.geometry = self.geometry_resource.refresh()
             if not self.target:
@@ -298,7 +336,6 @@ class TrackingController:
                 self.last_frame = None
                 self.moving = False
                 self._pause("waiting")
-            camera, detection = self.camera.status(), self.detection.status()
             if detection.get("paused"):
                 self._pause("paused")
                 return
@@ -321,23 +358,12 @@ class TrackingController:
             # delay or per-move frame barrier.
             if now - age / 1000 < self.ignore_before:
                 return
-            boxes = detection.get("boxes", [])
-            if self.lock_revision is not None and detection["revision"] != self.lock_revision:
-                self.instance_id, self.clicked = None, False
-            self.lock_revision = detection["revision"]
-            boxes, self.instance_id, self.clicked, holding = select_candidates(
-                detection, self.target, self.instance_id, self.clicked)
             if holding:
                 self._pause("lost")
                 return
-            box = nearest_box(boxes, self.target, camera["width"], camera["height"])
             if box is None:
                 self._pause("lost")
                 return
-            if detection.get("temporal_tracking") is True and self.instance_id is None:
-                # Class selection acquires the nearest instance once. A click
-                # can override it; selecting the class again reacquires.
-                self.instance_id = box["instance_id"]
             cx, cy = tracking_point(box)
             errors = {"x": cx - 0.5, "y": cy - 0.5}
             control_errors = errors
@@ -406,11 +432,6 @@ class TrackingController:
             self.moving = True
             self.state = ("limited" if result["limited"] or geometry_limited else
                           "centered" if all(abs(e) <= self.config["deadband"] for e in control_errors.values()) else "tracking")
-            if (self.state == "centered"
-                    and detection.get("temporal_tracking") is not True):
-                # Once the clicked object is centered, the ordinary tracker
-                # takes over; no ID continuity is required to keep following.
-                self.instance_id = None
             self.box, self.frame = box, frame
             self.error_pixels = [round(errors["x"] * camera["width"], 1), round(errors["y"] * camera["height"], 1)]
             self.error = None

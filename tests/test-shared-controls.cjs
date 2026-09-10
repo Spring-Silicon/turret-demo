@@ -30,7 +30,7 @@ class Element {
   focus() {}
   cloneNode() {
     const row = new Element();
-    row.fields = Object.fromEntries(['.detection-prompt', '.target-prompt', '.remove-prompt'].map(s => [s, new Element()]));
+    row.fields = Object.fromEntries(['.detection-prompt', '.remove-prompt'].map(s => [s, new Element()]));
     row.fields['.detection-prompt'].tagName = 'INPUT';
     row.fields['.detection-prompt'].replaceWith = replacement => {row.fields['.detection-prompt'] = replacement;};
     return row;
@@ -38,7 +38,9 @@ class Element {
 }
 const ids = new Map();
 const get = id => {if (!ids.has(id)) ids.set(id, new Element()); return ids.get(id);};
-const document = {getElementById: get, createElement: tag => new Element(tag)};
+const documentEvents = {};
+const document = {getElementById: get, createElement: tag => new Element(tag),
+  addEventListener: (name, handler) => {documentEvents[name] = handler;}};
 get('prompt-row-template').content = {firstElementChild: new Element()};
 for (const id of ['sam3.1', 'sam3.1-mask', 'sam3.1-tracking']) {
   const option = new Element('option'); option.value = id; get('detection-model').append(option);
@@ -55,6 +57,7 @@ for (const {id} of devices) {
     categories:[{prompt:'hand',count:id==='arc'?2:5}]}, tracking:{target:null, instance_id:null}, servo:{armed:true}};
   clients[id] = {
     setSharedBusy(value) { this.busy = value; },
+    cycleTarget(direction) { calls.push({id, route:'cycle', direction}); },
     async command(route, body) {
       calls.push({id,route,body:structuredClone(body)});
       if (blocks.has(id)) await blocks.get(id);
@@ -123,16 +126,26 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   await submit();
   assert.deepEqual(states.arc.detection.prompts,['cup','bottle']);
   assert.deepEqual(states.thor.detection.prompts,['cup','bottle']);
-  await rows()[0].querySelector('.target-prompt').events.click();
-  assert.equal(states.arc.tracking.target,'cup'); assert.equal(states.thor.tracking.target,'cup');
-  await rows()[0].querySelector('.target-prompt').events.click();
-  assert.equal(states.arc.tracking.target,null); assert.equal(states.thor.tracking.target,null);
-  states.arc.tracking={target:'bottle',instance_id:123};
-  controller.update('arc',structuredClone(states.arc));
-  await rows()[1].querySelector('.target-prompt').events.click();
-  assert.equal(states.arc.tracking.instance_id,null);
-  assert.equal(states.thor.tracking.target,'bottle');
   assert.ok(calls.every(c=>!c.route.includes('/servo/')));
+  const beforeCycle = calls.length;
+  let arrowPrevented = 0;
+  const key = (name, extra={}) => documentEvents.keydown({key:name, target:{tagName:'BODY'},
+    preventDefault(){arrowPrevented++;}, ...extra});
+  for (const name of ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown']) key(name);
+  assert.deepEqual(calls.slice(beforeCycle), [
+    {id:'arc',route:'cycle',direction:-1}, {id:'arc',route:'cycle',direction:1},
+    {id:'thor',route:'cycle',direction:-1}, {id:'thor',route:'cycle',direction:1}]);
+  assert.equal(arrowPrevented,4);
+  for (const extra of [{target:{tagName:'INPUT'}}, {target:{tagName:'SELECT'}},
+    {target:{tagName:'TEXTAREA'}}, {target:{isContentEditable:true}}, {repeat:true},
+    {ctrlKey:true}, {altKey:true}, {metaKey:true}, {isComposing:true}, {defaultPrevented:true},
+    {composedPath:()=>[{tagName:'INPUT'}]}]) key('ArrowRight',extra);
+  assert.equal(calls.length,beforeCycle+4);
+  assert.equal(arrowPrevented,4);
+  controller.offline('thor'); key('ArrowDown');
+  assert.equal(calls.length,beforeCycle+4);
+  controller.update('thor',structuredClone(states.thor));
+  console.log('validated device-isolated arrow routing without stealing editor keys');
 
   await changeModel('sam3.1-mask');
   for (const id of ['arc','thor']) {
@@ -250,7 +263,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
     [['arc','sam3.1-tracking'],['thor','sam3.1-tracking']]);
   assert.ok(calls.slice(beforeMem).every(c=>!c.route.includes('/servo/')));
   assert.equal(get('shared-message').hidden,true);
-  assert.equal(rows()[0].querySelector('.target-prompt').disabled,false);
   menuWrites.length=0;
   for(let i=0;i<50;i++) controller.update(i%2?'arc':'thor',structuredClone(states[i%2?'arc':'thor']));
   assert.deepEqual(menuWrites,[]);
@@ -292,7 +304,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
   controller.offline('thor');
   assert.equal(get('update-prompts').disabled, false);
-  assert.equal(rows()[0].querySelector('.target-prompt').disabled, false);
   assert.match(get('shared-message').textContent, /Thor offline/);
   const beforeOffline = calls.length;
   input(0).value = 'offline test'; input(0).events.input();

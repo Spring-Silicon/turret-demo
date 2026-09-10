@@ -60,7 +60,7 @@ class Element {
   querySelectorAll(selector) { return this.children.map(child => child.querySelector(selector)); }
   cloneNode() {
     const row = new Element();
-    row.fields = { input: new Element(), ".remove-prompt": new Element(), ".target-prompt": new Element() };
+    row.fields = { input: new Element(), ".remove-prompt": new Element() };
     row.fields.input.replaceWith = replacement => { row.fields.input = replacement; };
     return row;
   }
@@ -245,31 +245,20 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
       renderTracking();
       return status;
     };`);
-  assert.equal(rows()[2].fields[".target-prompt"].disabled, true);
-  await rows()[0].fields[".target-prompt"].events.click();
-  assert.equal(rows()[0].fields[".target-prompt"].attributes["aria-pressed"], "true");
-  assert.equal(rows()[1].fields[".target-prompt"].attributes["aria-pressed"], "false");
+  run('status.tracking.target = "cup"; renderTracking();');
   assert.equal(get("tracking-overlay").hasAttribute("hidden"), false);
   assert.equal(get("frame-center").hasAttribute("hidden"), false);
   assert.equal(get("tracked-box").attributes.y, 610); // Pixel distance selects the vertical cup.
-  await rows()[1].fields[".target-prompt"].events.click();
-  assert.equal(rows()[0].fields[".target-prompt"].attributes["aria-pressed"], "false");
-  assert.equal(rows()[1].fields[".target-prompt"].attributes["aria-pressed"], "true");
-  await rows()[1].fields[".target-prompt"].events.click();
-  assert.equal(run("status.tracking.target"), null);
-  assert.equal(get("tracking-overlay").hasAttribute("hidden"), true);
-  assert.equal(run('targetRequests.every(([path]) => path === "/api/tracking/target")'), true); // Never auto-start.
-  await run('selectTarget("cup");');
   run('setPromptRows(["cup", "cup", "bottle"]);');
-  assert.equal(rows().filter(row => row.fields[".target-prompt"].attributes["aria-pressed"] === "true").length, 1);
-  assert.equal(rows()[1].fields[".target-prompt"].disabled, true);
   run('frameDetection.frame_age_ms = 1000; renderTracking();');
   assert.equal(get("tracking-overlay").hasAttribute("hidden"), false);
   rows()[0].fields.input.value = "edited class";
   rows()[0].fields.input.events.input();
   await Promise.resolve();
-  assert.equal(run("status.tracking.target"), null); // Editing selected class cancels tracking.
-  console.log("validated single-class target selector, delayed overlay and nearest-box highlight");
+  assert.equal(run("status.tracking.target"), "cup"); // Draft edits cannot clear live targeting.
+  assert.equal(run('targetRequests.length'), 0);
+  assert.doesNotMatch(fs.readFileSync(path.join(__dirname,'../src/spring_turret/static/index.html'),'utf8'), /target-prompt/);
+  console.log("validated automatic target display without target buttons or draft mutations");
   assert.equal(run(`nearestDisplayedBox({boxes:[
     {prompt:'cup',xyxy:[.45,.45,.55,.55],score:.9,instance_id:1,mask_centroid:[.8,.8]},
     {prompt:'cup',xyxy:[.3,.3,.6,.6],score:.9,instance_id:2,mask_centroid:[.5,.5]}]},'cup').instance_id`),2);
@@ -366,6 +355,33 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(freshBox.disabled, true);
   run('status.detection.state = "running";');
   console.log("validated clickable instances, 30 FPS button replacement, keyboard/cancel/drag, exact frame and no auto-start");
+  run(`status.detection.state = 'paused'; frameDetection.state = 'paused';
+    frameDetection.boxes = [
+      {prompt:'bottle',xyxy:[.4,.4,.6,.6],score:.9,instance_id:30},
+      {prompt:'cup',xyxy:[.1,.1,.3,.3],score:.9,instance_id:10},
+      {prompt:'cup',xyxy:[.6,.6,.8,.8],score:.9,instance_id:20},
+      {prompt:'cup',xyxy:[.6,.6,.8,.8],score:.9,instance_id:20},
+      {prompt:'cup',xyxy:[.6,.6,.8,.8],score:.9,instance_id:40,mask_centroid:null}];
+    status.tracking = {target:'cup',instance_id:10};`);
+  const beforeArrows = run('targetRequests.length');
+  await run('panelClient.cycleTarget(1)');
+  assert.equal(run('status.tracking.instance_id'),20);
+  await run('panelClient.cycleTarget(1)');
+  assert.equal(run('status.tracking.instance_id'),30);
+  await run('panelClient.cycleTarget(1)');
+  assert.equal(run('status.tracking.instance_id'),10);
+  await run('panelClient.cycleTarget(-1)');
+  assert.equal(run('status.tracking.instance_id'),30);
+  assert.equal(run('targetRequests.length'),beforeArrows+4);
+  assert.equal(run('targetRequests.slice(-4).every(([route, body]) => route === "/api/tracking/instance" && body.revision === 4 && body.frame_sequence === 13)'),true);
+  run('sharedBusy = true;');
+  await run('panelClient.cycleTarget(1)');
+  run('sharedBusy = false; frameDetection.boxes = [];');
+  await run('panelClient.cycleTarget(1)');
+  assert.equal(run('targetRequests.length'),beforeArrows+4);
+  assert.equal(run('status.servo.armed'),false);
+  run('status.detection.state = "running";');
+  console.log('validated exact-frame arrow cycling, wrapping, cross-class selection and paused/stopped operation');
   run(`displayedDetection = null; activeModel = null; draftInitialized = false;
     status.detection = {enabled: true, model: "sam3.1", revision: 10, state: "idle", prompts: ["face"]};
     renderDetection(status.detection);`);

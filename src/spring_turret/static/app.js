@@ -94,10 +94,10 @@ function renderFps(fps) {
 }
 
 function clickableFrame() {
-  return frameDetection?.state === "running" && status?.camera?.online &&
+  return ["running", "paused"].includes(frameDetection?.state) && status?.camera?.online &&
     frameBackendPid === (status?.runtime?.backend_pid ?? null) &&
     frameDetection.revision === status?.detection?.revision &&
-    status?.detection?.state === "running";
+    ["running", "paused"].includes(status?.detection?.state);
 }
 
 function hasTrackingMask(detection) {
@@ -113,8 +113,8 @@ function isMaskMode(detection) {
 
 function trackedBox(detection, backendPid = frameBackendPid) {
   const tracking = status?.tracking;
-  if (!tracking?.target || !status?.camera?.online || detection?.state !== "running" ||
-      status?.detection?.state !== "running" || detection.revision !== status.detection.revision ||
+  if (!tracking?.target || !status?.camera?.online || !["running", "paused"].includes(detection?.state) ||
+      !["running", "paused"].includes(status?.detection?.state) || detection.revision !== status.detection.revision ||
       backendPid !== (status?.runtime?.backend_pid ?? null)) return null;
   if (tracking.continuity === "hold-reacquire" &&
       !["tracking", "centered", "limited"].includes(tracking.state)) return null;
@@ -316,6 +316,21 @@ async function selectInstance(selection) {
   }
 }
 
+function cycleTarget(direction) {
+  if (!clickableFrame()) return;
+  // Stable ID ordering avoids cycling differently as detections reorder.
+  const ids = [...new Set(frameDetection.boxes.filter(box =>
+    Number.isInteger(box.instance_id) && nearestDisplayedBox({boxes: [box]}, box.prompt)
+  ).map(box => box.instance_id))].sort((a, b) => a - b);
+  if (!ids.length) return;
+  const current = ids.indexOf(trackedBox(frameDetection)?.instance_id);
+  const next = current < 0 ? (direction > 0 ? 0 : ids.length - 1)
+    : (current + direction + ids.length) % ids.length;
+  if (current === next) return;
+  return selectInstance({revision: frameDetection.revision,
+    frame_sequence: frameDetection.frame_sequence, instance_id: ids[next]});
+}
+
 // Capture on the stable overlay, not an individual box: IDs and buttons may
 // change between pointerdown/up at camera rate. Keep the exact down-frame.
 boxTargets.addEventListener("pointerup", (event) => {
@@ -436,41 +451,6 @@ function updatePromptControls() {
     if (option.disabled !== disabled) option.disabled = disabled;
   }
   updatePromptColors(displayedDetection || status?.detection);
-  updateTargetControls();
-}
-
-function updateTargetControls() {
-  if (sharedControls) return;
-  const target = status?.tracking?.target;
-  const prompts = status?.detection?.prompts || [];
-  const seen = new Set();
-  for (const row of promptRows.children) {
-    const prompt = row.querySelector(".detection-prompt").value.trim();
-    const button = row.querySelector(".target-prompt");
-    const applied = Boolean(prompt) && prompts.includes(prompt) && !seen.has(prompt);
-    seen.add(prompt);
-    const selected = applied && prompt === target;
-    button.disabled = !status?.detection?.enabled || !applied || targetSending || detectionSending || modelSending;
-    button.setAttribute("aria-pressed", String(selected));
-    const label = selected && status?.tracking?.instance_id != null ? `Track nearest ${prompt}` : selected ? `Stop tracking ${prompt}` : `Track ${prompt || "object"}`;
-    button.setAttribute("aria-label", label);
-    button.title = !applied ? "Update prompts before tracking this class" : label;
-  }
-}
-
-async function selectTarget(target) {
-  if (targetSending || modelSending) return;
-  targetSending = true;
-  pendingAngles.clear();
-  updateTargetControls();
-  try {
-    await request("/api/tracking/target", { method: "POST", body: JSON.stringify({ target }) });
-  } catch (error) {
-    showMessage(error.message, true);
-  } finally {
-    targetSending = false;
-    updateTargetControls();
-  }
 }
 
 function nearestDisplayedBox(detection, target) {
@@ -504,7 +484,6 @@ function renderTracking() {
     const rect = document.getElementById("tracked-box");
     for (const [key, value] of Object.entries({x: x1 * 1000, y: y1 * 1000, width: (x2 - x1) * 1000, height: (y2 - y1) * 1000})) rect.setAttribute(key, value);
   }
-  updateTargetControls();
   renderMaskOverlay();
   renderBoxTargets();
 }
@@ -540,14 +519,11 @@ function addPromptRow(value = "", focus = false) {
   const input = row.querySelector(".detection-prompt");
   input.value = value;
   input.addEventListener("input", () => {
-    if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
     draftVersion += 1;
     promptError = "";
     updatePromptColors(displayedDetection);
-    updateTargetControls();
   });
   row.querySelector(".remove-prompt").addEventListener("click", () => {
-    if (row.querySelector(".target-prompt").getAttribute("aria-pressed") === "true") selectTarget(null);
     draftVersion += 1;
     promptError = "";
     if (promptRows.children.length === 1) input.value = "";
@@ -555,11 +531,6 @@ function addPromptRow(value = "", focus = false) {
     updatePromptControls();
     const remaining = promptRows.querySelector(".detection-prompt");
     remaining.focus();
-  });
-  row.querySelector(".target-prompt").addEventListener("click", () => {
-    if (row.querySelector(".target-prompt").disabled) return;
-    const prompt = input.value.trim();
-    return selectTarget(status?.tracking?.target === prompt && status?.tracking?.instance_id == null ? null : prompt);
   });
   promptRows.append(row);
   updatePromptControls();
@@ -820,6 +791,14 @@ motorToggle.addEventListener("click", () => {
   else startMotors();
 });
 document.addEventListener("keydown", (event) => {
+  const element = event.composedPath?.()[0] || event.target;
+  const direction = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1}[event.key];
+  if (!sharedControls && direction && !event.defaultPrevented && !event.repeat && !event.isComposing
+      && !event.metaKey && !event.ctrlKey && !event.altKey && !element?.isContentEditable
+      && !["INPUT", "SELECT", "TEXTAREA"].includes(element?.tagName)) {
+    event.preventDefault?.();
+    return cycleTarget(direction);
+  }
   if (event.key === "Escape") stopMotors();
   if (event.key === "Enter" && !event.defaultPrevented && !event.repeat && !event.isComposing
       && event.target?.tagName !== "BUTTON") {
@@ -977,6 +956,7 @@ setInterval(poll, 200);
 pollDetection();
 return {
   command: (path, body) => request(path, {method: "POST", body: JSON.stringify(body)}),
+  cycleTarget,
   setSharedBusy(value) {
     sharedBusy = value;
     if (value) pendingAngles.clear();

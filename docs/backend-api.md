@@ -32,7 +32,7 @@ the backend cycle, not browser latency. Both masked modes count masks, not boxes
 | `/api/detection/model` | POST | `{"model":"sam3.1-tracking"}` |
 | `/api/detection/pause` | POST | `{"paused":true}` to pause, `false` to resume; idempotent |
 | `/api/detection/prompts` | POST | `{"prompts":["hand","cup"]}` |
-| `/api/tracking/target` | POST | `{"target":"hand"}` or null |
+| `/api/tracking/target` | POST | `{"target":"hand"}`; null resets automatic selection, never disables targeting |
 | `/api/tracking/instance` | POST | `{"revision":1,"frame_sequence":42,"instance_id":7}` |
 | `/api/servo/arm`, `/api/servo/disable` | POST | No body required |
 | `/api/servo/recalibrate` | POST | `{}`; requires stopped, stationary servos |
@@ -45,6 +45,11 @@ hardware/backend uses 503. Never automatically retry a motor command after a los
 reply. GETs and model/prompt API updates never request Start. Device reconnection
 can restore torque only when the backend already holds an explicit Start request;
 Stop cancels it even while offline. Browser reconnection does not send Start.
+
+Automatic selection is backend-owned, including while motors are stopped or
+inference is paused. Keyboard cycling uses `/api/tracking/instance` with IDs from
+the displayed frame, independently per device. It never arms motors or resumes
+inference. See README for visible-ID retention and cross-class reacquisition.
 
 Servo status distinguishes `run_requested` (latched Start intent) from `armed`
 (actual enabled torque). `recovering` means Start is still requested while

@@ -5,7 +5,7 @@ if __package__:
 else:
     from models import is_tracking_model
 
-POLICY_VERSION = "sam-shared-v1"
+POLICY_VERSION = "sam-shared-v2-auto-target"
 DEAD_BAND = .003
 TRACK_RETENTION_SECONDS = 5.0
 TRACK_RETENTION_FRAMES = 16

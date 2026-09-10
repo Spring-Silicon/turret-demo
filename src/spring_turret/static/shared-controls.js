@@ -36,15 +36,6 @@ function mountSharedControls(document, devices) {
       dirty = true; error = ''; render();
       rows.children[0].querySelector('.detection-prompt').focus();
     });
-    row.querySelector('.target-prompt').addEventListener('click', () => {
-      if (busy || row.querySelector('.target-prompt').disabled) return;
-      const prompt = input.value.trim();
-      const stop = connected().every(d => {
-        const tracking = states.get(d.id)?.tracking;
-        return tracking?.target === prompt && tracking.instance_id == null;
-      });
-      return fanOut(client => client.command('/api/tracking/target', {target: stop ? null : prompt}));
-    });
     rows.append(row);
     return input;
   }
@@ -92,26 +83,11 @@ function mountSharedControls(document, devices) {
     add.disabled = !ready || busy || rows.children.length >= limit();
     submit.disabled = !ready || busy || !available(model);
     submit.textContent = busy ? 'Applying…' : 'Update prompts';
-    const seen = new Set();
     [...rows.children].forEach((row, index) => {
-      const input = row.querySelector('.detection-prompt'), prompt = input.value.trim();
+      const input = row.querySelector('.detection-prompt');
       input.disabled = !ready || busy;
       input.setAttribute('aria-label', `Object ${index + 1} to find`);
       row.querySelector('.remove-prompt').disabled = !ready || busy;
-      const applied = prompt && !seen.has(prompt) && connected().length > 0 && connected().every(device => {
-        const d = states.get(device.id)?.detection;
-        return !offline.has(device.id) && d?.model === model && d.prompts.includes(prompt);
-      });
-      seen.add(prompt);
-      const selected = applied && connected().every(d => states.get(d.id)?.tracking?.target === prompt);
-      const nearest = selected && connected().some(d => states.get(d.id)?.tracking?.instance_id != null);
-      const target = row.querySelector('.target-prompt');
-      const scope = connected().length === devices.length ? 'both' : 'connected devices';
-      const label = nearest ? `Track nearest ${prompt} on ${scope}` : selected ? `Stop tracking ${prompt} on ${scope}` : `Track ${prompt || 'object'} on ${scope}`;
-      target.disabled = !ready || busy || !applied;
-      target.setAttribute('aria-pressed', String(Boolean(selected)));
-      target.setAttribute('aria-label', label);
-      target.title = applied ? label : `Apply this prompt to ${scope} first`;
       row.style.setProperty('--prompt-color', detections().find(d => d?.model === model)?.colors?.[index] || '#55e8ce');
     });
     const mismatched = initialized && devices.filter(device => {
@@ -211,6 +187,18 @@ function mountSharedControls(document, devices) {
     }
   });
   document.addEventListener?.('keydown', event => {
+    const element = event.composedPath?.()[0] || event.target;
+    const cycle = {ArrowLeft: ['arc', -1], ArrowRight: ['arc', 1],
+      ArrowUp: ['thor', -1], ArrowDown: ['thor', 1]}[event.key];
+    if (cycle) {
+      if (busy || event.defaultPrevented || event.repeat || event.isComposing
+          || event.metaKey || event.ctrlKey || event.altKey || element?.isContentEditable
+          || ['INPUT', 'SELECT', 'TEXTAREA'].includes(element?.tagName)) return;
+      const [id, direction] = cycle;
+      if (offline.has(id) || !clients.has(id)) return;
+      event.preventDefault();
+      return clients.get(id).cycleTarget(direction);
+    }
     if (event.key !== 'Enter' || event.defaultPrevented || event.repeat || event.isComposing
         || ['INPUT', 'SELECT', 'BUTTON'].includes(event.target?.tagName)) return;
     // Enter handled inside a device panel is already prevented there. At the

@@ -667,7 +667,7 @@ class DetectionTests(unittest.TestCase):
             response = connection.getresponse()
             self.assertEqual(response.status, 200)
             body = json.loads(response.read())
-            self.assertEqual(body["tracking"]["target"], target)
+            self.assertEqual(body["tracking"]["target"], target or body["detection"]["prompts"][0])
             self.assertFalse(body["servo"]["armed"])
         for payload in ('{"target":"unapplied"}', '{"target":true}', '{"target":[]}', '{"target":"person","extra":1}'):
             connection.request("POST", "/api/tracking/target", payload)
