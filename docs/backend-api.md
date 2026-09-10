@@ -15,10 +15,10 @@ or `error`. `progress.stage` retains the worker detail. Legacy `state` and
 the completed frame and reports "showing last result"; it is not necessarily a
 fresh compilation. Error/camera-loss/idle states override old preparation stages.
 
-Both panels label explicit `timing.model_ms` as **model**, temporal
-`timing.tracking_ms` as **tracking**, and unclassified legacy `latency_ms` as
-**inference**. Backend `pipeline_timing.cycle_ms` is **total**, not browser latency.
-Missing measurements are omitted. Both masked modes count masks, not boxes.
+Both panels display detection FPS without model/overhead/total latency readouts.
+Detailed timings remain in the API: `timing.model_ms` is model execution,
+`timing.tracking_ms` is temporal processing, and `pipeline_timing.cycle_ms` is
+the backend cycle, not browser latency. Both masked modes count masks, not boxes.
 
 ## Requests
 

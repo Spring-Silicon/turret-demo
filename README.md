@@ -90,13 +90,15 @@ Open `http://HOST:8080/`. Below the camera are an **X degree slider**, a central
 their respective axes while running; requests are coalesced during a drag.
 Errors appear only when needed.
 
-The status line shows **detection FPS**, **model** time and full processing
-**loop** time (capture wait, pose lookup, worker and result publication; not
-network/browser display time). FPS is measured
+The camera shows **detection FPS**. Model/overhead/total timing numbers are not
+displayed; detailed timing remains available through the backend API. FPS is measured
 from completed-frame sequence changes over a rolling two-second browser-time
 window, including frames completed between polls. It includes pipeline overhead
 and is not `1000 / model_ms`, the camera's capture rate, or browser rendering FPS.
 It resets on model/prompt changes and shows `—` during startup/unavailable data.
+The Pause/Resume button beside the model selector controls inference on both
+devices (or just that device on an individual page). Pause retains the model
+and last processed image, shows 0 FPS, and leaves motor Start/Stop intent intact.
 
 **Recalibrate zeros** saves the current pan and tilt encoder positions as X=0°,
 Y=0°. Stop the motors, support the camera and position it at the intended zero,

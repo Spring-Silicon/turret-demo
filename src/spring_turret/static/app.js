@@ -29,9 +29,6 @@ const updatePromptsButton = document.getElementById("update-prompts");
 const detectionMessage = document.getElementById("detection-status");
 const fpsCounter = document.getElementById("fps-counter");
 const fpsValue = document.getElementById("fps-value");
-const modelLatency = document.getElementById("model-latency");
-const overheadLatency = document.getElementById("overhead-latency");
-const totalLatency = document.getElementById("total-latency");
 const feedLoading = document.getElementById("feed-loading");
 const feedLoadingLabel = document.getElementById("feed-loading-label");
 if (options.loadingLabel) feedLoadingLabel.textContent = options.loadingLabel;
@@ -94,19 +91,6 @@ function renderFps(fps) {
   if (fpsValue.textContent === value) return;
   fpsValue.textContent = value;
   fpsCounter.setAttribute("aria-label", fps === null ? "Frames per second unavailable" : `${value} frames per second`);
-}
-
-function renderLatency(detection) {
-  const valid = value => Number.isFinite(value) && value >= 0;
-  const running = isDetectionFresh(detection) && detectionPhase(detection) === "running";
-  const model = running ? [detection.timing?.model_ms, detection.timing?.tracking_ms,
-    detection.latency_ms].find(valid) : null;
-  const total = running ? [detection.pipeline_timing?.cycle_ms,
-    detection.timing?.worker_total_ms].find(valid) : null;
-  modelLatency.textContent = valid(model) ? model.toFixed(1) : "—";
-  overheadLatency.textContent = valid(model) && valid(total) && total >= model
-    ? (total - model).toFixed(1) : "—";
-  totalLatency.textContent = valid(total) ? total.toFixed(1) : "—";
 }
 
 function clickableFrame() {
@@ -614,7 +598,6 @@ function renderDetection(detection) {
   const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
   const fps = detectionFps(preparing || detection?.paused ? null : detection);
   renderFps(detection?.paused ? 0 : fps);
-  renderLatency(detection);
   detectionMessage.textContent = promptError || detection?.error || "";
   detectionMessage.hidden = !detectionMessage.textContent;
   detectionMessage.classList.toggle("error", Boolean(promptError || detection?.error));
@@ -862,7 +845,6 @@ async function poll() {
     options.onOffline?.(error);
     updatePromptColors(null);
     renderFps(detectionFps(null));
-    renderLatency(null);
     detectionMessage.textContent = "Detector connection lost";
     detectionMessage.hidden = false;
     detectionMessage.classList.add("error");
