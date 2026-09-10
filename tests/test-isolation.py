@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real process/IPC tests using simulated frames and motors only."""
 import copy
+import base64
 import json
 import multiprocessing
 import os
@@ -127,6 +128,32 @@ class IsolationTests(unittest.TestCase):
             self.assertEqual(dead["state"], "error")
             self.assertNotIn("jpeg", dead)
             self.assertIsNone(dead["mask_overlay"])
+
+    def test_reloaded_viewer_receives_last_processed_frame_while_paused(self):
+        state = metadata()
+        state['state']['detection'].update(state='paused', paused=True)
+        write_snapshot(self.directory, state, b'camera', b'paused-jpeg')
+        store = SnapshotStore(self.directory)
+        self.addCleanup(store.close)
+        event = json.loads(DetectionView(store).event((-1, None))[1][6:])
+        self.assertEqual(event['state'], 'paused')
+        self.assertEqual(base64.b64decode(event['jpeg']), b'paused-jpeg')
+        self.assertEqual(event['progress']['phase'], 'paused')
+
+    def test_old_snapshot_cannot_undo_pause_or_resume_command(self):
+        initial = metadata()
+        initial['state']['detection'].update(paused=False, pause_revision=0)
+        write_snapshot(self.directory, initial, b'camera', b'jpeg')
+        store = SnapshotStore(self.directory)
+        self.addCleanup(store.close)
+        for revision, paused in ((1, True), (2, False)):
+            old = copy.deepcopy(store.metadata)
+            reply = copy.deepcopy(store.state)
+            reply['detection'].update(paused=paused, pause_revision=revision, state='paused' if paused else 'loading')
+            store.apply_command({'state': reply, 'control_at': time.monotonic()})
+            store._install(old, b'camera', b'old-jpeg')
+            self.assertEqual(store.status()['detection']['paused'], paused)
+            self.assertEqual(store.status()['detection']['pause_revision'], revision)
 
     def test_section_status_is_owned_without_copying_unrelated_sections(self):
         write_snapshot(self.directory, metadata(), b"camera", b"1")

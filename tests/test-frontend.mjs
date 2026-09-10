@@ -151,6 +151,19 @@ test('setup recovery commands reach the backend through the frontend', async t =
   assert.deepEqual(calls, ['/api/servo/recalibrate', '/api/servo/recover-gains']);
 });
 
+test('inference pause and resume are proxied without rewriting their body', async t => {
+  const calls = [];
+  const {local} = await fixture(t, async (req, res) => {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    calls.push([req.url, JSON.parse(Buffer.concat(chunks))]);
+    res.setHeader('Content-Type', 'application/json'); res.end('{}');
+  });
+  for (const paused of [true, false])
+    assert.equal((await fetch(local + '/api/detection/pause', {method:'POST', body:JSON.stringify({paused})})).status, 200);
+  assert.deepEqual(calls, [['/api/detection/pause', {paused:true}], ['/api/detection/pause', {paused:false}]]);
+});
+
 test('commands are never retried after a lost reply; header stalls time out', async t => {
   let calls = 0;
   const {local} = await fixture(t, (req, _) => {calls++; if (req.method === 'POST') req.socket.destroy();}, {timeoutMs: 100});

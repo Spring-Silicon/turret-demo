@@ -13,6 +13,7 @@ const STATIC = new URL('../src/spring_turret/static/', import.meta.url);
 const GET_PATHS = new Set(['/api/status', '/api/detection/status',
   '/api/detection/events', '/stream.mjpg']);
 const POST_PATHS = new Set(['/api/detection/model', '/api/detection/prompts',
+  '/api/detection/pause',
   '/api/detection/prompt', '/api/tracking/target', '/api/tracking/instance',
   '/api/servo/arm', '/api/servo/disable', '/api/servo/recalibrate',
   '/api/servo/recover-gains',

@@ -20,13 +20,15 @@
 
     <main>
       <section class="vision" aria-label="Camera and detection">
-        <label class="model-control" for="detection-model">Model
+        <div class="model-control">
+          <label for="detection-model">Model</label>
           <select id="detection-model" disabled>
             <option value="sam3.1">SAM 3.1 Box</option>
             <option value="sam3.1-mask">SAM 3.1 Mask</option>
             <option value="sam3.1-tracking">SAM 3.1 Mem</option>
           </select>
-        </label>
+          <button id="inference-toggle" type="button" aria-label="Pause inference" aria-pressed="false" disabled>Pause</button>
+        </div>
         <form id="detection-form">
           <div id="prompt-rows"></div>
           <div class="prompt-actions">

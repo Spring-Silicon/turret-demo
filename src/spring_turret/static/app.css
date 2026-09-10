@@ -81,6 +81,7 @@ main {
 .vision { min-width: 0; }
 .model-control { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; font-size: 14px; }
 #detection-model { border: 1px solid var(--line); background: #151919; color: inherit; padding: 8px 12px; font: inherit; }
+#inference-toggle { padding: 8px 12px; min-width: 80px; }
 select:focus { outline: 1px solid var(--accent); }
 #detection-form, #prompt-rows { display: grid; gap: 8px; }
 .prompt-row { display: flex; gap: 8px; }

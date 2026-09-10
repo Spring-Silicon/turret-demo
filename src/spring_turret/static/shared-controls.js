@@ -5,6 +5,7 @@
 function mountSharedControls(document, devices) {
   const rows = document.getElementById('prompt-rows');
   const modelSelector = document.getElementById('detection-model');
+  const pauseButton = document.getElementById('inference-toggle');
   const add = document.getElementById('add-prompt');
   const submit = document.getElementById('update-prompts');
   const message = document.getElementById('shared-message');
@@ -66,6 +67,11 @@ function mountSharedControls(document, devices) {
     // a user's draft with another device's result or auto-resubmit on mismatch.
     const ready = initialized && connected().some(d => states.get(d.id)?.detection?.enabled);
     const disabled = !ready || busy;
+    const paused = connected().some(d => states.get(d.id)?.detection?.paused === true);
+    pauseButton.disabled = disabled || !connected().every(d => typeof states.get(d.id)?.detection?.paused === 'boolean');
+    pauseButton.textContent = paused ? 'Resume' : 'Pause';
+    pauseButton.setAttribute('aria-label', paused ? 'Resume inference' : 'Pause inference');
+    pauseButton.setAttribute('aria-pressed', String(paused));
     if (modelSelector.disabled !== disabled) modelSelector.disabled = disabled;
     const selection = model || 'sam3.1';
     // Firefox rebuilds its native popup when select/option state is rewritten,
@@ -168,6 +174,15 @@ function mountSharedControls(document, devices) {
     if (ok) { dirty = false; setRows(states.get(devices[0].id).detection.prompts); }
     render();
   }
+
+  pauseButton.addEventListener('click', () => {
+    if (pauseButton.disabled || busy) return;
+    const paused = !connected().some(d => states.get(d.id)?.detection?.paused === true);
+    return fanOut(async (client, device) => {
+      if (states.get(device.id)?.detection?.paused !== paused)
+        states.set(device.id, await client.command('/api/detection/pause', {paused}));
+    });
+  });
 
   modelSelector.addEventListener('change', async () => {
     if (busy || !initialized) return;

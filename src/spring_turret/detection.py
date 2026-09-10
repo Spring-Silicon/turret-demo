@@ -344,6 +344,9 @@ class DetectionController:
         self.instances = InstanceAssociator(tracking_config or {})
         self.frame_selections: OrderedDict[str, dict] = OrderedDict()
         self.enabled = config.get("enabled", False)
+        self.paused = False
+        self.pause_revision = 0
+        self.resume_after = 0.0
         self.condition = threading.Condition()
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="detection", daemon=True)
@@ -384,6 +387,24 @@ class DetectionController:
     def set_prompt(self, prompt: Any) -> None:
         """Compatibility for the original single-category endpoint."""
         self.set_prompts([prompt])
+
+    def set_paused(self, paused: Any) -> None:
+        if type(paused) is not bool:
+            raise ValueError("paused must be a boolean")
+        if not self.enabled:
+            raise ValueError("Inference is not configured on this device")
+        with self.condition:
+            if self.paused == paused:
+                return
+            self.paused = paused
+            self.pause_revision += 1
+            if not paused:
+                # Never control from a frame acquired before Resume, including
+                # a request still draining after a very quick Pause/Resume.
+                self.resume_after = time.monotonic()
+                self.state = "loading" if self.prompts else "idle"
+                self.progress_stage = None
+            self.condition.notify_all()
 
     def set_prompts(self, prompts: Any) -> None:
         if not self.enabled:
@@ -440,8 +461,10 @@ class DetectionController:
                 "max_prompts": MAX_PROMPTS,
                 "colors": COLORS,
                 "revision": self.revision,
-                "state": self.state,
-                "progress_stage": self.progress_stage,
+                "state": "paused" if self.paused else self.state,
+                "paused": self.paused,
+                "pause_revision": self.pause_revision,
+                "progress_stage": None if self.paused else self.progress_stage,
                 "error": self.error,
                 "frame_age_ms": age,
                 **detection_result(self.result, self.config.get("device_type", "xpu")),
@@ -491,7 +514,7 @@ class DetectionController:
 
     def _progress(self, revision: int, stage: str) -> None:
         with self.condition:
-            if revision == self.revision and self.prompts:
+            if revision == self.revision and self.prompts and not self.paused:
                 self.progress_stage = stage
                 # A new temporal graph shape is work on the next frame, not a
                 # loss of the last completed result. Keep its JPEG/masks/IDs
@@ -511,12 +534,15 @@ class DetectionController:
                     self.condition.wait_for(
                         lambda: (
                             self.stop_event.is_set()
-                            or (self.worker is not None and self.worker_model != self.model)
-                            or (self.prompts and (self.revision != failed_revision or time.monotonic() >= retry_at))
+                            or (not self.paused and (
+                                (self.worker is not None and self.worker_model != self.model)
+                                or (self.prompts and (self.revision != failed_revision or time.monotonic() >= retry_at))))
                         ), timeout=1
                     )
                     if self.stop_event.is_set():
                         break
+                    if self.paused:
+                        continue
                     prompts, revision, model = list(self.prompts), self.revision, self.model
                     if revision == failed_revision and time.monotonic() < retry_at:
                         continue
@@ -543,6 +569,9 @@ class DetectionController:
                 last_camera_sequence = sequence
                 started = time.monotonic()
                 try:
+                    with self.condition:
+                        if self.paused or captured_at < self.resume_after:
+                            continue
                     if self.worker is None:
                         worker_config = {**self.config, "model": model}
                         worker = self.worker_factory(worker_config)
@@ -560,7 +589,7 @@ class DetectionController:
                         if time.monotonic() - captured_at > .1:
                             continue  # Do not process a pre-load/reconnect image.
                     with self.condition:
-                        if revision != self.revision:
+                        if revision != self.revision or self.paused or captured_at < self.resume_after:
                             continue
                     self.sequence += 1
                     prepared_token = None
@@ -572,7 +601,7 @@ class DetectionController:
                     def prepare_next():
                         nonlocal prefetched
                         with self.condition:
-                            if self.stop_event.is_set() or revision != self.revision:
+                            if self.stop_event.is_set() or self.paused or revision != self.revision:
                                 return None
                             next_sequence, next_jpeg, next_at = self.camera.wait_for_sample(sequence, 0)
                             if next_sequence == sequence or next_jpeg is None or not 0 <= time.monotonic() - next_at <= .1:
@@ -622,8 +651,8 @@ class DetectionController:
                     result.pop("id", None)
                     key = f"{revision}-{self.sequence}"
                     with self.condition:
-                        if revision != self.revision:
-                            continue  # Never display boxes from an obsolete prompt.
+                        if revision != self.revision or self.paused or captured_at < self.resume_after:
+                            continue  # Never publish an obsolete or pre-resume request.
                         if not is_tracking_model(model):
                             result["boxes"] = self.instances.update(result.get("boxes", []), pose, captured_at)
                         self._cache_frame(key, annotated, result["boxes"], captured_at)

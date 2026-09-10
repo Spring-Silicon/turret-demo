@@ -13,6 +13,7 @@ python3 tests/test-wired-recovery.py
 python3 tests/test-servo-feedback.py
 python3 tests/test-isolation.py
 python3 tests/test-detection.py
+python3 tests/test-inference-pause.py
 python3 tests/test-api-contract.py
 python3 tests/test-app-release.py
 python3 tests/test-detection-progress.py

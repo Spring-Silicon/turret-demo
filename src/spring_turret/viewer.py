@@ -41,7 +41,8 @@ class SnapshotStore:
                 if metadata["control_at"] < self.metadata["control_at"]:
                     incoming.update(servo=self.state["servo"], tracking=self.state["tracking"])
                     metadata["control_at"] = self.metadata["control_at"]
-                if incoming["detection"]["revision"] < self.state["detection"]["revision"]:
+                if (incoming["detection"]["revision"] < self.state["detection"]["revision"] or
+                        incoming["detection"].get("pause_revision", 0) < self.state["detection"].get("pause_revision", 0)):
                     incoming["detection"] = self.state["detection"]
                     detection_jpeg = b""  # Never associate an old JPEG with new metadata.
                 elif incoming["detection"]["revision"] != self.state["detection"]["revision"]:
@@ -126,7 +127,7 @@ class DetectionView:
             metadata = self.status()
             current = (metadata["revision"], metadata.get("frame_sequence"))
             key = (*current, metadata.get("state"), metadata.get("error"))
-            frame = self.frames.get(f"{current[0]}-{current[1]}") if current != previous and metadata.get("state") == "running" else None
+            frame = self.frames.get(f"{current[0]}-{current[1]}") if current != previous and metadata.get("state") in ("running", "paused") else None
             if frame is not None:
                 if self.store.event_cache is None or self.store.event_cache[0] != key:
                     metadata["jpeg"] = base64.b64encode(frame).decode()

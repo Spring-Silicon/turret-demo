@@ -299,6 +299,9 @@ class TrackingController:
                 self.moving = False
                 self._pause("waiting")
             camera, detection = self.camera.status(), self.detection.status()
+            if detection.get("paused"):
+                self._pause("paused")
+                return
             now = time.monotonic()
             age = detection.get("frame_age_ms")
             if self.target not in detection.get("prompts", []):

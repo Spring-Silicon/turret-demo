@@ -38,6 +38,8 @@ if (options.loadingLabel) feedLoadingLabel.textContent = options.loadingLabel;
 feedLoading.hidden = false;
 fpsCounter.hidden = true;
 const modelSelector = document.getElementById("detection-model");
+const pauseButton = document.getElementById("inference-toggle");
+let pauseSending = false;
 let activeModel = null;
 let renderedModel = null;
 let modelSending = false;
@@ -429,6 +431,11 @@ function renderBoxTargets() {
 
 function updatePromptControls() {
   if (sharedControls) return;
+  const paused = status?.detection?.paused === true;
+  pauseButton.disabled = !status?.detection?.enabled || typeof status?.detection?.paused !== "boolean" || pauseSending;
+  pauseButton.textContent = paused ? "Resume" : "Pause";
+  pauseButton.setAttribute("aria-label", paused ? "Resume inference" : "Pause inference");
+  pauseButton.setAttribute("aria-pressed", String(paused));
   const rows = [...promptRows.children];
   const enabled = Boolean(status?.detection?.enabled) && !modelSending;
   rows.forEach((row, index) => {
@@ -605,7 +612,8 @@ function renderDetection(detection) {
   updatePromptControls();
   const phase = detectionPhase(detection);
   const preparing = ["loading", "preparing", "capturing", "validating"].includes(phase);
-  renderFps(detectionFps(preparing ? null : detection));
+  const fps = detectionFps(preparing || detection?.paused ? null : detection);
+  renderFps(detection?.paused ? 0 : fps);
   renderLatency(detection);
   detectionMessage.textContent = promptError || detection?.error || "";
   detectionMessage.hidden = !detectionMessage.textContent;
@@ -616,7 +624,7 @@ function renderDetection(detection) {
   // That is still a new, valid display frame: never require SSE to catch the
   // status poll exactly (which can starve slower backends at the poll cadence).
   const candidate = detectionStreamOpen ? streamFrame?.detection : detection;
-  if (candidate?.state !== "running" || !candidate.frame_url ||
+  if (!["running", "paused"].includes(candidate?.state) || !candidate.frame_url ||
       !Number.isInteger(candidate.frame_sequence) || candidate.revision !== detection?.revision ||
       candidate.model !== detection?.model) return;
   if (frameDetection && frameBackendPid === (status?.runtime?.backend_pid ?? null) &&
@@ -690,6 +698,7 @@ function render(next) {
     fpsRevision = null;
   }
   if (status?.detection && next.detection && (
+      (next.detection.pause_revision ?? 0) < (status.detection.pause_revision ?? 0) ||
       next.detection.revision < status.detection.revision ||
       (next.detection.revision === status.detection.revision &&
        next.detection.frame_sequence < status.detection.frame_sequence))) {
@@ -929,6 +938,20 @@ function readPromptRows() {
 }
 
 if (!sharedControls) {
+pauseButton.addEventListener("click", async () => {
+  if (pauseButton.disabled || pauseSending) return;
+  const paused = !status.detection.paused;
+  pauseSending = true;
+  updatePromptControls();
+  try {
+    await request("/api/detection/pause", {method: "POST", body: JSON.stringify({paused})});
+  } catch (error) {
+    showMessage(error.message, true);
+  } finally {
+    pauseSending = false;
+    updatePromptControls();
+  }
+});
 modelSelector.addEventListener("change", async () => {
   if (modelSending || detectionSending || targetSending) return;
   const model = modelSelector.value;

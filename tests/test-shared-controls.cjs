@@ -49,7 +49,7 @@ const devices = [{id:'arc', label:'Arc'}, {id:'thor', label:'Thor'}];
 const controller = ctx.mountSharedControls(document, devices);
 const states = {}, clients = {}, calls = [], failures = new Map(), blocks = new Map(), routeFailures = new Map();
 for (const {id} of devices) {
-  states[id] = {detection:{enabled:true, model:'sam3.1-tracking', prompts:['hand'], max_prompts:8,
+  states[id] = {detection:{enabled:true, paused:false, model:'sam3.1-tracking', prompts:['hand'], max_prompts:8,
     models:['sam3.1','sam3.1-tracking','sam3.1-mask'].map(id => ({id,available:true})),
     state:'running', frame_age_ms:10, latency_ms:100, classes:null, colors:['#55e8ce'],
     categories:[{prompt:'hand',count:id==='arc'?2:5}]}, tracking:{target:null, instance_id:null}, servo:{armed:true}};
@@ -65,7 +65,8 @@ for (const {id} of devices) {
         state.detection.model = body.model;
         state.detection.classes = null;
         state.detection.prompts = [];
-      } else if (route === '/api/detection/prompts') state.detection.prompts = [...body.prompts];
+      } else if (route === '/api/detection/pause') state.detection.paused = body.paused;
+      else if (route === '/api/detection/prompts') state.detection.prompts = [...body.prompts];
       else if (route === '/api/tracking/target') state.tracking = {target:body.target,instance_id:null};
       else if (route === '/api/servo/arm') state.servo.armed = true;
       else if (route === '/api/servo/gains') Object.assign(state.servo.axes[body.axis].position_gains,{p:body.p,d:body.d});
@@ -264,6 +265,30 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
   controller.update('thor',structuredClone(states.thor));
   await changeModel('sam3.1-mask');
   console.log('validated Mem uses the same API on Arc and Thor with shared prompts and stable selection');
+
+  const pauseButton = get('inference-toggle');
+  const beforePause = calls.length;
+  assert.equal(pauseButton.textContent, 'Pause');
+  await pauseButton.events.click();
+  assert.equal(pauseButton.textContent, 'Resume');
+  assert.equal(pauseButton.attributes['aria-pressed'], 'true');
+  assert.deepEqual(calls.slice(beforePause).map(c => [c.id,c.route,c.body]),
+    [['arc','/api/detection/pause',{paused:true}], ['thor','/api/detection/pause',{paused:true}]]);
+  const whilePaused = calls.length;
+  for (let i=0;i<10;i++) controller.update('arc',structuredClone(states.arc));
+  assert.equal(calls.length, whilePaused); // Reload/poll does not resume implicitly.
+  routeFailures.set('thor:/api/detection/pause', 'Disconnected');
+  await pauseButton.events.click();
+  assert.equal(states.arc.detection.paused, false);
+  assert.equal(states.thor.detection.paused, true);
+  assert.equal(pauseButton.textContent, 'Resume'); // Mixed state offers Resume both.
+  routeFailures.clear();
+  const beforeRetry = calls.length;
+  await pauseButton.events.click();
+  assert.deepEqual(calls.slice(beforeRetry).map(c=>c.id), ['thor']);
+  assert.equal(pauseButton.textContent, 'Pause');
+  assert.ok(calls.slice(beforePause).every(c => c.route === '/api/detection/pause'));
+  console.log('validated shared inference-only Pause/Resume, partial failures and no automatic resume');
 
   controller.offline('thor');
   assert.equal(get('update-prompts').disabled, false);

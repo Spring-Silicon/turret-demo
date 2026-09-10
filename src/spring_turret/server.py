@@ -37,6 +37,7 @@ JPEG_END = b"\xff\xd9"
 MAX_JSON_BYTES = 4096
 COMMAND_FIELDS = {
     "/api/detection/model": {"model"},
+    "/api/detection/pause": {"paused"},
     "/api/detection/prompts": {"prompts"},
     "/api/detection/prompt": {"prompt"},
     "/api/tracking/target": {"target"},
@@ -297,6 +298,7 @@ class TurretApplication:
         if fields is not None and set(body) != fields:
             raise ValueError("body must contain only " + ", ".join(sorted(fields)))
         if path == "/api/detection/model": self.tracking.set_model(body["model"])
+        elif path == "/api/detection/pause": self.detection.set_paused(body["paused"])
         elif path == "/api/detection/prompts": self.tracking.set_prompts(body["prompts"])
         elif path == "/api/detection/prompt": self.tracking.set_prompts([body["prompt"]])
         elif path == "/api/tracking/target": self.tracking.set_target(body["target"])

@@ -63,7 +63,7 @@ class ContractTests(unittest.TestCase):
         for raw, phase in (("loading", "loading"), ("loading_tracker", "loading"),
                            ("compiling", "preparing"), ("compiling_tracker_memory_update", "preparing"),
                            ("capturing", "capturing"), ("validating", "validating"),
-                           ("waiting_for_camera", "waiting_for_camera"), ("running", "running")):
+                           ("waiting_for_camera", "waiting_for_camera"), ("running", "running"), ("paused", "paused")):
             for device in (None, "xpu", "cuda"):
                 source = {"state":raw, "device_type":device}
                 result = detection_status(source)

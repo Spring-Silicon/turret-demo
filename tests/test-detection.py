@@ -643,6 +643,19 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(body["detection"]["model"], "sam3.1-mask")
         self.assertFalse(body["servo"]["armed"])
         self.assertIsNone(body["tracking"]["target"])
+        for paused in (True, True, False):
+            connection.request("POST", "/api/detection/pause", json.dumps({"paused": paused}))
+            response = connection.getresponse()
+            self.assertEqual(response.status, 200)
+            paused_status = json.loads(response.read())
+            self.assertEqual(paused_status["detection"]["paused"], paused)
+            self.assertEqual(paused_status["detection"]["model"], body["detection"]["model"])
+            self.assertFalse(paused_status["servo"]["armed"])
+        for payload in ('{}', '{"paused":1}', '{"paused":"true"}', '{"paused":false,"extra":1}'):
+            connection.request("POST", "/api/detection/pause", payload)
+            response = connection.getresponse()
+            self.assertEqual(response.status, 400)
+            response.read()
         for payload in ('{"model":"yolo26x"}', '{"model":"nano"}', '{"model":[]}', '{"model":"sam3.1","extra":1}'):
             connection.request("POST", "/api/detection/model", payload)
             response = connection.getresponse()

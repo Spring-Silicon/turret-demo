@@ -432,6 +432,23 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
   assert.equal(run("JSON.stringify(targetRequests.at(-1))"), '["/api/detection/model",{"model":"sam3.1-mask"}]');
   assert.equal(rows()[0].fields.input.value, "cup"); // Mask draft preserved too.
   assert.equal(run("status.servo.armed"), false);
+  run(`globalThis.beforePauseRequest=request; globalThis.pauseCalls=[];
+    status.detection.paused=false;
+    request=async (path,options) => {
+      const body=JSON.parse(options.body); pauseCalls.push([path,body]);
+      status.detection.paused=body.paused; return status;
+    }; updatePromptControls();`);
+  assert.equal(get('inference-toggle').textContent,'Pause');
+  await get('inference-toggle').events.click();
+  assert.equal(get('inference-toggle').textContent,'Resume');
+  assert.equal(get('inference-toggle').attributes['aria-pressed'],'true');
+  await get('inference-toggle').events.click();
+  assert.equal(get('inference-toggle').textContent,'Pause');
+  assert.equal(run('JSON.stringify(pauseCalls)'),
+    '[["/api/detection/pause",{"paused":true}],["/api/detection/pause",{"paused":false}]]');
+  assert.equal(run('status.servo.armed'),false);
+  run('request=beforePauseRequest;');
+  console.log('validated individual inference Pause/Resume never sends motor commands');
   run(`globalThis.promptCalls = []; globalThis.rejectTarget = false;
     status.servo.ready=true; status.servo.armed=false; status.servo.run_requested=false;
     request = async (path, options) => {
@@ -907,5 +924,15 @@ console.log("validated dual degree sliders, pending edits and start/stop states"
     assert.equal(devices[id].element('total-latency').textContent, '240.0');
   }
   console.log('validated quiet Arc/Thor preparation and hidden running summaries');
+  const pausedState = {...states.arc.detection, revision:2, frame_sequence:4,
+    frame_url:'/api/detection/frame/2-4.jpg', state:'paused', paused:true, pause_revision:1, jpeg:'cGF1c2Vk'};
+  arcStream.onmessage({data:JSON.stringify(pausedState)});
+  devices.arc.images.at(-1).events.load();
+  assert.equal(devices.arc.element('camera-feed').src,'data:image/jpeg;base64,cGF1c2Vk');
+  assert.equal(devices.arc.element('inference-toggle').textContent,'Resume');
+  arcStream.onmessage({data:JSON.stringify({...pausedState, paused:false, state:'running', pause_revision:0})});
+  assert.equal(devices.arc.element('inference-toggle').textContent,'Resume');
+  assert.equal(devices.arc.element('fps-value').textContent,'0.0');
+  console.log('validated paused completed frame rendering and stale-event rejection');
   console.log('validated side-by-side panel isolation: prompts, streams, image URLs, Start/Stop and focused Escape');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -441,6 +441,23 @@ class TrackingTests(unittest.TestCase):
         self.assertFalse(self.servo.armed)
         self.assertEqual(self.tracker.state, "stopped")
 
+    def test_inference_pause_holds_once_without_clearing_start_or_target(self):
+        self.start()
+        self.frame([box()])
+        self.assertTrue(self.tracker.moving)
+        self.detection.data.update(paused=True, state='paused')
+        self.tracker._tick()
+        self.assertEqual(self.tracker.state, 'paused')
+        self.assertTrue(self.servo.armed)
+        self.assertEqual(self.tracker.target, 'cup')
+        self.assertEqual(self.servo.calls[-1], {'x': 0.0, 'y': 0.0})
+        count = len(self.servo.calls)
+        for _ in range(5): self.tracker._tick()
+        self.assertEqual(len(self.servo.calls), count)
+        self.detection.data.update(paused=False, state='running')
+        self.frame([box()])
+        self.assertTrue(self.tracker.moving)
+
     def test_target_loss_or_faults_hold_once_without_searching(self):
         for condition in ("lost", "camera", "detector", "future"):
             with self.subTest(condition=condition):

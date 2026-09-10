@@ -46,7 +46,7 @@ def detection_status(result):
     state = result.get("state", "idle")
     stage = result.get("progress_stage") or state
     # A failed/stopped runtime must not retain a previous preparation message.
-    if state in ("error", "disabled", "idle", "waiting_for_camera"):
+    if state in ("error", "disabled", "idle", "waiting_for_camera", "paused"):
         stage = state
     if stage.startswith("compiling"):
         phase = "preparing"
@@ -57,7 +57,7 @@ def detection_status(result):
     elif stage.startswith("validating"):
         phase = "validating"
     else:
-        phase = stage if stage in ("running", "error", "disabled", "idle", "waiting_for_camera") else "preparing"
+        phase = stage if stage in ("running", "error", "disabled", "idle", "waiting_for_camera", "paused") else "preparing"
     fields.update(api_version=API_VERSION, device_type=device_type,
                   progress_stage=result.get("progress_stage"),
                   progress={"phase":phase, "stage":stage})

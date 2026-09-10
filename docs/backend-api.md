@@ -30,6 +30,7 @@ Missing measurements are omitted. Both masked modes count masks, not boxes.
 | `/api/detection/frame/{revision}-{sequence}.jpg` | GET | Bounded exact-frame history; 404 if evicted |
 | `/stream.mjpg` | GET | Raw camera, independent of inference |
 | `/api/detection/model` | POST | `{"model":"sam3.1-tracking"}` |
+| `/api/detection/pause` | POST | `{"paused":true}` to pause, `false` to resume; idempotent |
 | `/api/detection/prompts` | POST | `{"prompts":["hand","cup"]}` |
 | `/api/tracking/target` | POST | `{"target":"hand"}` or null |
 | `/api/tracking/instance` | POST | `{"revision":1,"frame_sequence":42,"instance_id":7}` |
@@ -58,6 +59,23 @@ These IDs are unchanged, so saved selections and clients remain compatible.
 `implementation_model` retains the actual worker ID. A legacy `sam3.1-v18`
 deployment reports public `model: sam3.1-tracking` without swapping its worker.
 Direct legacy v18 API requests remain supported when configured.
+
+`paused` is backend-owned inference intent; `pause_revision` orders changes
+without resetting the prompt/temporal revision. Pause stops new frame submissions
+and CPU prefetch; already-running GPU work or model loading finishes normally.
+The worker, weights, compiled graphs, prompts and last completed frame remain
+loaded. Resume samples a post-resume camera frame and discards an older in-flight
+result. No model/prompt changes or browser reload implicitly resume inference.
+A backend/device restart starts unpaused. The combined Pause/Resume button controls
+both connected backends; individual pages control their own backend. A mixed
+pause state offers Resume to align both. Failed peers are reported, not silently
+retried. Model/prompt changes while paused take effect when resumed.
+
+Automatic targeting holds position while inference is paused without clearing
+Start intent or the target class. Stop still stops motors independently; Resume
+inference never arms stopped motors. Camera capture remains live internally,
+but the displayed image stays on the last fully processed frame, including
+after a page reload while paused.
 
 `api_version`, `model`, `models` (including per-device `available` capabilities),
 `prompts`, `revision`, `state`, `error`, `frame_sequence`, `frame_url`,

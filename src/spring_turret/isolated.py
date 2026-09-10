@@ -161,7 +161,8 @@ class BackendRuntime:
                                 "tracking": self.application.tracking.status()}
                 camera_sequence, camera_jpeg, camera_at = self.application.camera.wait_for_sample(-1, 0)
                 with detector.condition:
-                    version = (camera_sequence, *detector.frame_version(), detector.state)
+                    version = (camera_sequence, *detector.frame_version(), detector.state,
+                               getattr(detector, "pause_revision", 0))
                     if version == previous and not refreshed:
                         detection = None
                     else:
