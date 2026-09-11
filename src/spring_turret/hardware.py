@@ -4,6 +4,7 @@ Only device runtime, model artifact selection and launch arguments belong here.
 No target selection, camera scheduling, result publication or motor policy.
 """
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -43,7 +44,9 @@ class XpuRuntime:
         elif v18:
             cache /= "sam31-tracking-israel-full1008-v18"
         elif self.config.get("model") == "sam3.1-tracking":
-            cache /= "sam31-tracking-israel-native672-v24" if self.config.get("sam31_tracking_native_bundle") else "sam31-tracking"
+            native = self.config.get("sam31_tracking_native_bundle")
+            cache /= ("sam31-tracking-native-" + hashlib.sha256(native.encode()).hexdigest()[:12]
+                      if native else "sam31-tracking")
         elif w4a4:
             cache /= "sam31-sleepy-w4a4-fixed-fc1-barrier"
         elif self.config.get("sam31_w8a8_development_bundle"):

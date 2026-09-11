@@ -218,6 +218,72 @@ reduction, and it covers one clip/prompt. Physical moving-target confirmation
 remains pending. Structured results and artifact hashes are in
 [the qualification record](arc-football-tracking-qualification.json).
 
+## Israel full1008 hillclimb candidate (September 9)
+
+The new optional bundle selects **native v15** from Israel's
+`tracking_implementation_20260909` work, not the earlier native672 build below.
+Use `inference.sam31_tracking_native_bundle` pointing to the private
+`israel-tracking-full1008-v15` bundle. Its manifest SHA256 is
+`368a39b0abe03f0cf288f3162de40bdb1f5fdf4fa13555e66a5ed683a2c8fd39`.
+The worker checks every bundled source/library and the existing full checkpoint
+before importing model code. Its source tree is private to this bundle; it does
+not overwrite `/home/spring/sam3_1` or depend on Israel staying online.
+
+This recipe retains full 1008×1008 input, native W4A4 image projections,
+W8A8 heads, uniform 50% temporal spatial K/V retention with all pointer tokens,
+and 75% MLP token retention in blocks 8–31. Image attention remains the original
+Torch implementation. Native providers and Inductor tensor regions use SYCL
+graph replay. The existing bounded capture/replay cache policy, independent
+per-prompt sessions, hotstart suppression publication, orphan-state cleanup,
+retirement, mask-centroid output and motor/target policies stay in the demo.
+No changes are made to Thor or the Box/Mask profiles.
+
+Israel's audited v15 eager run covers 545 frames in 15 person scenes, with
+81.7749% mean mask IoU and 72.5442% mean box IoU. The subsequently completed
+compiled 545-frame audit scores 82.0353% masks / 72.9031% boxes with zero matched
+adjacent mask-ID switches; this exceeds the compressed QDQ reference's
+81.6732% / 70.4823%, not necessarily dense BF16. That audit is
+`compiled_confirmation545_assembled_gpu1_v15_v2/report.json`, SHA256
+`7910a0b662a2e5160adbb9b825a47aaea5b7bf61ddfb8c33d9672c0ca475a56f`.
+The bundle's embedded qualification note records the earlier partial443 state.
+Its audited full-engine ordinary/reconditioning medians were 138.74/149.33 ms
+for crossing and 133.94/142.06 ms for lucia. These exclude host work/transfers;
+they are not live camera FPS, dense-equivalence results, or an 80% roofline claim.
+Newer v16/v17 components were still under qualification when v15 was selected.
+
+### Arc qualification: activation deferred
+
+The actual proposed worker completed the same 320-frame football/empty-scene
+replay used above, with the current shared suppression and lifetime policies.
+Its median model/whole-worker latency was **136 / 153.245 ms**, versus
+**222 / 238.845 ms** for the earlier dense run (frames 64–255, excluding cold
+compilation). It aimed inside the reference ball on **168 / 214** positive
+frames, versus **213 / 214** for dense. Both had zero masks on all 64 appended
+empty-scene frames. The candidate completed without a worker crash, and every
+frame encoded its new image rather than reusing stale features.
+
+This is a substantial ball-coverage loss, despite the improved person-cohort
+scores versus compressed QDQ. It is one recorded clip with earlier detector
+boxes as the reference, not general ground-truth accuracy. The candidate is
+staged but **not activated**; the original Arc model/config and `person`
+target/running intent were restored pending acceptance of that tradeoff.
+Thor was not changed. The transient test used a 10 GiB cgroup memory cap and
+peaked at about 8 GiB; this does not guarantee every future prompt fits.
+
+Local artifacts on Arc are in
+`/home/spring/.local/share/turret-demo/israel-v15-validation`:
+
+- `report.json`: SHA256 `497c016bbbc12b01cdf1805f67bc804c129abc29c7189fb0001720fe4385426f`
+- `results.jsonl`: SHA256 `05b1799a50f3ea668bd881bd264f60ceed951a6fceb6723af4739f2382f487a2`
+- `worker.log`: SHA256 `cf743b06dc64f4f0b05820094129dbcd96bcdc239b1ca0731ba996a53440fe66`
+
+Set the bundle key and restart Arc's backend to activate; a worker restart resets
+temporal identities. Preserve the original config/checkpoint/dense source bundle
+and remove only this key to roll back. Each native bundle has a separate compiler
+cache. Cold compilation must run without a second GPU model on memory-limited
+Arc devices. Local deployment/recorded-frame qualification is separate from
+Israel's source results and must be checked before activation.
+
 ## Israel native672 tracking opt-in
 
 This build is retained for explicit experiments. It is no longer Arc's live
